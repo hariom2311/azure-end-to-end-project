@@ -336,10 +336,48 @@ The VoltGrid API uses Django REST Framework token auth — there is no direct da
    - **Region:** `Central India`
    - **Pricing tier:** `Standard` ← cost choice
 3. **Access configuration** tab:
-   - Permission model: **Vault access policy** *(easier for beginners — switch to RBAC on Day 2)*
+   - Permission model: **Azure role-based access control (RBAC)** ← use this
 4. Click **Review + Create** → **Create**
 
-### 4.2 Add Your First Secrets
+### 4.2 Assign Yourself `Key Vault Secrets Officer` Role (required before adding secrets)
+
+> **Why this is needed:** When Key Vault uses the RBAC permission model, even the account that created the vault cannot read or write secrets until it is explicitly assigned a role. Without this step you will get:
+> `Forbidden: Caller is not authorized to perform action — ForbiddenByRbac`
+
+**Via Portal:**
+1. Portal → **Key vaults** → `kv-ev-intelligence-dev`
+2. Left menu → **Access Control (IAM)**
+3. Click **+ Add** → **Add role assignment**
+4. **Role** tab: search `Key Vault Secrets Officer` → select → click **Next**
+5. **Members** tab:
+   - **Assign access to:** `User, group, or service principal`
+   - Click **+ Select members** → search your Azure login email → select → **Select**
+6. Click **Review + assign** → **Review + assign**
+7. Wait **1–2 minutes** for the role to propagate before running any `az keyvault secret set` commands
+
+**Via CLI:**
+```cmd
+az ad signed-in-user show --query id -o tsv
+```
+Copy the output (your object ID), then:
+```cmd
+az keyvault show --name kv-ev-intelligence-dev --resource-group rg-ev-intelligence-dev --query id -o tsv
+```
+Copy the output (Key Vault resource ID), then:
+```cmd
+az role assignment create --assignee-object-id <your-object-id> --assignee-principal-type User --role "Key Vault Secrets Officer" --scope <keyvault-resource-id>
+```
+Wait 1–2 minutes, then proceed to adding secrets.
+
+**Role reference — who gets what:**
+
+| Identity | Role | Why |
+|---|---|---|
+| Your account | `Key Vault Secrets Officer` | You need to read + write secrets from CLI/Portal |
+| Service Principal | `Key Vault Secrets User` | Databricks reads secrets at runtime (read-only) |
+| Managed Identity (ADF) | `Key Vault Secrets User` | ADF reads secrets at runtime (read-only) |
+
+### 4.3 Add Your First Secrets
 Go to Key Vault → left menu **Secrets** → **+ Generate/Import**
 
 Add these secrets now (you will add more on Day 2):
@@ -357,7 +395,7 @@ Add these secrets now (you will add more on Day 2):
 > **Why username/password in Key Vault and not a hardcoded token?**
 > DRF tokens persist in the database. If the token ever rotates or the user is recreated, a hardcoded token breaks every pipeline. Storing username + password means Databricks can always call `/api/auth/login/` to get a fresh valid token at the start of each run — no manual rotation needed.
 
-### 4.3 Via CLI
+### 4.4 Via CLI
 
 > **CMD / PowerShell users:** Use the single-line versions below. The `\` and `$KV` variable syntax is bash only — in CMD use the full vault name directly.
 
@@ -953,7 +991,8 @@ If you forget, the cluster auto-terminates after 15 minutes — but do not rely 
 - [ ] Storage Account `evdatalakedev` created (Standard LRS, hierarchical namespace ON)
 - [ ] Containers: `bronze`, `silver`, `gold`, `source` created
 - [ ] Lifecycle rule set (move to Cool after 30 days, Archive after 90)
-- [ ] Key Vault `kv-ev-intelligence-dev` created (Standard tier)
+- [ ] Key Vault `kv-ev-intelligence-dev` created (Standard tier, RBAC permission model)
+- [ ] Your account assigned `Key Vault Secrets Officer` role on the Key Vault
 - [ ] Secrets added: `voltgrid-api-base-url`, `voltgrid-username`, `voltgrid-password`, `adls-account-name`
 - [ ] Service Principal `sp-ev-intelligence-dev` created
 - [ ] SP credentials stored in Key Vault (`sp-client-id`, `sp-client-secret`, `sp-tenant-id`)
@@ -973,6 +1012,7 @@ If you forget, the cluster auto-terminates after 15 minutes — but do not rely 
 |---|---|
 | `az login` fails | Try `az login --use-device-code` |
 | `MissingSubscriptionRegistration` on any resource | Run `az provider register --namespace <e.g. Microsoft.KeyVault>` then wait 1–2 min and retry |
+| `Forbidden: ForbiddenByRbac` on `az keyvault secret set` | Your account needs `Key Vault Secrets Officer` role — assign it via IAM on the Key Vault, wait 1–2 min, then retry |
 | Storage account name taken | Add your initials: `evdatalakedevhs` |
 | Key Vault name taken | Add random suffix: `kv-ev-dev-01` |
 | Mount fails with 403 | SP does not have Storage Blob Data Contributor — re-check IAM |
