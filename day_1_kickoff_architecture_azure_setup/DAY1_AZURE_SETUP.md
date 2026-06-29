@@ -145,6 +145,15 @@ A Resource Group is a logical container for all project resources. Think of it a
 3. Click **Review + Create** → **Create**
 
 ### 2.2 Via CLI (faster)
+
+> **CMD / PowerShell users:** The `\` line continuation below is bash syntax and will break in CMD/PowerShell. Use the single-line version to copy-paste directly.
+
+**Single line (CMD / PowerShell — copy-paste this):**
+```cmd
+az group create --name rg-ev-intelligence-dev --location centralindia
+```
+
+**Multi-line (bash / Git Bash only):**
 ```bash
 az group create \
   --name rg-ev-intelligence-dev \
@@ -210,8 +219,24 @@ This saves 50% on Bronze storage after 30 days:
 5. Save
 
 ### 3.4 Via CLI
+
+> **CMD / PowerShell users:** Use the single-line versions below. The `\` and `for` loop syntax is bash only.
+
+**Single line — create storage account (CMD / PowerShell):**
+```cmd
+az storage account create --name evdatalakedev --resource-group rg-ev-intelligence-dev --location centralindia --sku Standard_LRS --kind StorageV2 --enable-hierarchical-namespace true --access-tier Cool
+```
+
+**Single line — create each container (CMD / PowerShell — run 4 times):**
+```cmd
+az storage container create --name bronze --account-name evdatalakedev --auth-mode login
+az storage container create --name silver --account-name evdatalakedev --auth-mode login
+az storage container create --name gold --account-name evdatalakedev --auth-mode login
+az storage container create --name source --account-name evdatalakedev --auth-mode login
+```
+
+**Multi-line (bash / Git Bash only):**
 ```bash
-# Create storage account
 az storage account create \
   --name evdatalakedev \
   --resource-group rg-ev-intelligence-dev \
@@ -221,7 +246,6 @@ az storage account create \
   --enable-hierarchical-namespace true \
   --access-tier Cool
 
-# Create containers
 for container in bronze silver gold source; do
   az storage container create \
     --name $container \
@@ -279,6 +303,19 @@ Add these secrets now (you will add more on Day 2):
 > DRF tokens persist in the database. If the token ever rotates or the user is recreated, a hardcoded token breaks every pipeline. Storing username + password means Databricks can always call `/api/auth/login/` to get a fresh valid token at the start of each run — no manual rotation needed.
 
 ### 4.3 Via CLI
+
+> **CMD / PowerShell users:** Use the single-line versions below. The `\` and `$KV` variable syntax is bash only — in CMD use the full vault name directly.
+
+**Single line (CMD / PowerShell — copy-paste each line):**
+```cmd
+az keyvault create --name kv-ev-intelligence-dev --resource-group rg-ev-intelligence-dev --location centralindia --sku standard
+az keyvault secret set --vault-name kv-ev-intelligence-dev --name "voltgrid-api-base-url" --value "https://ev-project-navy-mu.vercel.app"
+az keyvault secret set --vault-name kv-ev-intelligence-dev --name "voltgrid-username" --value "voltgrid_demo"
+az keyvault secret set --vault-name kv-ev-intelligence-dev --name "voltgrid-password" --value "EVcharge@AU2025"
+az keyvault secret set --vault-name kv-ev-intelligence-dev --name "adls-account-name" --value "evdatalakedev"
+```
+
+**Multi-line (bash / Git Bash only):**
 ```bash
 KV="kv-ev-intelligence-dev"
 
@@ -373,8 +410,13 @@ This copied value is your `sp-client-secret`.
 
 > **Before running:** replace `<YOUR_SUBSCRIPTION_ID>` with the ID you copied in Part 1.1
 
+**Single line (CMD / PowerShell — copy-paste this):**
+```cmd
+az ad sp create-for-rbac --name sp-ev-intelligence-dev --role Contributor --scopes /subscriptions/<YOUR_SUBSCRIPTION_ID>/resourceGroups/rg-ev-intelligence-dev
+```
+
+**Multi-line (bash / Git Bash only):**
 ```bash
-# Create the Service Principal and assign Contributor role to the Resource Group
 az ad sp create-for-rbac \
   --name sp-ev-intelligence-dev \
   --role Contributor \
@@ -395,6 +437,15 @@ This outputs:
 > If you lose it, you must go to App Registrations → Certificates & secrets → delete and create a new secret.
 
 Store all 3 values in Key Vault immediately:
+
+**Single line (CMD / PowerShell):**
+```cmd
+az keyvault secret set --vault-name kv-ev-intelligence-dev --name "sp-client-id" --value "<appId from output>"
+az keyvault secret set --vault-name kv-ev-intelligence-dev --name "sp-client-secret" --value "<password from output>"
+az keyvault secret set --vault-name kv-ev-intelligence-dev --name "sp-tenant-id" --value "<tenant from output>"
+```
+
+**Multi-line (bash / Git Bash only):**
 ```bash
 KV="kv-ev-intelligence-dev"
 az keyvault secret set --vault-name $KV --name "sp-client-id"     --value "<appId from output>"
@@ -437,24 +488,38 @@ To verify it worked:
 3. You should see `sp-ev-intelligence-dev` listed under `Storage Blob Data Contributor`
 
 #### Via CLI:
+
+> **CMD / PowerShell users:** Variables like `$()` and `$VAR` are bash syntax. Use the step-by-step single-line version below.
+
+**Step-by-step (CMD / PowerShell — run each line separately):**
+```cmd
+az storage account show --name evdatalakedev --resource-group rg-ev-intelligence-dev --query id -o tsv
+```
+Copy the output (the storage resource ID), then:
+```cmd
+az ad sp show --id <appId from earlier> --query id -o tsv
+```
+Copy that output (the SP object ID), then:
+```cmd
+az role assignment create --assignee-object-id <SP_OID> --assignee-principal-type ServicePrincipal --role "Storage Blob Data Contributor" --scope <STORAGE_ID>
+az role assignment list --scope <STORAGE_ID> --query "[].{Role:roleDefinitionName, Principal:principalName}" -o table
+```
+
+**Multi-line (bash / Git Bash only):**
 ```bash
-# Get the storage account's full resource ID
 STORAGE_ID=$(az storage account show \
   --name evdatalakedev \
   --resource-group rg-ev-intelligence-dev \
   --query id -o tsv)
 
-# Get the SP's object ID (different from appId — Azure uses object ID for role assignments)
 SP_OID=$(az ad sp show --id <appId from earlier> --query id -o tsv)
 
-# Assign the role
 az role assignment create \
   --assignee-object-id $SP_OID \
   --assignee-principal-type ServicePrincipal \
   --role "Storage Blob Data Contributor" \
   --scope $STORAGE_ID
 
-# Verify
 az role assignment list --scope $STORAGE_ID --query "[].{Role:roleDefinitionName, Principal:principalName}" -o table
 ```
 
