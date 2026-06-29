@@ -374,6 +374,7 @@ Wait 1–2 minutes, then proceed to adding secrets.
 | Identity | Role | Why |
 |---|---|---|
 | Your account | `Key Vault Secrets Officer` | You need to read + write secrets from CLI/Portal |
+| Databricks workspace identity | `Key Vault Secrets User` | Secret scope reads Key Vault secrets — without this you get `PERMISSION_DENIED: Invalid permissions on KeyVault 403` in notebooks |
 | Service Principal | `Key Vault Secrets User` | Databricks reads secrets at runtime (read-only) |
 | Managed Identity (ADF) | `Key Vault Secrets User` | ADF reads secrets at runtime (read-only) |
 
@@ -672,11 +673,20 @@ az role assignment list --scope $STORAGE_ID --query "[].{Role:roleDefinitionName
 | Cluster name | `dev-cluster` | — |
 | Policy | Unrestricted | — |
 | **Cluster mode** | **Single Node** | No worker nodes = half the VM cost |
-| Access mode | Single user | — |
+| **Access mode** | **Dedicated (formerly: Single user)** | Required — `dbutils.fs.mount()` is blocked in Standard/Shared mode |
 | **Databricks runtime** | `15.4 LTS (Spark 3.5, Scala 2.12)` | Stable, no extra cost |
 | **Use Photon Acceleration** | **OFF** | Photon adds extra DBU charges |
 | **Node type** | `Standard_DS3_v2` | 4 vCPU, 14 GB RAM — minimum viable for Spark |
 | **Auto termination** | **15 minutes** | MOST IMPORTANT — kills cluster when idle |
+
+> **Access mode — why Dedicated is required:**
+>
+> | Access mode | What it means | `mount()` works? |
+> |---|---|---|
+> | Standard (formerly: Shared) | Multiple users share the cluster — Databricks restricts `mount()` to protect other users | ❌ No — gives `Method not whitelisted` error |
+> | **Dedicated (formerly: Single user)** | Only your account runs on this cluster — full permissions | ✅ Yes |
+>
+> If you accidentally created the cluster with Standard mode and get `Method public dbutils.mount() is not whitelisted` — terminate the cluster → Edit → change Access mode to **Dedicated** → Confirm → restart.
 
 3. Click **Create compute** (takes ~5 minutes to start)
 
@@ -685,7 +695,44 @@ az role assignment list --scope $STORAGE_ID --query "[].{Role:roleDefinitionName
 > - DBU: 0.75 DBU/hr × ₹3.0 × 2 hr = ₹4.5
 > - **Total per 2-hour session: ~₹40-45**
 
-### 6.4 Add Key Vault-backed Secret Scope in Databricks
+### 6.4 Grant Databricks Workspace Access to Key Vault (required before creating secret scope)
+
+> **If you skip this step**, your notebooks will fail with:
+> `PERMISSION_DENIED: Invalid permissions on the specified KeyVault — Status code 403`
+> even though your own account has access. The Databricks workspace uses its **own managed identity** to read Key Vault — separate from your user account.
+
+> **Important:** Azure Databricks workspace does not expose a managed identity in the Portal UI. Instead, Databricks accesses Key Vault through a global **AzureDatabricks** enterprise application. You assign the role to that application.
+
+**Via Portal:**
+1. Portal → **Key vaults** → `kv-ev-intelligence-dev` → left menu **Access Control (IAM)**
+2. Click **+ Add** → **Add role assignment**
+3. Role: `Key Vault Secrets User` → **Next**
+4. Members: **+ Select members** → search **`AzureDatabricks`** → select it → **Review + assign**
+5. Wait **2 minutes** before proceeding to create the secret scope
+
+**Via CLI:**
+
+**Step 1 — get the AzureDatabricks SP object ID:**
+```cmd
+az ad sp list --display-name "AzureDatabricks" --query "[0].id" -o tsv
+```
+Copy the output, then:
+
+**Step 2 — get the Key Vault resource ID:**
+```cmd
+az keyvault show --name kv-ev-intelligence-dev --resource-group rg-ev-intelligence-dev --query id -o tsv
+```
+Copy the output, then:
+
+**Step 3 — assign the role:**
+```cmd
+az role assignment create --assignee-object-id <output from Step 1> --assignee-principal-type ServicePrincipal --role "Key Vault Secrets User" --scope <output from Step 2>
+```
+Wait 2 minutes, then re-run the notebook.
+
+---
+
+### 6.5 Add Key Vault-backed Secret Scope in Databricks
 
 **What is a Secret Scope?**
 A Secret Scope is a named link between your Databricks workspace and an Azure Key Vault. Once created, any notebook can call `dbutils.secrets.get(scope="kv-ev-scope", key="some-secret")` to read a Key Vault secret. The secret value is never shown in notebook output — Databricks masks it as `[REDACTED]` automatically.
@@ -1015,6 +1062,7 @@ If you forget, the cluster auto-terminates after 15 minutes — but do not rely 
 - [ ] SP has **Storage Blob Data Contributor** role on `evdatalakedev`
 - [ ] Databricks workspace `dbw-ev-intelligence-dev` created (Trial tier)
 - [ ] Cluster `dev-cluster` created — Single Node, DS3_v2, Photon OFF, auto-terminate 15 min
+- [ ] Databricks workspace managed identity assigned `Key Vault Secrets User` role on Key Vault
 - [ ] Key Vault secret scope `kv-ev-scope` created in Databricks
 - [ ] Storage mounted using **Approach A (SP OAuth)** at `/mnt/bronze`, `/mnt/silver`, `/mnt/gold`, `/mnt/source`
 - [ ] API auth verified — login endpoint returns token, payments endpoint returns data
@@ -1034,6 +1082,9 @@ If you forget, the cluster auto-terminates after 15 minutes — but do not rely 
 | Key Vault name taken | Add random suffix: `kv-ev-dev-01` |
 | Mount fails with 403 | SP does not have Storage Blob Data Contributor — re-check IAM |
 | Mount fails with "invalid client secret" | Check `sp-client-secret` in Key Vault is the exact value output when you created the SP |
-| Secret scope creation fails | Your Databricks workspace identity needs Key Vault access — add it in Key Vault Access Policies |
+| Secret scope creation fails or `PERMISSION_DENIED: Invalid permissions on KeyVault 403` in notebook | The `AzureDatabricks` enterprise app needs `Key Vault Secrets User` role — Key Vault → IAM → Add role assignment → role: `Key Vault Secrets User` → member: search `AzureDatabricks` → assign. Wait 2 min, retry. Note: there is no Identity page on the Databricks workspace resource — use the `AzureDatabricks` global SP instead |
 | Cluster won't start | Check region quota — if `Standard_DS3_v2` is unavailable, try `Standard_D3_v2` |
+| `Method dbutils.mount() is not whitelisted` | Cluster Access mode is **Standard (Shared)** — terminate cluster → Edit → change Access mode to **Dedicated (formerly: Single user)** → Confirm → restart |
+| `Method dbutils.mounts() is not whitelisted` | Same fix as above — Access mode must be Dedicated, not Standard/Shared |
+| Notebook shows Serverless in top-right compute selector | Click the compute selector → switch from Serverless to `dev-cluster` — Serverless does not support `mount()` |
 | API login returns 401 | Username or password in Key Vault does not match what is in the Django database |
