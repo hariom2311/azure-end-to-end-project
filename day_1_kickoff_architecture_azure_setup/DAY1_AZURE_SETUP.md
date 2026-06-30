@@ -989,6 +989,274 @@ print("API auth working correctly.")
 
 ---
 
+## Part 7.4 — Read Source Blob Data via SAS Token (External Storage)
+
+> **Cost: ₹0** — reading via SAS token is free on your end. The storage owner pays for egress.
+
+**What is this?**
+The project uses a shared external Azure Blob Storage (`dataenggdailystorage`) that contains pre-loaded source data — IoT session CSVs, maintenance files, etc. Access is granted via a **SAS (Shared Access Signature) token** — a time-limited read-only URL. You do not need an Azure account or credentials for this storage. You just use the SAS token provided.
+
+**What credentials you need for this:**
+
+| Field | Value |
+|---|---|
+| Storage Account | `dataenggdailystorage` |
+| Container | `source` |
+| SAS Token | Provided during the session — see note below |
+
+> **SAS Token will be shared during the session.**
+> The token looks like: `se=2027-07-30&sp=rl&spr=https&sv=2026-04-06&sr=c&sig=<signature>`
+> Paste it exactly as given — do not add quotes or modify it.
+> It has **read + list** permissions only — you cannot write or delete anything in this storage.
+
+**Folder structure of the source container:**
+```
+source/
+  realtime/
+    charging_sessions/    2026/06/01/06/  sessions_20260601_0600.csv
+    ...
+```
+
+### 7.4.1 Create notebook `02_read_source_blob`
+
+1. Databricks → **Workspace** → **+ New** → **Notebook**
+2. Name: `02_read_source_blob`
+3. Language: Python → Attach to `dev-cluster`
+
+### 7.4.2 Full test script
+
+```python
+# ── Source Blob Read via SAS Token ────────────────────────────────────────────
+# Storage account : dataenggdailystorage  (external — not your account)
+# Container       : source
+# Auth            : SAS token (read + list only — provided during session)
+# Use wasbs:// protocol — NOT abfss:// (abfss requires OAuth, wasbs works with SAS)
+
+STORAGE_ACCOUNT = "dataenggdailystorage"
+CONTAINER       = "source"
+
+# Paste the SAS token provided during the session here (without quotes around it)
+# It looks like: se=2027-07-30&sp=rl&spr=https&sv=2026-04-06&sr=c&sig=xxxxx
+SAS_TOKEN = "<SAS_TOKEN_PROVIDED_DURING_SESSION>"
+
+# ── Step 1: Configure Spark to use SAS token for this storage account ─────────
+spark.conf.set(
+    f"fs.azure.sas.{CONTAINER}.{STORAGE_ACCOUNT}.blob.core.windows.net",
+    SAS_TOKEN
+)
+print("Step 1: Spark SAS config set — OK")
+
+# ── Step 2: List top-level folders in the source container ────────────────────
+print("\nStep 2: Listing top-level folders in source/")
+try:
+    items = dbutils.fs.ls(f"wasbs://{CONTAINER}@{STORAGE_ACCOUNT}.blob.core.windows.net/")
+    for item in items:
+        print(f"  {item.name:<50} {item.size:>10} bytes")
+    print(f"  Total: {len(items)} items found")
+except Exception as e:
+    print(f"  ERROR: {e}")
+    print("  → Check SAS token is correct and has 'List' permission (sp=rl)")
+
+# ── Step 3: List charging_sessions folder ─────────────────────────────────────
+print("\nStep 3: Listing realtime/charging_sessions/")
+try:
+    sessions_path = f"wasbs://{CONTAINER}@{STORAGE_ACCOUNT}.blob.core.windows.net/realtime/charging_sessions/"
+    for item in dbutils.fs.ls(sessions_path):
+        print(f"  {item.name}")
+except Exception as e:
+    print(f"  ERROR: {e}")
+    print("  → Folder path may differ — check Step 2 output for correct folder names")
+
+# ── Step 4: Read a specific CSV file ──────────────────────────────────────────
+print("\nStep 4: Reading a specific CSV file")
+csv_path = f"wasbs://{CONTAINER}@{STORAGE_ACCOUNT}.blob.core.windows.net/realtime/charging_sessions/2026/06/01/06/sessions_20260601_0600.csv"
+
+try:
+    df = (spark.read
+          .option("header", "true")
+          .option("inferSchema", "true")
+          .csv(csv_path))
+
+    row_count = df.count()
+    print(f"  File path  : {csv_path}")
+    print(f"  Row count  : {row_count:,}")
+    print(f"  Columns    : {df.columns}")
+    df.printSchema()
+    display(df.limit(10))
+except Exception as e:
+    print(f"  ERROR: {e}")
+    print("  → File path may differ — adjust the date/hour in the path based on Step 3 output")
+
+# ── Step 5: Read entire charging_sessions folder (all CSVs at once) ───────────
+print("\nStep 5: Reading all CSVs under charging_sessions/ folder")
+try:
+    folder_path = f"wasbs://{CONTAINER}@{STORAGE_ACCOUNT}.blob.core.windows.net/realtime/charging_sessions/"
+    df_all = (spark.read
+              .option("header", "true")
+              .option("inferSchema", "true")
+              .csv(folder_path))
+
+    print(f"  Total rows across all files : {df_all.count():,}")
+    display(df_all.limit(10))
+    print("\nSAS token read test PASSED — source blob is accessible.")
+except Exception as e:
+    print(f"  ERROR: {e}")
+
+# ── Step 6: Quick data quality check ──────────────────────────────────────────
+print("\nStep 6: Basic data quality check")
+try:
+    import pyspark.sql.functions as F
+    print(f"  Total rows     : {df_all.count():,}")
+    print(f"  Null check per column:")
+    for col in df_all.columns:
+        null_count = df_all.filter(F.col(col).isNull()).count()
+        print(f"    {col:<35} nulls: {null_count:,}")
+except Exception as e:
+    print(f"  Skipped: {e}")
+```
+
+### 7.4.3 Expected output if SAS is working
+
+```
+Step 1: Spark SAS config set — OK
+
+Step 2: Listing top-level folders in source/
+  realtime/                                            0 bytes
+  Total: 1 items found
+
+Step 3: Listing realtime/charging_sessions/
+  2026/
+
+Step 4: Reading a specific CSV file
+  File path  : wasbs://source@dataenggdailystorage...
+  Row count  : <number>
+  Columns    : [session_id, plug_in_ts, charge_end_ts, ...]
+
+Step 5: Reading all CSVs under charging_sessions/ folder
+  Total rows across all files : <number>
+
+SAS token read test PASSED — source blob is accessible.
+```
+
+### 7.4.4 Common errors with SAS token
+
+| Error | Cause | Fix |
+|---|---|---|
+| `403 Forbidden` on ls or read | SAS token is wrong, expired, or missing List permission | Confirm token has `sp=rl` (read + list). Paste token exactly — no extra spaces or quotes |
+| `No such file or directory` on Step 4 | CSV path does not match actual folder structure | Run Step 2 and Step 3 first to confirm exact folder/file names, then adjust path |
+| `java.io.IOException: No value for...` | SAS config key is wrong | Confirm CONTAINER and STORAGE_ACCOUNT variables match exactly — case-sensitive |
+| `InvalidAuthenticationInfo` | Using `abfss://` instead of `wasbs://` | SAS tokens require `wasbs://` protocol. Replace `abfss` with `wasbs` in all paths |
+| Output shows `[REDACTED]` for SAS token | You printed the token — Databricks masked it | This is correct and expected — the token is still being used, just not shown |
+| Step 5 reads 0 rows | CSV files have no header or different delimiter | Add `.option("header", "false")` or `.option("delimiter", ";")` and check file format |
+
+> **The above section is now replaced — see the updated Part 7.4 below.**
+
+---
+
+## Part 7.4 — Read Source Blob Data via SAS Token (External Storage) [Updated]
+
+> **Cost: ₹0** — reading via SAS token is free on your end.
+
+**What is this?**
+The project uses a shared external Azure Blob Storage (`dataenggdailystorage`) containing pre-loaded source data — IoT session CSVs, maintenance files, etc. Access is granted via a SAS token (read + list only). All 3 credentials are stored in **your Key Vault** — nothing is hardcoded in notebooks.
+
+**Folder structure of the source container:**
+```
+source/
+  realtime/
+    charging_sessions/    2026/06/01/06/  sessions_20260601_0600.csv
+```
+
+### 7.4.1 Add 3 secrets to your Key Vault
+
+> **SAS token will be shared during the session.** Add it to Key Vault as soon as you receive it — the notebook reads it automatically.
+
+**Via Portal:**
+1. Portal → **Key vaults** → `kv-ev-intelligence-dev` → **Secrets** → **+ Generate/Import**
+2. Add these 3 secrets one by one:
+
+| Secret Name | Value | Notes |
+|---|---|---|
+| `source-storage-account` | `dataenggdailystorage` | External storage account name |
+| `source-container` | `source` | Container name |
+| `source-sas-token` | `se=2027-07-30&sp=rl&...` | Provided during session — paste exactly, no quotes |
+
+**Via CLI:**
+```cmd
+az keyvault secret set --vault-name kv-ev-intelligence-dev --name "source-storage-account" --value "dataenggdailystorage"
+az keyvault secret set --vault-name kv-ev-intelligence-dev --name "source-container" --value "source"
+az keyvault secret set --vault-name kv-ev-intelligence-dev --name "source-sas-token" --value "<paste SAS token here>"
+```
+
+> **SAS token format:** `se=2027-07-30&sp=rl&spr=https&sv=2026-04-06&sr=c&sig=xxxxx`
+> Paste exactly as given. No leading `?`, no quotes. It has **read + list** (`sp=rl`) only.
+
+### 7.4.2 Import and run the notebook
+
+Import `02_read_source_blob.ipynb` from the `notebooks/` folder — see the notebooks README for import steps.
+
+The notebook reads all 3 credentials from Key Vault automatically in Cell 1:
+
+```python
+SCOPE           = "kv-ev-scope"
+STORAGE_ACCOUNT = dbutils.secrets.get(scope=SCOPE, key="source-storage-account")
+CONTAINER       = dbutils.secrets.get(scope=SCOPE, key="source-container")
+SAS_TOKEN       = dbutils.secrets.get(scope=SCOPE, key="source-sas-token")
+
+spark.conf.set(
+    f"fs.azure.sas.{CONTAINER}.{STORAGE_ACCOUNT}.blob.core.windows.net",
+    SAS_TOKEN
+)
+```
+
+**What each cell does:**
+
+| Cell | What it does |
+|---|---|
+| Cell 1 | Loads all 3 secrets from Key Vault, sets Spark SAS config |
+| Cell 2 | Lists top-level folders in the source container |
+| Cell 3 | Drills into `realtime/charging_sessions/` and shows folder structure |
+| Cell 4 | Reads one specific CSV file — prints schema + sample rows |
+| Cell 5 | Reads ALL CSVs using glob `/*/*/*/*/*.csv` — handles nested year/month/day/hour structure |
+| Cell 6 | Null check per column |
+| Cell 7 | Final summary |
+
+> **Why glob in Cell 5 and not just the folder path?**
+> Structure is `charging_sessions/2026/06/01/06/file.csv` — 4 levels of subfolders before the CSV.
+> Reading `charging_sessions/` directly gives `UNABLE_TO_INFER_SCHEMA` because Spark only sees subfolders at the top, not files.
+> The pattern `/*/*/*/*/*.csv` recurses through all 4 levels and finds the actual CSV files.
+
+### 7.4.3 Expected output
+
+```
+Cell 1 — Storage account : dataenggdailystorage
+          Container       : source
+          SAS token       : [REDACTED]
+          Spark SAS config set — OK
+
+Cell 2 — [DIR] realtime/    0 bytes
+
+Cell 4 — Row count    : <number>
+          Columns      : [session_id, plug_in_ts, charge_end_ts, ...]
+
+Cell 5 — Total rows across all files : <number>
+
+Cell 7 — SAS token read test PASSED — source blob is accessible.
+```
+
+### 7.4.4 Common errors
+
+| Error | Cause | Fix |
+|---|---|---|
+| `Secret not found: source-sas-token` | Secret not added to Key Vault yet | Add all 3 secrets via Portal or CLI above, wait 1 min, re-run Cell 1 |
+| `403 Forbidden` on ls or read | SAS token wrong or missing List permission | Confirm `sp=rl` in token. Re-check the Key Vault secret value — no extra spaces |
+| `UNABLE_TO_INFER_SCHEMA` | Reading a folder that has only subfolders at top level | Cell 5 already uses `/*/*/*/*/*.csv` glob — if still failing, run Cell 3 to check depth and adjust number of `/*` |
+| `No such file` on Cell 4 | Date/hour in path doesn't match actual file | Run Cell 3 to see exact folder names, then adjust Cell 4 path |
+| `InvalidAuthenticationInfo` | Using `abfss://` instead of `wasbs://` | SAS tokens need `wasbs://` — notebook already uses this correctly |
+| `[REDACTED]` for SAS token in output | Databricks masked the secret value | Correct and expected — token is still working, just hidden |
+
+---
+
 ## Part 8 — Architecture Diagram (Reference)
 
 ```
@@ -1066,6 +1334,9 @@ If you forget, the cluster auto-terminates after 15 minutes — but do not rely 
 - [ ] Key Vault secret scope `kv-ev-scope` created in Databricks
 - [ ] Storage mounted using **Approach A (SP OAuth)** at `/mnt/bronze`, `/mnt/silver`, `/mnt/gold`, `/mnt/source`
 - [ ] API auth verified — login endpoint returns token, payments endpoint returns data
+- [ ] SAS token received for `dataenggdailystorage` / `source` container
+- [ ] 3 secrets added to Key Vault: `source-storage-account`, `source-container`, `source-sas-token`
+- [ ] Notebook `02_read_source_blob.ipynb` ran — Cell 1 loads secrets from Key Vault, Cell 4 reads CSV, Cell 5 reads all CSVs via glob pattern
 - [ ] **Cluster terminated at end of session**
 
 ---
