@@ -30,9 +30,9 @@ Build a production-grade EV (Electric Vehicle) data platform on Azure over 18 gu
          [ADF] + [Databricks Auto Loader] + [Databricks Streaming]
                 |
          [ADLS Gen2 — Medallion Layers]
-         /mnt/bronze   ← raw, append-only
-         /mnt/silver   ← cleaned, MERGE upsert (Delta)
-         /mnt/gold     ← aggregated, star schema (Delta)
+         abfss://bronze@evdatalakedev.dfs.core.windows.net/   ← raw, append-only
+         abfss://silver@evdatalakedev.dfs.core.windows.net/   ← cleaned, MERGE upsert (Delta)
+         abfss://gold@evdatalakedev.dfs.core.windows.net/     ← aggregated, star schema (Delta)
                 |
          [Azure Databricks — Delta Lake]
                 |
@@ -45,7 +45,7 @@ Build a production-grade EV (Electric Vehicle) data platform on Azure over 18 gu
 
 | Day | Title | Focus |
 |-----|-------|-------|
-| **Day 1** | [Kickoff, Architecture Scope, and Azure Setup](day_1_kickoff_architecture_azure_setup/DAY1_AZURE_SETUP.md) | Provision all Azure resources, wire up security, mount ADLS Gen2 in Databricks via SP OAuth |
+| **Day 1** | [Kickoff, Architecture Scope, and Azure Setup](day_1_kickoff_architecture_azure_setup/DAY1_AZURE_SETUP.md) | Provision all Azure resources, wire up security, connect ADLS Gen2 in Databricks via SP OAuth direct access |
 | **Day 2** | Storage Design, Security, and Secret Management | Establish secure data layer zones and credential management strategy |
 | **Day 3** | Source Discovery and Data Contracts | Profile PostgreSQL, APIs, and file feeds with documented contracts |
 | **Day 4** | Bronze Ingestion for Batch Sources | Raw data loading from database and files into Delta format |

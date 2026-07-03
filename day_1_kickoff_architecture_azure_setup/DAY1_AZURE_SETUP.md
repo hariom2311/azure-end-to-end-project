@@ -38,7 +38,7 @@ Read this once before you start. You will create all of these resources today.
 - Azure Databricks workspace linked to storage via OAuth (secure)
 - Azure Key Vault holding all secrets (API credentials, SP credentials, storage name)
 - Service Principal with correct RBAC roles
-- Storage mounted in Databricks using Service Principal OAuth — no access key
+- Storage connected in Databricks using Service Principal OAuth direct access — no mount, no access key
 
 ---
 
@@ -784,178 +784,81 @@ pip install databricks-cli
 
 > **Cost: ₹0** — connecting to storage is free. You pay only for the cluster time (already running from Part 6).
 
-**Two ways to connect — pick the one that matches your cluster mode:**
+**Standard approach — SP OAuth Direct Access (works on any cluster mode):**
 
-| | Approach A — Mount (Legacy) | Approach B — Direct Access (Modern) |
-|---|---|---|
-| **Cluster mode required** | **Dedicated** only — blocked on Standard/Shared/Serverless | Any mode — Dedicated, Standard, Shared, Serverless |
-| **Status** | Legacy — Databricks recommends against for new code | Current — recommended approach |
-| **Path style** | `/mnt/bronze/folder/file` | `abfss://bronze@evdatalakedev.dfs.core.windows.net/folder/file` |
-| **Persists across restarts?** | No — must re-run mount notebook each restart | No — must re-set Spark config each session (2 cells) |
-| **Unity Catalog compatible** | No | Yes |
-| **Notebook to import** | `00_mount_storage.ipynb` | `00b_connect_storage_no_mount.ipynb` |
+Databricks presents the Service Principal's Client ID + Secret to Azure Entra ID, receives a short-lived OAuth token, and uses it to access storage. No `dbutils.fs.mount()`. No access key. Works on Dedicated, Standard, Shared, and Serverless clusters.
 
-> **If you are on a Dedicated cluster:** either approach works. Approach B is recommended for new learners.
-> **If you are on Standard / Shared / Serverless:** use Approach B — mount is not available.
+> **Full step-by-step guide with all 6 notebook cells, expected output, and error tables:**
+> `notebooks/00b_CONNECT_STORAGE_NO_MOUNT.md`
+>
+> **Notebook to import:** `00b_connect_storage_no_mount.ipynb` from the `notebooks/` folder.
 
----
-
-### Approach A — Mount using Service Principal OAuth (Legacy)
-
-**What it is:** Databricks presents the Service Principal's Client ID + Client Secret to Azure Entra ID. Azure validates the identity, checks that the SP has the correct RBAC role on the storage account, and issues a short-lived OAuth token. That token is used to access storage. The actual storage account key is never used or exposed.
-
-**Why this is more secure:**
-- The Service Principal can be given minimal permissions (only what it needs — e.g. read-only Bronze, read-write Silver)
-- If the SP's secret is compromised, you rotate the `sp-client-secret` in Key Vault. The storage account itself is unaffected
-- Access can be revoked instantly by removing the SP's RBAC role — no need to rotate the storage key
-- Azure Entra ID logs every login by the SP, so you have a full audit trail of who accessed storage and when
-- Follows the principle of least privilege
-
-### 7.1 Create Notebook `00_mount_storage`
+### 7.1 Create Notebook `00b_connect_storage_no_mount`
 1. Databricks → **Workspace** → **+ New** → **Notebook**
-2. Name: `00_mount_storage`
-3. Language: Python
-4. Attach to `dev-cluster`
+2. Name: `00b_connect_storage_no_mount`
+3. Language: Python → Attach to `dev-cluster`
 
-### 7.2 Mount using Service Principal OAuth
+Or **import** `00b_connect_storage_no_mount.ipynb` from the `notebooks/` folder directly.
+
+### 7.2 Cell 1 — Load secrets from Key Vault
+
 ```python
-# All secrets come from Key Vault via the secret scope — no hardcoded values
 SCOPE = "kv-ev-scope"
 
-client_id     = dbutils.secrets.get(scope=SCOPE, key="sp-client-id")
-client_secret = dbutils.secrets.get(scope=SCOPE, key="sp-client-secret")
-tenant_id     = dbutils.secrets.get(scope=SCOPE, key="sp-tenant-id")
-account_name  = dbutils.secrets.get(scope=SCOPE, key="adls-account-name")
+storage_account  = dbutils.secrets.get(scope=SCOPE, key="adls-account-name")
+sp_client_id     = dbutils.secrets.get(scope=SCOPE, key="sp-client-id")
+sp_client_secret = dbutils.secrets.get(scope=SCOPE, key="sp-client-secret")
+sp_tenant_id     = dbutils.secrets.get(scope=SCOPE, key="sp-tenant-id")
 
-# OAuth config — Databricks exchanges client_id + client_secret for a short-lived token
-configs = {
-    "fs.azure.account.auth.type": "OAuth",
-    "fs.azure.account.oauth.provider.type":
-        "org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider",
-    "fs.azure.account.oauth2.client.id": client_id,
-    "fs.azure.account.oauth2.client.secret": client_secret,
-    "fs.azure.account.oauth2.client.endpoint":
-        f"https://login.microsoftonline.com/{tenant_id}/oauth2/token",
-}
-
-# Mount each container
-for container in ["bronze", "silver", "gold", "source"]:
-    mount_point = f"/mnt/{container}"
-    if not any(m.mountPoint == mount_point for m in dbutils.fs.mounts()):
-        dbutils.fs.mount(
-            source=f"abfss://{container}@{account_name}.dfs.core.windows.net/",
-            mount_point=mount_point,
-            extra_configs=configs,
-        )
-        print(f"Mounted  : {container}")
-    else:
-        print(f"Already mounted: {container}")
-
-# Verify
-display(dbutils.fs.ls("/mnt/bronze"))
+print(f"Storage account : {storage_account}")
+print(f"SP client ID    : {sp_client_id[:8]}...[REDACTED]")
+print("Secrets loaded — OK")
 ```
 
-Run the notebook — if you see no errors, all 4 containers are mounted.
+### 7.2b Cell 2 — Configure Spark OAuth
+
+```python
+spark.conf.set(f"fs.azure.account.auth.type.{storage_account}.dfs.core.windows.net", "OAuth")
+spark.conf.set(f"fs.azure.account.oauth.provider.type.{storage_account}.dfs.core.windows.net",
+               "org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider")
+spark.conf.set(f"fs.azure.account.oauth2.client.id.{storage_account}.dfs.core.windows.net", sp_client_id)
+spark.conf.set(f"fs.azure.account.oauth2.client.secret.{storage_account}.dfs.core.windows.net", sp_client_secret)
+spark.conf.set(f"fs.azure.account.oauth2.client.endpoint.{storage_account}.dfs.core.windows.net",
+               f"https://login.microsoftonline.com/{sp_tenant_id}/oauth2/token")
+
+print("Spark OAuth config set — OK")
+```
+
+### 7.2c Cell 3 — Path helper + verify all 4 containers
+
+```python
+def abfss(container: str, path: str = "") -> str:
+    base = f"abfss://{container}@{storage_account}.dfs.core.windows.net"
+    return f"{base}/{path}" if path else base
+
+for container in ["bronze", "silver", "gold", "source"]:
+    try:
+        items = dbutils.fs.ls(abfss(container))
+        print(f"  {container:<8} OK — {len(items)} items")
+    except Exception as e:
+        print(f"  {container:<8} ERROR — {e}")
+```
+
+**Expected output (Day 1 — containers are empty):**
+```
+  bronze   OK — 0 items
+  silver   OK — 0 items
+  gold     OK — 0 items
+  source   OK — 0 items
+```
+
+**After every cluster restart:** re-run Cells 1, 2, 3 — or use `%run "./00b_connect_storage_no_mount"` as Cell 1 in any notebook.
+
+> **For all other connection methods** (SAS token, access key, Unity Catalog, Managed Identity) see `ADLS_CONNECTION_ALL_METHODS.md`.
 
 ---
 
-### Approach B — Storage Account Access Key (Alternative — less secure, simpler for beginners)
-
-> **Security Warning — read before using this approach.**
->
-> The storage account access key is a **root-level, full-access key**. Anyone who has this key can read, write, or delete **everything** in the storage account across **all containers** — Bronze, Silver, Gold, Source. There is no way to scope it to specific containers or limit what they can do.
->
-> **Specific risks vs Approach A:**
-> - If the key leaks (in a git commit, a log file, a screenshot), an attacker has complete control over all your data
-> - Rotating the key (the only way to revoke access) breaks every notebook and pipeline that uses it — you must update all references simultaneously
-> - Azure does not log *who* used the key — it only logs that the key was used. No audit trail of which service or person accessed which file
-> - The key never expires — it is valid indefinitely until manually rotated
-> - It violates the principle of least privilege — a notebook that only reads Bronze data should not hold a key that can delete Silver data
->
-> **When is it acceptable?**
-> For a short-lived local dev test where you know the key will not be committed to git and the storage account holds no sensitive data. Never in any shared or production environment.
-
-```python
-# Approach B — Access Key (less secure)
-SCOPE = "kv-ev-scope"
-
-account_name = dbutils.secrets.get(scope=SCOPE, key="adls-account-name")
-account_key  = dbutils.secrets.get(scope=SCOPE, key="adls-account-key")
-
-# Note: the key is still read from Key Vault (not hardcoded) — that part is correct.
-# The weakness is the key itself, not where it is stored.
-spark.conf.set(
-    f"fs.azure.account.key.{account_name}.dfs.core.windows.net",
-    account_key,
-)
-
-# Mount containers
-for container in ["bronze", "silver", "gold", "source"]:
-    mount_point = f"/mnt/{container}"
-    if not any(m.mountPoint == mount_point for m in dbutils.fs.mounts()):
-        dbutils.fs.mount(
-            source=f"abfss://{container}@{account_name}.dfs.core.windows.net/",
-            mount_point=mount_point,
-            extra_configs={
-                f"fs.azure.account.key.{account_name}.dfs.core.windows.net": account_key
-            },
-        )
-        print(f"Mounted: {container}")
-    else:
-        print(f"Already mounted: {container}")
-```
-
-**If you use Approach B, you need one extra secret in Key Vault — the storage access key.**
-
-**What is a storage access key?**
-It is a long base64-encoded string (looks like `AbCdEf1234...==`) that gives full root-level access to your entire storage account. Every storage account has two of them (key1 and key2) so you can rotate one without downtime.
-
-**Step 1 — Get the access key from the Portal:**
-1. Go to [https://portal.azure.com](https://portal.azure.com)
-2. Search **Storage accounts** → click `evdatalakedev`
-3. In the left menu, click **Access keys** (under Security + networking)
-4. Click **Show** next to **key1**
-5. Copy the full **Key** value (a long string ending in `==`)
-
-**Step 2 — Get the access key via CLI:**
-```bash
-az storage account keys list \
-  --account-name evdatalakedev \
-  --resource-group rg-ev-intelligence-dev \
-  --query "[0].value" -o tsv
-# Outputs the key1 value directly
-```
-
-**Step 3 — Store it in Key Vault:**
-
-Via Portal:
-1. Go to Key Vault → `kv-ev-intelligence-dev` → left menu **Secrets**
-2. Click **+ Generate/Import**
-3. Fill in:
-   - **Name:** `adls-account-key`
-   - **Value:** paste the key you copied in Step 1
-4. Click **Create**
-
-Via CLI:
-```bash
-KEY=$(az storage account keys list \
-  --account-name evdatalakedev \
-  --resource-group rg-ev-intelligence-dev \
-  --query "[0].value" -o tsv)
-
-az keyvault secret set \
-  --vault-name kv-ev-intelligence-dev \
-  --name "adls-account-key" \
-  --value "$KEY"
-```
-
-> **Recommendation: Use Approach A (OAuth). Approach B is documented here so you understand what the access key is, where it comes from, and why it is avoided in production.**
-
----
-
-### Approach C — Direct ABFSS Access Without Mounting (Modern — Recommended for New Learners)
-
-> **Cost: ₹0** — no extra cost vs the mount approach.
+### 7.2d — Connect to External Source Blob via SAS Token (Modern approach)
 
 **What is this?**
 Instead of mounting containers to `/mnt/bronze`, you configure Spark with OAuth credentials once per session and read/write using full `abfss://` paths directly. No `dbutils.fs.mount()` is ever called.
@@ -1402,9 +1305,9 @@ Cell 7 — SAS token read test PASSED — source blob is accessible.
                                               [Databricks Streaming]   ← Event Hub
                                                            |
                                               [ADLS Gen2]           ← ~₹20/month
-                                              /mnt/bronze   ← raw, append-only
-                                              /mnt/silver   ← cleaned, MERGE upsert (Delta)
-                                              /mnt/gold     ← aggregated, star schema (Delta)
+                                              abfss://bronze@evdatalakedev...   ← raw, append-only
+                                              abfss://silver@evdatalakedev...   ← cleaned, MERGE upsert (Delta)
+                                              abfss://gold@evdatalakedev...     ← aggregated, star schema (Delta)
                                                            |
                                               [Azure Databricks]    ← ~₹45/session
                                               Delta Lake tables
@@ -1463,7 +1366,7 @@ If you forget, the cluster auto-terminates after 15 minutes — but do not rely 
 - [ ] Cluster `dev-cluster` created — Single Node, DS3_v2, Photon OFF, auto-terminate 15 min
 - [ ] Databricks workspace managed identity assigned `Key Vault Secrets User` role on Key Vault
 - [ ] Key Vault secret scope `kv-ev-scope` created in Databricks
-- [ ] Storage mounted using **Approach A (SP OAuth)** at `/mnt/bronze`, `/mnt/silver`, `/mnt/gold`, `/mnt/source`
+- [ ] Storage connected using **SP OAuth direct access** — `00b_connect_storage_no_mount` ran, all 4 containers returned `OK`
 - [ ] API auth verified — login endpoint returns token, payments endpoint returns data
 - [ ] SAS token received for `dataenggdailystorage` / `source` container
 - [ ] 3 secrets added to Key Vault: `source-storage-account`, `source-container`, `source-sas-token`
@@ -1482,11 +1385,9 @@ If you forget, the cluster auto-terminates after 15 minutes — but do not rely 
 | `Conflict: ObjectIsDeletedButRecoverable` on `az keyvault secret set` | Secret was previously deleted but is still in soft-delete state. Recover it first: `az keyvault secret recover --vault-name kv-ev-intelligence-dev --name "<secret-name>"` then retry the set command. Or purge it: `az keyvault secret purge --vault-name kv-ev-intelligence-dev --name "<secret-name>"` then set fresh |
 | Storage account name taken | Add your initials: `evdatalakedevhs` |
 | Key Vault name taken | Add random suffix: `kv-ev-dev-01` |
-| Mount fails with 403 | SP does not have Storage Blob Data Contributor — re-check IAM |
-| Mount fails with "invalid client secret" | Check `sp-client-secret` in Key Vault is the exact value output when you created the SP |
+| `403 Forbidden` on `dbutils.fs.ls(abfss(...))` | SP does not have Storage Blob Data Contributor — re-check IAM on `evdatalakedev` |
+| `AuthenticationFailed` on storage access | Check `sp-client-secret` in Key Vault is the exact value shown when you created the SP |
 | Secret scope creation fails or `PERMISSION_DENIED: Invalid permissions on KeyVault 403` in notebook | The `AzureDatabricks` enterprise app needs `Key Vault Secrets User` role — Key Vault → IAM → Add role assignment → role: `Key Vault Secrets User` → member: search `AzureDatabricks` → assign. Wait 2 min, retry. Note: there is no Identity page on the Databricks workspace resource — use the `AzureDatabricks` global SP instead |
 | Cluster won't start | Check region quota — if `Standard_DS3_v2` is unavailable, try `Standard_D3_v2` |
-| `Method dbutils.mount() is not whitelisted` | Cluster Access mode is **Standard (Shared)** — terminate cluster → Edit → change Access mode to **Dedicated (formerly: Single user)** → Confirm → restart |
-| `Method dbutils.mounts() is not whitelisted` | Same fix as above — Access mode must be Dedicated, not Standard/Shared |
-| Notebook shows Serverless in top-right compute selector | Click the compute selector → switch from Serverless to `dev-cluster` — Serverless does not support `mount()` |
+| Notebook shows Serverless in top-right compute selector | Click the compute selector → switch from Serverless to `dev-cluster` |
 | API login returns 401 | Username or password in Key Vault does not match what is in the Django database |

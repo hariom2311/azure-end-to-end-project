@@ -139,24 +139,6 @@ for container in ["bronze", "silver", "gold", "source"]:
   source   OK — 0 items
 ```
 
-### Step 7 — Use in every future notebook
-
-Add this as **Cell 1** in every notebook that reads or writes ADLS:
-
-```python
-%run "./00b_connect_storage_no_mount"
-```
-
-Then use `abfss()` directly:
-
-```python
-# Read
-df = spark.read.format("delta").load(abfss("silver", "ev_sessions"))
-
-# Write
-df.write.format("delta").mode("overwrite").save(abfss("silver", "ev_sessions"))
-```
-
 ### Errors and fixes
 
 | Error | Cause | Fix |
@@ -455,12 +437,14 @@ Mounted  : /mnt/source
 
 ```python
 # Read — no spark.conf needed, mount handles auth
-df = spark.read.format("delta").load("/mnt/silver/ev_sessions")
+# Replace the path below with your actual data path — no data exists yet on Day 1
+# Example: df = spark.read.parquet("/mnt/bronze/charging_sessions/")
+df = spark.read.parquet("/mnt/bronze/<your-folder>/")
 
-# Write
-df.write.format("delta").mode("overwrite").save("/mnt/silver/ev_sessions")
+# Write — replace path with where you want to land the data
+df.write.mode("overwrite").parquet("/mnt/bronze/<your-folder>/")
 
-# List
+# List files in bronze to see what is there
 display(dbutils.fs.ls("/mnt/bronze"))
 ```
 
@@ -570,9 +554,12 @@ for container in ["bronze", "silver", "gold", "source"]:
     except Exception as e:
         print(f"  {container:<8} ERROR — {e}")
 
-# Read and write exactly like Method 1
-df = spark.read.format("delta").load(abfss("silver", "ev_sessions"))
-df.write.format("delta").mode("overwrite").save(abfss("silver", "ev_sessions"))
+# Replace the path below with your actual data path — no data exists yet on Day 1
+# Example: df = spark.read.parquet(abfss("bronze", "charging_sessions/"))
+df = spark.read.parquet(abfss("bronze", "<your-folder>/"))
+
+# Write — replace path with where you want to land the data
+df.write.mode("overwrite").parquet(abfss("bronze", "<your-folder>/"))
 ```
 
 ### Errors and fixes
@@ -643,11 +630,14 @@ databricks storage-credentials create --json '{
 # No spark.conf needed — Unity Catalog handles auth automatically
 # Just use abfss:// paths directly
 
+# Replace the path below with your actual data path — no data exists yet on Day 1
+# Example: df = spark.read.parquet("abfss://bronze@evdatalakedev.dfs.core.windows.net/charging_sessions/")
+
 # Read
-df = spark.read.format("delta").load("abfss://silver@evdatalakedev.dfs.core.windows.net/ev_sessions")
+df = spark.read.parquet("abfss://bronze@evdatalakedev.dfs.core.windows.net/<your-folder>/")
 
 # Write
-df.write.format("delta").mode("overwrite").save("abfss://silver@evdatalakedev.dfs.core.windows.net/ev_sessions")
+df.write.mode("overwrite").parquet("abfss://bronze@evdatalakedev.dfs.core.windows.net/<your-folder>/")
 
 # List
 display(dbutils.fs.ls("abfss://bronze@evdatalakedev.dfs.core.windows.net/"))
