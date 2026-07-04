@@ -18,6 +18,10 @@
         "type": "Integer",
         "defaultValue": 1
       },
+      "v_temp_page": {
+        "type": "Integer",
+        "defaultValue": 1
+      },
       "v_total_pages": {
         "type": "Integer",
         "defaultValue": 1
@@ -228,7 +232,7 @@
               ]
             },
             {
-              "name": "act_increment_page",
+              "name": "act_set_temp_page",
               "type": "SetVariable",
               "dependsOn": [
                 {
@@ -237,9 +241,26 @@
                 }
               ],
               "typeProperties": {
-                "variableName": "v_current_page",
+                "variableName": "v_temp_page",
                 "value": {
                   "value": "@add(variables('v_current_page'), 1)",
+                  "type": "Expression"
+                }
+              }
+            },
+            {
+              "name": "act_increment_page",
+              "type": "SetVariable",
+              "dependsOn": [
+                {
+                  "activity": "act_set_temp_page",
+                  "dependencyConditions": ["Succeeded"]
+                }
+              ],
+              "typeProperties": {
+                "variableName": "v_current_page",
+                "value": {
+                  "value": "@variables('v_temp_page')",
                   "type": "Expression"
                 }
               }
