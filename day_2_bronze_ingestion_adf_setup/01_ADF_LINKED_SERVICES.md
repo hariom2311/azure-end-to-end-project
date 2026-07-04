@@ -146,27 +146,65 @@ az datafactory linked-service create \
 ## Linked Service 3 — Source Blob Storage (`ls_source_blob`)
 
 ### What it is
-Connects to `dataenggdailystorage` — the instructor's storage account that holds the raw CSV source files. Uses a SAS URI stored in Key Vault.
+Connects to `dataenggdailystorage` — the instructor's storage account that holds the raw CSV source files. ADF needs a **SAS URI** to authenticate — not just the SAS token.
 
-**SAS URI vs SAS Token:**
-A SAS token is just the query string part (starts with `se=...`). A SAS URI is the full URL including the storage account host (`https://dataenggdailystorage.blob.core.windows.net/?se=...`). ADF requires the full SAS URI — you need to build it from the token and store it as a separate secret.
+---
+
+### SAS Token vs SAS URI — What is the difference?
+
+You received a **SAS token** during the session. It looks like this:
+```
+se=2027-07-30&sp=rl&spr=https&sv=2026-04-06&sr=c&sig=EeNl1mQL9JN...
+```
+
+That is just the query string — a list of parameters that prove access. It has no host address in it.
+
+ADF's **SAS URI** field expects the **full URL** — the storage account host address plus a `?` plus the SAS token:
+
+```
+https://dataenggdailystorage.blob.core.windows.net/?se=2027-07-30&sp=rl&spr=https&sv=2026-04-06&sr=c&sig=EeNl1mQL9JN...
+```
+
+Breaking it down:
+
+| Part | Value | What it is |
+|---|---|---|
+| `https://dataenggdailystorage.blob.core.windows.net/` | fixed | The storage account's public endpoint. `dataenggdailystorage` is the account name. `.blob.core.windows.net` is the Azure Blob Storage domain. |
+| `?` | fixed | Separates the URL from the query parameters |
+| `se=2027-07-30` | from SAS token | Expiry date of this token |
+| `sp=rl` | from SAS token | Permissions: `r` = read, `l` = list |
+| `sig=...` | from SAS token | Cryptographic signature — proves the token is genuine |
+
+So the rule is simple:
+```
+SAS URI = https://dataenggdailystorage.blob.core.windows.net/  +  ?  +  <your SAS token>
+```
+
+You build this once, store it in Key Vault as `source-blob-sas-uri`, and ADF reads it at runtime.
 
 ---
 
 ### Step 0 — Build and store the full SAS URI in Key Vault (do this before UI or CLI steps)
 
-**CMD / PowerShell — Step 1, get the SAS token:**
+> **CMD / PowerShell users:** The `\` line continuation below is bash syntax and will break in CMD/PowerShell. Use the single-line version to copy-paste directly.
+
+**CMD / PowerShell — Step 1, get the SAS token you stored in Day 1:**
 ```cmd
 az keyvault secret show --vault-name kv-ev-intelligence-dev --name "source-sas-token" --query "value" -o tsv
 ```
-Copy the output (the SAS token string starting with `se=...`).
+Copy the output. It starts with `se=...` — no leading `?`, no quotes.
 
-**CMD / PowerShell — Step 2, store the full SAS URI (replace `<SAS_TOKEN>` with your copied value):**
+**CMD / PowerShell — Step 2, store the full SAS URI (replace `<paste-sas-token-here>` with the value from Step 1):**
 ```cmd
-az keyvault secret set --vault-name kv-ev-intelligence-dev --name "source-blob-sas-uri" --value "https://dataenggdailystorage.blob.core.windows.net/?<SAS_TOKEN>"
+az keyvault secret set --vault-name kv-ev-intelligence-dev --name "source-blob-sas-uri" --value "https://dataenggdailystorage.blob.core.windows.net/?<paste-sas-token-here>"
 ```
 
-**bash — both steps combined:**
+Example of what the final value looks like:
+```
+https://dataenggdailystorage.blob.core.windows.net/?se=2027-07-30&sp=rl&spr=https&sv=2026-04-06&sr=c&sig=EeNl1mQL9JN...
+```
+
+**Multi-line (bash / Git Bash only — both steps combined):**
 ```bash
 SAS_TOKEN=$(az keyvault secret show \
   --vault-name kv-ev-intelligence-dev \
@@ -179,6 +217,12 @@ az keyvault secret set \
   --value "https://dataenggdailystorage.blob.core.windows.net/?$SAS_TOKEN"
 ```
 
+**Verify the secret was stored correctly (CMD / PowerShell):**
+```cmd
+az keyvault secret show --vault-name kv-ev-intelligence-dev --name "source-blob-sas-uri" --query "value" -o tsv
+```
+The output should start with `https://dataenggdailystorage.blob.core.windows.net/?se=...`
+
 ---
 
 ### UI Steps
@@ -188,11 +232,19 @@ az keyvault secret set \
 3. Fill in:
    - **Name:** `ls_source_blob`
    - **Authentication method:** SAS URI
-   - **SAS URI** field → click the Key Vault icon next to it:
-     - Linked service: `ls_keyvault`
-     - Secret name: `source-blob-sas-uri`
-4. Click **Test connection** → **Connection successful**
+   - **SAS URI** field → click the **Azure Key Vault** icon next to the field (small KV icon on the right side of the text box):
+     - **AKV linked service:** `ls_keyvault`
+     - **Secret name:** `source-blob-sas-uri`
+     - **Secret version:** leave blank (always uses latest)
+   - Click **OK**
+4. Click **Test connection** — must show **Connection successful**
 5. Click **Create**
+
+> **If Test connection fails with 403:** The SAS URI was not built correctly. Common mistakes:
+> - Missing `?` between the host URL and the token (`...windows.net/se=...` instead of `...windows.net/?se=...`)
+> - Extra space or newline at the start or end of the token when pasting
+> - SAS token has expired (`se=` date is in the past)
+> Re-run Step 0 carefully and update the secret.
 
 ---
 
