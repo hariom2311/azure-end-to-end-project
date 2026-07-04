@@ -2,57 +2,25 @@
   "name": "pl_bronze_api_payments",
   "properties": {
     "parameters": {
-      "p_load_type": {
-        "type": "string",
-        "defaultValue": "incremental"
+      "p_page": {
+        "type": "int",
+        "defaultValue": 1
+      },
+      "p_page_size": {
+        "type": "int",
+        "defaultValue": 100
       }
     },
     "variables": {
       "v_token": {
         "type": "String"
-      },
-      "v_watermark": {
-        "type": "String"
-      },
-      "v_current_page": {
-        "type": "Integer",
-        "defaultValue": 1
-      },
-      "v_temp_page": {
-        "type": "Integer",
-        "defaultValue": 1
-      },
-      "v_total_pages": {
-        "type": "Integer",
-        "defaultValue": 1
-      },
-      "v_ingestion_date": {
-        "type": "String"
       }
     },
     "activities": [
       {
-        "name": "act_get_base_url",
-        "type": "WebActivity",
-        "dependsOn": [],
-        "typeProperties": {
-          "url": "https://kv-ev-intelligence-dev.vault.azure.net/secrets/voltgrid-api-base-url/?api-version=7.0",
-          "method": "GET",
-          "authentication": {
-            "type": "MSI",
-            "resource": "https://vault.azure.net"
-          }
-        }
-      },
-      {
         "name": "act_get_username",
         "type": "WebActivity",
-        "dependsOn": [
-          {
-            "activity": "act_get_base_url",
-            "dependencyConditions": ["Succeeded"]
-          }
-        ],
+        "dependsOn": [],
         "typeProperties": {
           "url": "https://kv-ev-intelligence-dev.vault.azure.net/secrets/voltgrid-username/?api-version=7.0",
           "method": "GET",
@@ -90,10 +58,7 @@
           }
         ],
         "typeProperties": {
-          "url": {
-            "value": "@concat(activity('act_get_base_url').output.value, '/api/auth/login/')",
-            "type": "Expression"
-          },
+          "url": "https://ev-project-navy-mu.vercel.app/api/auth/login/",
           "method": "POST",
           "headers": {
             "Content-Type": "application/json"
@@ -122,8 +87,8 @@
         }
       },
       {
-        "name": "act_set_watermark",
-        "type": "SetVariable",
+        "name": "act_copy_payments",
+        "type": "Copy",
         "dependsOn": [
           {
             "activity": "act_set_token",
@@ -131,143 +96,51 @@
           }
         ],
         "typeProperties": {
-          "variableName": "v_watermark",
-          "value": "1900-01-01T00:00:00Z"
-        }
-      },
-      {
-        "name": "act_set_ingestion_date",
-        "type": "SetVariable",
-        "dependsOn": [
-          {
-            "activity": "act_set_watermark",
-            "dependencyConditions": ["Succeeded"]
-          }
-        ],
-        "typeProperties": {
-          "variableName": "v_ingestion_date",
-          "value": {
-            "value": "@formatDateTime(utcNow(),'yyyy-MM-dd')",
-            "type": "Expression"
-          }
-        }
-      },
-      {
-        "name": "act_paginate",
-        "type": "Until",
-        "dependsOn": [
-          {
-            "activity": "act_set_ingestion_date",
-            "dependencyConditions": ["Succeeded"]
-          }
-        ],
-        "typeProperties": {
-          "expression": {
-            "value": "@greater(variables('v_current_page'), variables('v_total_pages'))",
-            "type": "Expression"
+          "source": {
+            "type": "RestSource",
+            "additionalHeaders": {
+              "Authorization": {
+                "value": "@concat('Token ', variables('v_token'))",
+                "type": "Expression"
+              }
+            },
+            "requestMethod": "GET"
           },
-          "activities": [
-            {
-              "name": "act_copy_payments_page",
-              "type": "Copy",
-              "dependsOn": [],
-              "typeProperties": {
-                "source": {
-                  "type": "RestSource",
-                  "additionalHeaders": {
-                    "Authorization": {
-                      "value": "@concat('Token ', variables('v_token'))",
-                      "type": "Expression"
-                    }
-                  },
-                  "requestMethod": "GET",
-                  "paginationRules": {
-                    "supportRFC5988": "false"
-                  }
-                },
-                "sink": {
-                  "type": "JsonSink",
-                  "storeSettings": {
-                    "type": "AzureBlobFSWriteSettings"
-                  },
-                  "formatSettings": {
-                    "type": "JsonWriteSettings",
-                    "filePattern": "setOfObjects"
-                  }
-                },
-                "enableStaging": false
-              },
-              "inputs": [
-                {
-                  "referenceName": "ds_voltgrid_payments_src",
-                  "type": "DatasetReference",
-                  "parameters": {
-                    "p_page": {
-                      "value": "@variables('v_current_page')",
-                      "type": "Expression"
-                    },
-                    "p_page_size": 100,
-                    "p_updated_after": {
-                      "value": "@variables('v_watermark')",
-                      "type": "Expression"
-                    }
-                  }
-                }
-              ],
-              "outputs": [
-                {
-                  "referenceName": "ds_bronze_payments_sink",
-                  "type": "DatasetReference",
-                  "parameters": {
-                    "p_ingestion_date": {
-                      "value": "@variables('v_ingestion_date')",
-                      "type": "Expression"
-                    },
-                    "p_page_number": {
-                      "value": "@variables('v_current_page')",
-                      "type": "Expression"
-                    }
-                  }
-                }
-              ]
+          "sink": {
+            "type": "JsonSink",
+            "storeSettings": {
+              "type": "AzureBlobFSWriteSettings"
             },
-            {
-              "name": "act_set_temp_page",
-              "type": "SetVariable",
-              "dependsOn": [
-                {
-                  "activity": "act_copy_payments_page",
-                  "dependencyConditions": ["Succeeded"]
-                }
-              ],
-              "typeProperties": {
-                "variableName": "v_temp_page",
-                "value": {
-                  "value": "@add(variables('v_current_page'), 1)",
-                  "type": "Expression"
-                }
-              }
-            },
-            {
-              "name": "act_increment_page",
-              "type": "SetVariable",
-              "dependsOn": [
-                {
-                  "activity": "act_set_temp_page",
-                  "dependencyConditions": ["Succeeded"]
-                }
-              ],
-              "typeProperties": {
-                "variableName": "v_current_page",
-                "value": {
-                  "value": "@variables('v_temp_page')",
-                  "type": "Expression"
-                }
-              }
+            "formatSettings": {
+              "type": "JsonWriteSettings",
+              "filePattern": "setOfObjects"
             }
-          ],
-          "timeout": "0.04:00:00"
-        }
+          },
+          "enableStaging": false
+        },
+        "inputs": [
+          {
+            "referenceName": "ds_voltgrid_payments_src",
+            "type": "DatasetReference",
+            "parameters": {
+              "p_page": {
+                "value": "@pipeline().parameters.p_page",
+                "type": "Expression"
+              },
+              "p_page_size": {
+                "value": "@pipeline().parameters.p_page_size",
+                "type": "Expression"
+              },
+              "p_updated_after": ""
+            }
+          }
+        ],
+        "outputs": [
+          {
+            "referenceName": "ds_bronze_payments_sink",
+            "type": "DatasetReference"
+          }
+        ]
       }
     ]
   }
