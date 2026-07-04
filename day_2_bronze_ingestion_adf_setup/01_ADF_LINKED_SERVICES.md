@@ -40,47 +40,49 @@ ADF can pull secret values from Key Vault at runtime. All other linked services 
 6. Click **Test connection** — must show **Connection successful**
 7. Click **Create**
 
-> **If test fails:** Go to Key Vault → Access policies → confirm ADF Managed Identity has **Secret Get** and **Secret List** permissions. See Day 1 Part 5.
+> **If test fails:** ADF Managed Identity is missing the `Key Vault Secrets User` role on `kv-ev-intelligence-dev`. Go back to Day 2 Part 3 and assign it, wait 2 minutes, then re-test.
 
 ---
 
 ### CLI Steps
 
-```bash
-# Replace with your values
-SUBSCRIPTION="your-subscription-id"
-RG="rg-ev-intelligence-dev"
-ADF="adf-ev-intelligence-dev"
-KV="kv-ev-intelligence-dev"
+> **CMD / PowerShell users:** The `\` line continuation below is bash syntax and will break in CMD/PowerShell. Use the single-line version to copy-paste directly.
 
+**Single line (CMD / PowerShell — copy-paste this):**
+```cmd
+az datafactory linked-service create --resource-group rg-ev-intelligence-dev --factory-name adf-ev-intelligence-dev --linked-service-name "ls_keyvault" --properties "{\"type\": \"AzureKeyVault\", \"typeProperties\": {\"baseUrl\": \"https://kv-ev-intelligence-dev.vault.azure.net/\"}}"
+```
+
+**Multi-line (bash / Git Bash only):**
+```bash
 az datafactory linked-service create \
-  --resource-group $RG \
-  --factory-name $ADF \
+  --resource-group rg-ev-intelligence-dev \
+  --factory-name adf-ev-intelligence-dev \
   --linked-service-name "ls_keyvault" \
   --properties '{
     "type": "AzureKeyVault",
     "typeProperties": {
-      "baseUrl": "https://'"$KV"'.vault.azure.net/"
+      "baseUrl": "https://kv-ev-intelligence-dev.vault.azure.net/"
     }
   }'
 ```
 
-**Verify:**
-```bash
-az datafactory linked-service show \
-  --resource-group $RG \
-  --factory-name $ADF \
-  --linked-service-name "ls_keyvault" \
-  --query "properties.type"
-# Expected output: "AzureKeyVault"
+**Verify (CMD / PowerShell):**
+```cmd
+az datafactory linked-service show --resource-group rg-ev-intelligence-dev --factory-name adf-ev-intelligence-dev --linked-service-name "ls_keyvault" --query "properties.type" -o tsv
 ```
+
+Expected output: `AzureKeyVault`
 
 ---
 
 ## Linked Service 2 — VoltGrid REST API (`ls_voltgrid_api`)
 
 ### What it is
-ADF's REST linked service lets Copy Activity call HTTP endpoints directly. The base URL is stored here — individual pipeline datasets append the specific endpoint path.
+ADF's REST linked service lets Copy Activity call HTTP endpoints directly. The base URL is stored here — individual pipeline datasets append the specific endpoint path and query parameters.
+
+**Why Anonymous auth?**
+Authentication is Anonymous at the linked service level because we handle the VoltGrid token ourselves inside the pipeline: Web Activity calls `POST /api/auth/login/` → stores the token in a pipeline variable → Copy Activity attaches it as an `Authorization: Token` header. ADF's built-in auth does not support this token-rotation pattern.
 
 ---
 
@@ -90,13 +92,10 @@ ADF's REST linked service lets Copy Activity call HTTP endpoints directly. The b
 2. Search `REST` → select **REST** → **Continue**
 3. Fill in:
    - **Name:** `ls_voltgrid_api`
-   - **Base URL:** click **Azure Key Vault** radio button
+   - **Base URL:** click **Azure Key Vault** radio button next to the field
      - Linked service: `ls_keyvault`
      - Secret name: `voltgrid-api-base-url`
    - **Authentication type:** Anonymous
-
-   > Authentication is Anonymous here because we handle the token ourselves inside the pipeline (Web Activity → POST /api/auth/login/ → store token → attach as header). ADF's built-in auth does not support this token-rotation pattern.
-
 4. Click **Test connection** → **Connection successful**
 5. Click **Create**
 
@@ -104,16 +103,29 @@ ADF's REST linked service lets Copy Activity call HTTP endpoints directly. The b
 
 ### CLI Steps
 
+First, read the base URL from Key Vault so you can embed it in the linked service definition.
+
+**Step 1 — Read the base URL (CMD / PowerShell):**
+```cmd
+az keyvault secret show --vault-name kv-ev-intelligence-dev --name "voltgrid-api-base-url" --query "value" -o tsv
+```
+Copy the output (e.g. `https://ev-project-navy-mu.vercel.app`) — use it in Step 2.
+
+**Step 2 — Create the linked service (CMD / PowerShell — replace the URL with your output from Step 1):**
+```cmd
+az datafactory linked-service create --resource-group rg-ev-intelligence-dev --factory-name adf-ev-intelligence-dev --linked-service-name "ls_voltgrid_api" --properties "{\"type\": \"RestService\", \"typeProperties\": {\"url\": \"https://ev-project-navy-mu.vercel.app\", \"enableServerCertificateValidation\": true, \"authenticationType\": \"Anonymous\"}}"
+```
+
+**Multi-line (bash / Git Bash only):**
 ```bash
-# Get base URL from Key Vault to use in the definition
 BASE_URL=$(az keyvault secret show \
-  --vault-name $KV \
+  --vault-name kv-ev-intelligence-dev \
   --name "voltgrid-api-base-url" \
   --query "value" -o tsv)
 
 az datafactory linked-service create \
-  --resource-group $RG \
-  --factory-name $ADF \
+  --resource-group rg-ev-intelligence-dev \
+  --factory-name adf-ev-intelligence-dev \
   --linked-service-name "ls_voltgrid_api" \
   --properties '{
     "type": "RestService",
@@ -130,7 +142,38 @@ az datafactory linked-service create \
 ## Linked Service 3 — Source Blob Storage (`ls_source_blob`)
 
 ### What it is
-Connects to `dataenggdailystorage` — the instructor's storage account that holds the raw CSV source files. Uses a SAS token stored in Key Vault.
+Connects to `dataenggdailystorage` — the instructor's storage account that holds the raw CSV source files. Uses a SAS URI stored in Key Vault.
+
+**SAS URI vs SAS Token:**
+A SAS token is just the query string part (starts with `se=...`). A SAS URI is the full URL including the storage account host (`https://dataenggdailystorage.blob.core.windows.net/?se=...`). ADF requires the full SAS URI — you need to build it from the token and store it as a separate secret.
+
+---
+
+### Step 0 — Build and store the full SAS URI in Key Vault (do this before UI or CLI steps)
+
+**CMD / PowerShell — Step 1, get the SAS token:**
+```cmd
+az keyvault secret show --vault-name kv-ev-intelligence-dev --name "source-sas-token" --query "value" -o tsv
+```
+Copy the output (the SAS token string starting with `se=...`).
+
+**CMD / PowerShell — Step 2, store the full SAS URI (replace `<SAS_TOKEN>` with your copied value):**
+```cmd
+az keyvault secret set --vault-name kv-ev-intelligence-dev --name "source-blob-sas-uri" --value "https://dataenggdailystorage.blob.core.windows.net/?<SAS_TOKEN>"
+```
+
+**bash — both steps combined:**
+```bash
+SAS_TOKEN=$(az keyvault secret show \
+  --vault-name kv-ev-intelligence-dev \
+  --name "source-sas-token" \
+  --query "value" -o tsv)
+
+az keyvault secret set \
+  --vault-name kv-ev-intelligence-dev \
+  --name "source-blob-sas-uri" \
+  --value "https://dataenggdailystorage.blob.core.windows.net/?$SAS_TOKEN"
+```
 
 ---
 
@@ -141,30 +184,9 @@ Connects to `dataenggdailystorage` — the instructor's storage account that hol
 3. Fill in:
    - **Name:** `ls_source_blob`
    - **Authentication method:** SAS URI
-   - **SAS URI:** leave blank for now — we will use Key Vault reference
-   - Actually: select **Authentication method → SAS URI** then click the Key Vault icon next to the SAS URI field:
+   - **SAS URI** field → click the Key Vault icon next to it:
      - Linked service: `ls_keyvault`
-     - Secret name: `source-sas-token`
-
-   > If the UI does not show a Key Vault option for SAS URI, use the approach below: store the full SAS URI (including account URL) as a secret.
-
-   **Alternative — full SAS URI secret:**
-
-   First, store the full SAS URI in Key Vault:
-   ```bash
-   SAS_TOKEN=$(az keyvault secret show --vault-name $KV --name "source-sas-token" --query "value" -o tsv)
-   FULL_SAS_URI="https://dataenggdailystorage.blob.core.windows.net/?$SAS_TOKEN"
-
-   az keyvault secret set \
-     --vault-name $KV \
-     --name "source-blob-sas-uri" \
-     --value "$FULL_SAS_URI"
-   ```
-
-   Then in ADF UI:
-   - Authentication method: **SAS URI**
-   - SAS URI → Key Vault → secret name: `source-blob-sas-uri`
-
+     - Secret name: `source-blob-sas-uri`
 4. Click **Test connection** → **Connection successful**
 5. Click **Create**
 
@@ -172,15 +194,16 @@ Connects to `dataenggdailystorage` — the instructor's storage account that hol
 
 ### CLI Steps
 
-```bash
-SAS_TOKEN=$(az keyvault secret show \
-  --vault-name $KV \
-  --name "source-sas-token" \
-  --query "value" -o tsv)
+**Single line (CMD / PowerShell):**
+```cmd
+az datafactory linked-service create --resource-group rg-ev-intelligence-dev --factory-name adf-ev-intelligence-dev --linked-service-name "ls_source_blob" --properties "{\"type\": \"AzureBlobStorage\", \"typeProperties\": {\"sasUri\": {\"type\": \"AzureKeyVaultSecret\", \"store\": {\"referenceName\": \"ls_keyvault\", \"type\": \"LinkedServiceReference\"}, \"secretName\": \"source-blob-sas-uri\"}}}"
+```
 
+**Multi-line (bash / Git Bash only):**
+```bash
 az datafactory linked-service create \
-  --resource-group $RG \
-  --factory-name $ADF \
+  --resource-group rg-ev-intelligence-dev \
+  --factory-name adf-ev-intelligence-dev \
   --linked-service-name "ls_source_blob" \
   --properties '{
     "type": "AzureBlobStorage",
@@ -202,9 +225,10 @@ az datafactory linked-service create \
 ## Linked Service 4 — ADLS Gen2 Bronze (`ls_adls_bronze`)
 
 ### What it is
-Connects to your `evdatalakedev` storage account using the ADF Managed Identity. This is where all Bronze Delta data gets written.
+Connects to your `evdatalakedev` storage account using the ADF Managed Identity. This is where all Bronze Delta data gets written by Copy Activities.
 
-**Why Managed Identity?** ADF's system-assigned Managed Identity was given `Storage Blob Data Contributor` on `evdatalakedev` in Day 1. No secret needed — Azure handles the token exchange automatically.
+**Why Managed Identity?**
+ADF's system-assigned Managed Identity was granted `Storage Blob Data Contributor` on `evdatalakedev` in Day 2 Part 2. No secret is needed — Azure handles the token exchange automatically at runtime. This is the most secure approach: no credential to rotate, no expiry to track.
 
 ---
 
@@ -224,30 +248,26 @@ Connects to your `evdatalakedev` storage account using the ADF Managed Identity.
 
 ### CLI Steps
 
-```bash
-STORAGE_ACCOUNT=$(az keyvault secret show \
-  --vault-name $KV \
-  --name "adls-account-name" \
-  --query "value" -o tsv)
+**Single line (CMD / PowerShell):**
+```cmd
+az datafactory linked-service create --resource-group rg-ev-intelligence-dev --factory-name adf-ev-intelligence-dev --linked-service-name "ls_adls_bronze" --properties "{\"type\": \"AzureBlobFS\", \"typeProperties\": {\"url\": \"https://evdatalakedev.dfs.core.windows.net/\"}}"
+```
 
+**Multi-line (bash / Git Bash only):**
+```bash
 az datafactory linked-service create \
-  --resource-group $RG \
-  --factory-name $ADF \
+  --resource-group rg-ev-intelligence-dev \
+  --factory-name adf-ev-intelligence-dev \
   --linked-service-name "ls_adls_bronze" \
   --properties '{
     "type": "AzureBlobFS",
     "typeProperties": {
-      "url": "https://'"$STORAGE_ACCOUNT"'.dfs.core.windows.net/",
-      "accountKey": null
-    },
-    "connectVia": {
-      "referenceName": "AutoResolveIntegrationRuntime",
-      "type": "IntegrationRuntimeReference"
+      "url": "https://evdatalakedev.dfs.core.windows.net/"
     }
   }'
 ```
 
-> Note: When `accountKey` is null and no credential block is set, ADF defaults to Managed Identity auth for ADLS Gen2.
+> When no `credential` or `accountKey` block is present, ADF uses its System Assigned Managed Identity automatically for `AzureBlobFS` type.
 
 ---
 
@@ -257,10 +277,17 @@ az datafactory linked-service create \
 Manage → Linked services → you should see all 4 listed. Click each → **Test connection** → all show green.
 
 ### CLI
+
+**Single line (CMD / PowerShell):**
+```cmd
+az datafactory linked-service list --resource-group rg-ev-intelligence-dev --factory-name adf-ev-intelligence-dev --query "[].name" -o table
+```
+
+**Multi-line (bash / Git Bash only):**
 ```bash
 az datafactory linked-service list \
-  --resource-group $RG \
-  --factory-name $ADF \
+  --resource-group rg-ev-intelligence-dev \
+  --factory-name adf-ev-intelligence-dev \
   --query "[].name" \
   --output table
 ```
@@ -281,10 +308,11 @@ ls_adls_bronze
 
 | Error | Cause | Fix |
 |---|---|---|
-| `Access denied` on Key Vault test | ADF Managed Identity missing Key Vault access policy | Key Vault → Access policies → add ADF MI with Secret Get + List |
-| `Connection failed` on REST test | `voltgrid-api-base-url` secret value has trailing slash or wrong URL | Check the secret value — should be `https://hostname` with no trailing slash |
-| `AuthorizationPermissionMismatch` on ADLS test | ADF MI missing Storage Blob Data Contributor role | Storage account → IAM → add role assignment for ADF MI |
-| SAS token test fails | SAS token expired or missing `r` + `l` permissions | Generate a new SAS token with `sp=rl` and update the secret in Key Vault |
+| `Access denied` on Key Vault test | ADF Managed Identity missing `Key Vault Secrets User` role | Day 2 Part 3 — assign the role, wait 2 min, re-test |
+| `Connection failed` on REST linked service test | `voltgrid-api-base-url` secret has trailing slash or wrong value | Check the secret — should be `https://hostname` with no trailing slash |
+| `AuthorizationPermissionMismatch` on ADLS test | ADF MI missing `Storage Blob Data Contributor` on `evdatalakedev` | Day 2 Part 2 — assign the role, wait 2 min, re-test |
+| SAS URI test fails | SAS token expired or missing `r` + `l` permissions | Regenerate SAS token with `sp=rl`, update `source-blob-sas-uri` secret in Key Vault |
+| `ls_source_blob` test shows `403 Forbidden` | Full SAS URI not built correctly (missing `?` between host and token) | Re-run Step 0 — ensure value is `https://dataenggdailystorage.blob.core.windows.net/?se=...` |
 
 ---
 

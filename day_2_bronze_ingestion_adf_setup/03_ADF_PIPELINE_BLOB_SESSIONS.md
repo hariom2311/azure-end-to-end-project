@@ -13,15 +13,15 @@ Each pipeline run reads the **current hour's folder** and appends to the Bronze 
 ```
 pl_bronze_blob_sessions
 │
-├── Step 1: Set Variable     Build folder path for current hour
-│                            e.g. realtime/charging_sessions/2026/07/04/14/
+├── Step 1: Set Variable (×3)    Build folder path, ingestion_date, ingestion_hour
+│                                e.g. realtime/charging_sessions/2026/07/04/14/
 │
-├── Step 2: Copy Activity    Read all CSVs from that folder
-│                            Source: ls_source_blob (wasbs://)
-│                            Sink:   ls_adls_bronze (Delta)
+├── Step 2: Copy Activity        Read all CSVs from that folder
+│                                Source: ls_source_blob (wasbs://)
+│                                Sink:   ls_adls_bronze (Delta)
+│                                Extra columns: ingestion_date, ingestion_hour injected
 │
-└── Step 3: Set Variable     Store ingestion_date + ingestion_hour
-                             (added as extra columns in the Delta table)
+└── Trigger: runs every hour automatically
 ```
 
 ---
@@ -77,20 +77,19 @@ Partitioned by `ingestion_date` and `ingestion_hour` so you can query just one h
 4. Fill in:
    - **Name:** `ds_source_sessions_csv`
    - **Linked service:** `ls_source_blob`
-   - **File path:** click **Browse** — but since it's external, type manually:
-     - Container: `source`
-     - Directory: leave blank (we'll use parameters)
-     - File: `*.csv`
+   - **File path — Container:** `source`
+   - **File path — Directory:** leave blank for now (parameter will override this)
+   - **File path — File:** `*.csv`
 5. Click **OK**
 6. **Connection** tab:
-   - **Column delimiter:** Comma (,)
+   - **Column delimiter:** Comma (`,`)
    - **Row delimiter:** `\n`
-   - **First row as header:** checked
+   - **First row as header:** checked (ON)
    - **Quote character:** `"`
    - **Escape character:** `\`
 7. **Parameters** tab → **+ New**:
    - `p_folder_path` | Type: String | Default: `realtime/charging_sessions/2026/07/04/00`
-8. Go back to **Connection** tab → **File path** → **Directory** field → click **Add dynamic content**:
+8. Go back to **Connection** tab → **File path → Directory** field → click **Add dynamic content**:
    ```
    @{dataset().p_folder_path}
    ```
@@ -108,7 +107,8 @@ Partitioned by `ingestion_date` and `ingestion_hour` so you can query just one h
 4. Fill in:
    - **Name:** `ds_bronze_sessions_delta`
    - **Linked service:** `ls_adls_bronze`
-   - **File path:** `bronze` / `blob/iot_sessions`
+   - **File path — Container:** `bronze`
+   - **File path — Directory:** `blob/iot_sessions`
 5. Click **OK**
 6. Click **Publish all**
 
@@ -120,13 +120,13 @@ Partitioned by `ingestion_date` and `ingestion_hour` so you can query just one h
 
 1. **Author** → **Pipelines** → **+ New pipeline**
 2. **Name:** `pl_bronze_blob_sessions`
-3. **Parameters** tab → **+ New**:
-   - `p_year` | Type: String | Default: (empty — will use current date)
-   - `p_month` | Type: String | Default: (empty)
-   - `p_day` | Type: String | Default: (empty)
-   - `p_hour` | Type: String | Default: (empty)
+3. **Parameters** tab → **+ New** — add 4 optional override parameters:
+   - `p_year` | Type: String | Default: (leave empty)
+   - `p_month` | Type: String | Default: (leave empty)
+   - `p_day` | Type: String | Default: (leave empty)
+   - `p_hour` | Type: String | Default: (leave empty)
 
-   > When triggered manually you can pass these. When triggered by schedule, ADF fills them from `@{formatDateTime(pipeline().TriggerTime, 'yyyy')}` etc.
+   > When triggered manually you can pass specific values to backfill a past hour. When triggered by schedule, leave them empty — the pipeline uses `utcNow()` automatically.
 
 4. **Variables** tab → **+ New**:
    - `v_folder_path` | Type: String
@@ -140,39 +140,53 @@ Partitioned by `ingestion_date` and `ingestion_hour` so you can query just one h
 1. Drag **Set Variable** activity onto canvas
 2. **Name:** `act_set_folder_path`
 3. **Variable:** `v_folder_path`
-4. **Value** (dynamic content):
+4. **Value** (dynamic content — paste exactly):
    ```
-   @{concat(
-     'realtime/charging_sessions/',
-     if(empty(pipeline().parameters.p_year), formatDateTime(utcNow(),'yyyy'), pipeline().parameters.p_year), '/',
-     if(empty(pipeline().parameters.p_month), formatDateTime(utcNow(),'MM'), pipeline().parameters.p_month), '/',
-     if(empty(pipeline().parameters.p_day), formatDateTime(utcNow(),'dd'), pipeline().parameters.p_day), '/',
-     if(empty(pipeline().parameters.p_hour), formatDateTime(utcNow(),'HH'), pipeline().parameters.p_hour)
-   )}
+   @{concat('realtime/charging_sessions/',if(empty(pipeline().parameters.p_year),formatDateTime(utcNow(),'yyyy'),pipeline().parameters.p_year),'/',if(empty(pipeline().parameters.p_month),formatDateTime(utcNow(),'MM'),pipeline().parameters.p_month),'/',if(empty(pipeline().parameters.p_day),formatDateTime(utcNow(),'dd'),pipeline().parameters.p_day),'/',if(empty(pipeline().parameters.p_hour),formatDateTime(utcNow(),'HH'),pipeline().parameters.p_hour))}
    ```
 
    This resolves to e.g.: `realtime/charging_sessions/2026/07/04/14`
 
-5. Add second **Set Variable**: `act_set_ingestion_date`
-   - Variable: `v_ingestion_date`
-   - Value: `@{formatDateTime(utcNow(),'yyyy-MM-dd')}`
+---
 
-6. Add third **Set Variable**: `act_set_ingestion_hour`
-   - Variable: `v_ingestion_hour`
-   - Value: `@{formatDateTime(utcNow(),'HH')}`
+### Step 2 — Set Variable: Set ingestion date
+
+1. Add second **Set Variable** activity
+2. **Name:** `act_set_ingestion_date`
+3. **Variable:** `v_ingestion_date`
+4. **Value** (dynamic content):
+   ```
+   @{formatDateTime(utcNow(),'yyyy-MM-dd')}
+   ```
 
 ---
 
-### Step 2 — Copy Activity: Read CSV → Write Delta
+### Step 3 — Set Variable: Set ingestion hour
 
-1. Drag **Copy data** activity onto canvas (after the Set Variable activities)
+1. Add third **Set Variable** activity
+2. **Name:** `act_set_ingestion_hour`
+3. **Variable:** `v_ingestion_hour`
+4. **Value** (dynamic content):
+   ```
+   @{formatDateTime(utcNow(),'HH')}
+   ```
+
+Connect all 3 Set Variable activities in sequence: `act_set_folder_path` → `act_set_ingestion_date` → `act_set_ingestion_hour`
+
+---
+
+### Step 4 — Copy Activity: Read CSV → Write Delta
+
+1. Drag **Copy data** activity onto canvas
 2. **Name:** `act_copy_sessions`
+3. Connect: `act_set_ingestion_hour` → `act_copy_sessions`
 
 **Source tab:**
 - Dataset: `ds_source_sessions_csv`
 - Dataset parameters:
   - `p_folder_path`: `@{variables('v_folder_path')}`
 - **File path type:** Wildcard
+- **Wildcard folder path:** `@{variables('v_folder_path')}`
 - **Wildcard file name:** `*.csv`
 
 **Sink tab:**
@@ -183,14 +197,14 @@ Partitioned by `ingestion_date` and `ingestion_hour` so you can query just one h
 
 **Additional columns tab:**
 
-Add 2 extra columns that get injected into every row:
+Click **+ New** and add these 2 extra columns — they get injected into every row before writing:
 
 | Name | Value |
 |---|---|
 | `ingestion_date` | `@{variables('v_ingestion_date')}` |
 | `ingestion_hour` | `@{variables('v_ingestion_hour')}` |
 
-These become partition columns in the Delta table.
+These become the partition columns in the Delta table.
 
 **Mapping tab:**
 
@@ -212,22 +226,21 @@ These become partition columns in the Delta table.
 | ingestion_date | ingestion_date | String |
 | ingestion_hour | ingestion_hour | String |
 
-3. Connect: `act_set_ingestion_hour` → `act_copy_sessions`
-
 ---
 
 ## Part C — Trigger the Pipeline
 
-### Manual trigger for a specific hour (UI)
+### Manual trigger for a specific hour — UI
 
 1. Open `pl_bronze_blob_sessions`
 2. Click **Add trigger** → **Trigger now**
-3. Parameters:
+3. Fill in parameters:
    - `p_year`: `2026`
    - `p_month`: `07`
    - `p_day`: `04`
    - `p_hour`: `06`
 4. Click **OK**
+5. Monitor tab → pipeline run should show green
 
 ### Scheduled trigger — every hour (UI)
 
@@ -235,17 +248,26 @@ These become partition columns in the Delta table.
 2. **Name:** `tr_bronze_blob_sessions_hourly`
 3. **Type:** Schedule
 4. **Recurrence:** every `1 Hour`
-5. **Start time:** set to the next full hour
-6. Leave parameters empty — the pipeline uses `utcNow()` automatically
+5. **Start time:** set to the next full hour in UTC
+6. Leave all 4 parameters empty — pipeline uses `utcNow()` automatically
 7. Click **OK** → **Publish all**
 
-### CLI trigger
+---
 
+### Manual trigger — CLI
+
+> **CMD / PowerShell users:** The `\` line continuation below is bash syntax and will break in CMD/PowerShell. Use the single-line version to copy-paste directly.
+
+**Single line (CMD / PowerShell):**
+```cmd
+az datafactory pipeline create-run --resource-group rg-ev-intelligence-dev --factory-name adf-ev-intelligence-dev --pipeline-name "pl_bronze_blob_sessions" --parameters "{\"p_year\": \"2026\", \"p_month\": \"07\", \"p_day\": \"04\", \"p_hour\": \"06\"}"
+```
+
+**Multi-line (bash / Git Bash only):**
 ```bash
-# Trigger for a specific hour
 az datafactory pipeline create-run \
-  --resource-group $RG \
-  --factory-name $ADF \
+  --resource-group rg-ev-intelligence-dev \
+  --factory-name adf-ev-intelligence-dev \
   --pipeline-name "pl_bronze_blob_sessions" \
   --parameters '{
     "p_year": "2026",
@@ -255,12 +277,20 @@ az datafactory pipeline create-run \
   }'
 ```
 
-### CLI scheduled trigger
+---
 
+### Create scheduled trigger — CLI
+
+**Single line (CMD / PowerShell):**
+```cmd
+az datafactory trigger create --resource-group rg-ev-intelligence-dev --factory-name adf-ev-intelligence-dev --trigger-name "tr_bronze_blob_sessions_hourly" --properties "{\"type\": \"ScheduleTrigger\", \"pipelines\": [{\"pipelineReference\": {\"referenceName\": \"pl_bronze_blob_sessions\", \"type\": \"PipelineReference\"}}], \"typeProperties\": {\"recurrence\": {\"frequency\": \"Hour\", \"interval\": 1, \"startTime\": \"2026-07-04T00:00:00Z\", \"timeZone\": \"UTC\"}}}"
+```
+
+**Multi-line (bash / Git Bash only):**
 ```bash
 az datafactory trigger create \
-  --resource-group $RG \
-  --factory-name $ADF \
+  --resource-group rg-ev-intelligence-dev \
+  --factory-name adf-ev-intelligence-dev \
   --trigger-name "tr_bronze_blob_sessions_hourly" \
   --properties '{
     "type": "ScheduleTrigger",
@@ -281,28 +311,34 @@ az datafactory trigger create \
       }
     }
   }'
-
-# Start the trigger (it won't fire until started)
-az datafactory trigger start \
-  --resource-group $RG \
-  --factory-name $ADF \
-  --trigger-name "tr_bronze_blob_sessions_hourly"
 ```
+
+**Start the trigger (CMD / PowerShell):**
+```cmd
+az datafactory trigger start --resource-group rg-ev-intelligence-dev --factory-name adf-ev-intelligence-dev --trigger-name "tr_bronze_blob_sessions_hourly"
+```
+
+> The trigger does not fire until explicitly started. After starting, it fires at the next scheduled hour.
 
 ---
 
-## Verify in ADLS
+## Verify in ADLS (Databricks)
 
 After the pipeline runs:
 
 ```python
-# In Databricks
 display(dbutils.fs.ls(abfss("bronze", "blob/iot_sessions/")))
-# Expected: _delta_log/, ingestion_date=2026-07-04/ folder
+```
 
+Expected: `_delta_log/` and `ingestion_date=2026-07-04/` folder.
+
+```python
 display(dbutils.fs.ls(abfss("bronze", "blob/iot_sessions/ingestion_date=2026-07-04/")))
-# Expected: ingestion_hour=06/ folder
+```
 
+Expected: `ingestion_hour=06/` folder.
+
+```python
 df = spark.read.format("delta").load(abfss("bronze", "blob/iot_sessions/"))
 print(f"Total rows: {df.count():,}")
 display(df.limit(10))
@@ -314,11 +350,12 @@ display(df.limit(10))
 
 | Error | Cause | Fix |
 |---|---|---|
-| `No files found` | Folder path is wrong — hour does not exist in blob | Run Cell 3 of `02_read_source_blob` notebook to check actual folder structure |
-| `403 on source blob` | SAS token expired or missing | Regenerate SAS token, update `source-blob-sas-uri` secret in Key Vault |
-| `Schema mismatch` | CSV header differs from mapping | In dataset, enable **First row as header** and re-import schema |
-| `Delta write fails` | ADF MI missing role on bronze container | Storage → IAM → add Storage Blob Data Contributor for ADF MI |
-| `Duplicate rows on re-run` | Append mode adds rows every run | This is expected in Bronze — Silver layer deduplicates using `session_id` |
+| `No files found` in Copy Activity | Folder path built incorrectly — hour does not exist in source blob | Run Cell 3 of `02_read_source_blob` notebook to check actual folder structure, then adjust parameters |
+| `403 Forbidden` on source blob read | SAS token expired or missing `r` + `l` permissions | Regenerate SAS token with `sp=rl`, update `source-blob-sas-uri` secret in Key Vault |
+| `Schema mismatch` on Delta write | CSV header order differs from mapping | In Copy Activity → Mapping tab → re-import schema from source |
+| `Delta write fails: 403` | ADF MI missing `Storage Blob Data Contributor` on `evdatalakedev` | Day 2 Part 2 — assign the role, wait 2 min, retry |
+| `Duplicate rows on re-run` | Append mode adds rows every run | This is expected in Bronze — Silver layer will deduplicate using `session_id` |
+| `Trigger not firing` | Trigger created but not started | Run `az datafactory trigger start` or click **Activate** in ADF Studio |
 
 ---
 
