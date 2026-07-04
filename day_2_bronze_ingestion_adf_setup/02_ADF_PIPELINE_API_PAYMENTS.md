@@ -84,20 +84,37 @@ Response:
 
 ---
 
-### Dataset 2: Bronze Payments Delta Sink (`ds_bronze_payments_delta`)
+### Dataset 2: Bronze Payments CSV Sink (`ds_bronze_payments_sink`)
+
+**Why CSV and not Delta?**
+ADF's Copy Activity does not have a Delta format option in the dataset picker. The simplest and most reliable approach is to land the data as JSON/CSV in the Bronze layer first. The Databricks notebook (`03_bronze_api_payments.ipynb`) then reads those files and writes them as a proper Delta table. Bronze layer = raw landing zone, any format is fine here.
+
+**Flow:**
+```
+ADF Copy Activity  →  bronze/api/payments/raw/  (CSV files)
+                                ↓
+Databricks notebook  →  bronze/api/payments/delta/  (Delta table)
+```
 
 **UI Steps:**
 
 1. **Datasets** → **+ New dataset**
 2. Search `Azure Data Lake Storage Gen2` → **Continue**
-3. Search `Delta` → **Delta** → **Continue**
+3. Search `DelimitedText` → **DelimitedText** → **Continue**
 4. Fill in:
-   - **Name:** `ds_bronze_payments_delta`
+   - **Name:** `ds_bronze_payments_sink`
    - **Linked service:** `ls_adls_bronze`
    - **File path (Container):** `bronze`
-   - **File path (Directory):** `api/payments`
-5. Click **OK**
-6. Click **Publish all**
+   - **File path (Directory):** `api/payments/raw`
+   - **File path (File):** leave blank
+5. **Connection** tab:
+   - **Column delimiter:** Comma (`,`)
+   - **First row as header:** checked (ON)
+   - **Compression type:** None
+6. Click **OK**
+7. Click **Publish all**
+
+> ADF writes one CSV file per page into `bronze/api/payments/raw/`. The Databricks notebook reads all CSVs from that folder and writes them as a Delta table to `bronze/api/payments/delta/`.
 
 ---
 

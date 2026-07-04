@@ -97,20 +97,35 @@ Partitioned by `ingestion_date` and `ingestion_hour` so you can query just one h
 
 ---
 
-### Dataset 2: Bronze Sessions Delta Sink (`ds_bronze_sessions_delta`)
+### Dataset 2: Bronze Sessions CSV Sink (`ds_bronze_sessions_sink`)
+
+**Why CSV and not Delta?**
+ADF's Copy Activity does not have a Delta format option in the dataset picker. ADF lands the data as CSV in the Bronze layer. The Databricks notebook (`04_bronze_blob_sessions.ipynb`) reads those CSV files and writes them as a proper Delta table. Bronze = raw landing zone, CSV is perfectly valid here.
+
+**Flow:**
+```
+ADF Copy Activity  →  bronze/blob/iot_sessions/raw/  (CSV files)
+                                ↓
+Databricks notebook  →  bronze/blob/iot_sessions/delta/  (Delta table)
+```
 
 **UI Steps:**
 
 1. **Datasets** → **+ New dataset**
 2. Search `Azure Data Lake Storage Gen2` → **Continue**
-3. Search `Delta` → **Delta** → **Continue**
+3. Search `DelimitedText` → **DelimitedText** → **Continue**
 4. Fill in:
-   - **Name:** `ds_bronze_sessions_delta`
+   - **Name:** `ds_bronze_sessions_sink`
    - **Linked service:** `ls_adls_bronze`
    - **File path — Container:** `bronze`
-   - **File path — Directory:** `blob/iot_sessions`
-5. Click **OK**
-6. Click **Publish all**
+   - **File path — Directory:** `blob/iot_sessions/raw`
+   - **File path — File:** leave blank
+5. **Connection** tab:
+   - **Column delimiter:** Comma (`,`)
+   - **First row as header:** checked (ON)
+   - **Compression type:** None
+6. Click **OK**
+7. Click **Publish all**
 
 ---
 
