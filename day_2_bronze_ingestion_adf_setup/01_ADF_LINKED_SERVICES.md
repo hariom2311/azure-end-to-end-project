@@ -1,7 +1,7 @@
 # 01 — ADF Linked Services
-**Day 2 | Step 1 of 4**
+**Day 2 | Step 1 of 3**
 
-Create the 4 linked services ADF needs to talk to external systems.
+Create the 3 linked services ADF needs to talk to external systems.
 A linked service = a saved connection definition. Think of it as a named connector — pipelines reference it by name, never re-entering credentials.
 
 ---
@@ -16,7 +16,7 @@ A linked service = a saved connection definition. Think of it as a named connect
 
 **Create them in this order** — `ls_keyvault` must exist before the others because they reference secrets from it.
 
-> **Source blob storage (`dataenggdailystorage`) is NOT connected via ADF.** It is accessed directly from Databricks notebooks using `wasbs://` + SAS token via `spark.conf.set()`. See `04_DATABRICKS_BRONZE_TABLES.md` for the notebook approach.
+> **Source blob storage (`dataenggdailystorage`) is NOT connected via ADF.** It is accessed directly from Databricks notebooks using `wasbs://` + SAS token via `spark.conf.set()`. Blob ingestion via Databricks is covered in Day 3.
 
 ---
 
@@ -144,142 +144,7 @@ az datafactory linked-service create \
 
 ---
 
-## Linked Service 3 — Source Blob Storage (`ls_source_blob`)
-
-### What it is
-Connects to `dataenggdailystorage` — the instructor's storage account that holds the raw CSV source files. ADF needs a **SAS URI** to authenticate — not just the SAS token.
-
----
-
-### SAS Token vs SAS URI — What is the difference?
-
-You received a **SAS token** during the session. It looks like this:
-```
-se=2027-07-30&sp=rl&spr=https&sv=2026-04-06&sr=c&sig=EeNl1mQL9JN...
-```
-
-That is just the query string — a list of parameters that prove access. It has no host address in it.
-
-ADF's **SAS URI** field expects the **full URL** — the storage account host address plus a `?` plus the SAS token:
-
-```
-https://dataenggdailystorage.blob.core.windows.net/?se=2027-07-30&sp=rl&spr=https&sv=2026-04-06&sr=c&sig=EeNl1mQL9JN...
-```
-
-Breaking it down:
-
-| Part | Value | What it is |
-|---|---|---|
-| `https://dataenggdailystorage.blob.core.windows.net/` | fixed | The storage account's public endpoint. `dataenggdailystorage` is the account name. `.blob.core.windows.net` is the Azure Blob Storage domain. |
-| `?` | fixed | Separates the URL from the query parameters |
-| `se=2027-07-30` | from SAS token | Expiry date of this token |
-| `sp=rl` | from SAS token | Permissions: `r` = read, `l` = list |
-| `sig=...` | from SAS token | Cryptographic signature — proves the token is genuine |
-
-So the rule is simple:
-```
-SAS URI = https://dataenggdailystorage.blob.core.windows.net/  +  ?  +  <your SAS token>
-```
-
-You build this once, store it in Key Vault as `source-blob-sas-uri`, and ADF reads it at runtime.
-
----
-
-### Step 0 — Build and store the full SAS URI in Key Vault (do this before UI or CLI steps)
-
-> **CMD / PowerShell users:** The `\` line continuation below is bash syntax and will break in CMD/PowerShell. Use the single-line version to copy-paste directly.
-
-**CMD / PowerShell — Step 1, get the SAS token you stored in Day 1:**
-```cmd
-az keyvault secret show --vault-name kv-ev-intelligence-dev --name "source-sas-token" --query "value" -o tsv
-```
-Copy the output. It starts with `se=...` — no leading `?`, no quotes.
-
-**CMD / PowerShell — Step 2, store the full SAS URI (replace `<paste-sas-token-here>` with the value from Step 1):**
-```cmd
-az keyvault secret set --vault-name kv-ev-intelligence-dev --name "source-blob-sas-uri" --value "https://dataenggdailystorage.blob.core.windows.net/?<paste-sas-token-here>"
-```
-
-Example of what the final value looks like:
-```
-https://dataenggdailystorage.blob.core.windows.net/?se=2027-07-30&sp=rl&spr=https&sv=2026-04-06&sr=c&sig=EeNl1mQL9JN...
-```
-
-**Multi-line (bash / Git Bash only — both steps combined):**
-```bash
-SAS_TOKEN=$(az keyvault secret show \
-  --vault-name kv-ev-intelligence-dev \
-  --name "source-sas-token" \
-  --query "value" -o tsv)
-
-az keyvault secret set \
-  --vault-name kv-ev-intelligence-dev \
-  --name "source-blob-sas-uri" \
-  --value "https://dataenggdailystorage.blob.core.windows.net/?$SAS_TOKEN"
-```
-
-**Verify the secret was stored correctly (CMD / PowerShell):**
-```cmd
-az keyvault secret show --vault-name kv-ev-intelligence-dev --name "source-blob-sas-uri" --query "value" -o tsv
-```
-The output should start with `https://dataenggdailystorage.blob.core.windows.net/?se=...`
-
----
-
-### UI Steps
-
-1. Manage → Linked services → **+ New**
-2. Search `Azure Blob Storage` → **Continue**
-3. Fill in:
-   - **Name:** `ls_source_blob`
-   - **Authentication method:** SAS URI
-   - **SAS URI** field → click the **Azure Key Vault** icon next to the field (small KV icon on the right side of the text box):
-     - **AKV linked service:** `ls_keyvault`
-     - **Secret name:** `source-blob-sas-uri`
-     - **Secret version:** leave blank (always uses latest)
-   - Click **OK**
-4. Click **Test connection** — must show **Connection successful**
-5. Click **Create**
-
-> **If Test connection fails with 403:** The SAS URI was not built correctly. Common mistakes:
-> - Missing `?` between the host URL and the token (`...windows.net/se=...` instead of `...windows.net/?se=...`)
-> - Extra space or newline at the start or end of the token when pasting
-> - SAS token has expired (`se=` date is in the past)
-> Re-run Step 0 carefully and update the secret.
-
----
-
-### CLI Steps
-
-**Single line (CMD / PowerShell):**
-```cmd
-az datafactory linked-service create --resource-group rg-ev-intelligence-dev --factory-name adf-ev-intelligence-dev --linked-service-name "ls_source_blob" --properties "{\"type\": \"AzureBlobStorage\", \"typeProperties\": {\"sasUri\": {\"type\": \"AzureKeyVaultSecret\", \"store\": {\"referenceName\": \"ls_keyvault\", \"type\": \"LinkedServiceReference\"}, \"secretName\": \"source-blob-sas-uri\"}}}"
-```
-
-**Multi-line (bash / Git Bash only):**
-```bash
-az datafactory linked-service create \
-  --resource-group rg-ev-intelligence-dev \
-  --factory-name adf-ev-intelligence-dev \
-  --linked-service-name "ls_source_blob" \
-  --properties '{
-    "type": "AzureBlobStorage",
-    "typeProperties": {
-      "sasUri": {
-        "type": "AzureKeyVaultSecret",
-        "store": {
-          "referenceName": "ls_keyvault",
-          "type": "LinkedServiceReference"
-        },
-        "secretName": "source-blob-sas-uri"
-      }
-    }
-  }'
-```
-
----
-
-## Linked Service 4 — ADLS Gen2 Bronze (`ls_adls_bronze`)
+## Linked Service 3 — ADLS Gen2 Bronze (`ls_adls_bronze`)
 
 ### What it is
 Connects to your `evdatalakedev` storage account using the ADF Managed Identity. This is where all Bronze Delta data gets written by Copy Activities.
@@ -328,10 +193,10 @@ az datafactory linked-service create \
 
 ---
 
-## Verify All 4 Linked Services
+## Verify All 3 Linked Services
 
 ### UI
-Manage → Linked services → you should see all 4 listed. Click each → **Test connection** → all show green.
+Manage → Linked services → you should see all 3 listed. Click each → **Test connection** → all show green.
 
 ### CLI
 
@@ -355,7 +220,6 @@ Result
 --------------------
 ls_keyvault
 ls_voltgrid_api
-ls_source_blob
 ls_adls_bronze
 ```
 
@@ -368,8 +232,6 @@ ls_adls_bronze
 | `Access denied` on Key Vault test | ADF Managed Identity missing `Key Vault Secrets User` role | Day 2 Part 3 — assign the role, wait 2 min, re-test |
 | `Connection failed` on REST linked service test | `voltgrid-api-base-url` secret has trailing slash or wrong value | Check the secret — should be `https://hostname` with no trailing slash |
 | `AuthorizationPermissionMismatch` on ADLS test | ADF MI missing `Storage Blob Data Contributor` on `evdatalakedev` | Day 2 Part 2 — assign the role, wait 2 min, re-test |
-| SAS URI test fails | SAS token expired or missing `r` + `l` permissions | Regenerate SAS token with `sp=rl`, update `source-blob-sas-uri` secret in Key Vault |
-| `ls_source_blob` test shows `403 Forbidden` | Full SAS URI not built correctly (missing `?` between host and token) | Re-run Step 0 — ensure value is `https://dataenggdailystorage.blob.core.windows.net/?se=...` |
 
 ---
 

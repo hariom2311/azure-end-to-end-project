@@ -1,5 +1,5 @@
-# Day 2 — Bronze Layer Ingestion: ADF Setup + API and Blob Sources
-**Session:** ~2.5 hours | **Goal:** Provision Azure Data Factory, connect it to VoltGrid API and source blob storage, and load one API endpoint and one blob source into the Bronze Delta layer.
+# Day 2 — Bronze Layer Ingestion: ADF Setup + API Payments Source
+**Session:** ~2.5 hours | **Goal:** Provision Azure Data Factory, connect it to the VoltGrid API, copy one page of payment records as raw JSON into Bronze, and set up Unity Catalog External Locations on ADLS Gen2.
 
 > **Region for all resources: Central India (centralindia)** — cheapest India region with full service availability.
 > **Prerequisite:** All Day 1 resources must exist before starting Day 2.
@@ -17,7 +17,7 @@ Read this once before you start. These are the new services added on Day 2.
 | **ADF Studio** | The web UI for building ADF pipelines. Accessed by clicking "Launch Studio" from the ADF resource in the Portal. No install needed — everything is browser-based. |
 | **Linked Service** | A saved connection definition inside ADF. It holds the connection information (URL, auth method, credentials reference) for one external system. Pipelines never store credentials — they reference a linked service by name. |
 | **Dataset** | A pointer to a specific table, file path, or API endpoint that a linked service can reach. A dataset says "within the VoltGrid API linked service, I want the `/api/db/payments/` endpoint". |
-| **Pipeline** | A workflow of activities (Copy, Web call, ForEach loop, etc.) that runs in sequence or parallel. In this project: Web Activity (login) → Set Variable (store token) → Until loop (paginate pages) → Copy Activity (write page to Delta). |
+| **Pipeline** | A workflow of activities (Copy, Web call, ForEach loop, etc.) that runs in sequence or parallel. In this project (Day 2): Web Activity (login) → Set Variable (store token) → Copy Activity (write one page to Bronze). Pagination via Until loop is added in Day 3. |
 | **Copy Activity** | An ADF activity that reads from a source dataset and writes to a sink dataset. It is the workhorse of ADF — it does the actual data movement. |
 | **Web Activity** | An ADF activity that makes an HTTP request and captures the response. Used here to call `POST /api/auth/login/` and extract the token from the JSON response. |
 | **Set Variable Activity** | Stores a value into a pipeline variable so later activities can use it. Used here to store the token after login and to store the watermark value. |
@@ -34,12 +34,11 @@ Read this once before you start. These are the new services added on Day 2.
 
 - Azure Data Factory instance `adf-ev-intelligence-dev` provisioned and connected to Key Vault
 - ADF Managed Identity has write access to ADLS Gen2
-- 4 ADF linked services: Key Vault, VoltGrid API (REST), Source Blob (SAS), ADLS Gen2 (Managed Identity)
-- ADF pipeline `pl_bronze_api_payments`: full load on first run, incremental on re-runs
-- ADF pipeline `pl_bronze_blob_sessions`: reads current hour's CSV, writes to Bronze Delta partitioned by hour
-- Bronze Delta tables in ADLS: `bronze/api/payments/` and `bronze/blob/iot_sessions/`
-- Databricks internal Delta tables: `bronze.payments` and `bronze.charging_sessions`
-- Pipeline audit row written after every API run: `bronze/api/pipeline_audit/`
+- 3 ADF linked services: Key Vault, VoltGrid API (REST), ADLS Gen2 (Managed Identity)
+- ADF pipeline `pl_bronze_api_payments`: authenticates to VoltGrid API, copies one page of payments as raw JSON to Bronze
+- Raw JSON file at `bronze/api/payments/raw/payments.json`
+- Unity Catalog External Locations and Volumes configured on ADLS Gen2
+- Databricks can browse Bronze/Silver/Gold containers via Unity Catalog Volumes
 
 ---
 
@@ -48,48 +47,42 @@ Read this once before you start. These are the new services added on Day 2.
 ```
 VoltGrid API
   POST /api/auth/login/  →  token (pipeline variable, memory only)
-  GET  /api/db/payments/ →  paginated JSON  →  ADF Copy Activity (Until loop)
+  GET  /api/db/payments/?page=1&page_size=100
+                         →  raw JSON  →  ADF Copy Activity
                                                     ↓
-                                         Bronze Delta Table
-                               abfss://bronze@evdatalakedev.../api/payments/
+                               bronze/api/payments/raw/payments.json
+                               (abfss://bronze@evdatalakedev.dfs.core.windows.net/)
+
+Unity Catalog (Databricks)
+  Access Connector  →  Storage Credential  →  External Locations
                                                     ↓
-                                    External Delta Table: bronze.payments
-                                    Internal Delta Table: bronze.payments_internal
+                               Volumes browsable in Catalog UI
+                               bronze.bronze_volume / silver.silver_volume / gold.gold_volume
 
 Source Blob (dataenggdailystorage)
-  wasbs://source@.../realtime/charging_sessions/YYYY/MM/DD/HH/*.csv
-                                                    ↓
-                                         ADF Copy Activity
-                                                    ↓
-                                         Bronze Delta Table
-                               abfss://bronze@evdatalakedev.../blob/iot_sessions/
-                                                    ↓
-                                    External Delta Table: bronze.charging_sessions
-                                    Internal Delta Table: bronze.charging_sessions_internal
+  Accessed from Databricks notebooks only — wasbs:// + SAS token
+  NOT connected via ADF. Blob ingestion pipeline → Day 3.
 ```
 
 ---
 
-## Load Strategy
+## Load Strategy (Day 2)
 
-| Source | First Run | Subsequent Runs |
+| Source | Day 2 | Day 3 |
 |---|---|---|
-| API (payments) | Full load — no date filter, all pages | Incremental — `?updated_after={max(updated_at) from last run}` |
-| Blob (charging_sessions) | All files for today's date | Files for current UTC hour only |
+| API payments | Single page (`p_page=1`, `p_page_size=100`), manually triggered | Full load (all pages) + incremental load (`updated_after` watermark) |
+| Blob sessions | Not covered in Day 2 | ADF pipeline with hourly partitioning |
 
-**Watermark for API:** After each run, `max(updated_at)` from the loaded records is written to `bronze/api/pipeline_audit/` as a Delta row. Next run reads this table, takes the max value, and appends it as `?updated_after=<value>` to the API request URL.
-
-**Partitioning for Blob:** Source files sit at `charging_sessions/YYYY/MM/DD/HH/`. ADF reads the current hour's folder. Delta table is partitioned by `ingestion_date` and `ingestion_hour` columns.
+> Day 2 is about proving connectivity — Key Vault → API → ADLS → Unity Catalog. Pagination and incremental load are Day 3.
 
 ---
 
 ## Reading Order for Day 2
 
-1. This file — provision ADF and grant permissions (Parts 1–3)
-2. `01_ADF_LINKED_SERVICES.md` — create the 4 linked services
-3. `02_ADF_PIPELINE_API_PAYMENTS.md` — build the payments pipeline
-4. `03_ADF_PIPELINE_BLOB_SESSIONS.md` — build the blob pipeline
-5. `04_DATABRICKS_BRONZE_TABLES.md` — create internal Delta tables in Databricks
+1. This file — provision ADF and grant permissions (Parts 1–4)
+2. `01_ADF_LINKED_SERVICES.md` — create the 3 linked services
+3. `02_ADF_PIPELINE_API_PAYMENTS.md` — build the simple payments pipeline (single page)
+4. `05_UNITY_CATALOG_EXTERNAL_LOCATIONS.md` — set up Unity Catalog on ADLS Gen2
 
 ---
 
@@ -324,72 +317,61 @@ az role assignment create \
 
 ---
 
-## Part 4 — Add Day 2 Secrets to Key Vault (5 min)
+## Part 4 — Confirm Day 2 Secrets in Key Vault (2 min)
 
 > **Cost: ~₹0** — a few extra secret reads per day is negligible.
 
-ADF linked services will read these secrets at runtime. Add them to Key Vault before building the linked services.
+All Day 2 secrets were added in Day 1. Confirm they exist before building linked services.
 
-### 4.1 Secrets required for Day 2
+### 4.1 Secrets needed for Day 2
 
-| Secret Name | Value | What it is |
-|---|---|---|
-| `source-storage-account` | `dataenggdailystorage` | Source blob storage account name |
-| `source-container` | `source` | Source container name |
-| `source-sas-token` | `se=2027-...&sig=...` | SAS token for read access to source blob — provided during session |
+| Secret Name | What it is |
+|---|---|
+| `voltgrid-api-base-url` | VoltGrid API base URL — added Day 1 |
+| `voltgrid-username` | VoltGrid login username — added Day 1 |
+| `voltgrid-password` | VoltGrid login password — added Day 1 |
 
-> **Note:** `voltgrid-api-base-url`, `voltgrid-username`, `voltgrid-password`, `adls-account-name`, `sp-client-id`, `sp-client-secret`, `sp-tenant-id` were all added in Day 1. If any are missing, add them now.
+> If any are missing, add them: Portal → **Key vaults** → `kv-ev-intelligence-dev` → **Secrets** → **+ Generate/Import**.
 
-### 4.2 Via Portal
+### 4.2 Verify via CLI
 
-1. Portal → **Key vaults** → `kv-ev-intelligence-dev` → **Secrets** → **+ Generate/Import**
-2. For each row in the table above:
-   - **Name:** exact secret name from the table
-   - **Secret value:** the value from the table
-   - Click **Create**
-
-### 4.3 Via CLI
-
-**Single line (CMD / PowerShell — run each line separately):**
+**CMD / PowerShell:**
 ```cmd
-az keyvault secret set --vault-name kv-ev-intelligence-dev --name "source-storage-account" --value "dataenggdailystorage"
-az keyvault secret set --vault-name kv-ev-intelligence-dev --name "source-container" --value "source"
-az keyvault secret set --vault-name kv-ev-intelligence-dev --name "source-sas-token" --value "<SAS token provided during session>"
+az keyvault secret list --vault-name kv-ev-intelligence-dev --query "[].name" -o table
 ```
 
-**Multi-line (bash / Git Bash only):**
-```bash
-KV="kv-ev-intelligence-dev"
-az keyvault secret set --vault-name $KV --name "source-storage-account" --value "dataenggdailystorage"
-az keyvault secret set --vault-name $KV --name "source-container"        --value "source"
-az keyvault secret set --vault-name $KV --name "source-sas-token"        --value "<SAS token provided during session>"
-```
+Confirm `voltgrid-api-base-url`, `voltgrid-username`, `voltgrid-password` are listed.
 
 ---
 
 ## Part 5 — Configure Linked Services and Pipelines
 
-Now that ADF is provisioned and all permissions are in place, follow these 4 files in order:
+Now that ADF is provisioned and all permissions are in place, follow these files in order:
 
 | File | What it covers |
 |---|---|
-| `01_ADF_LINKED_SERVICES.md` | Create 4 linked services: Key Vault, VoltGrid API, Source Blob, ADLS Gen2 |
-| `02_ADF_PIPELINE_API_PAYMENTS.md` | Build the payments API pipeline with full + incremental load logic |
-| `03_ADF_PIPELINE_BLOB_SESSIONS.md` | Build the charging_sessions blob pipeline with hourly partitioning |
-| `04_DATABRICKS_BRONZE_TABLES.md` | Create internal Delta tables in Databricks mirroring the ADLS data |
+| `01_ADF_LINKED_SERVICES.md` | Create 3 linked services: Key Vault, VoltGrid API, ADLS Gen2 |
+| `02_ADF_PIPELINE_API_PAYMENTS.md` | Build the simple payments pipeline — one page, verify ADF → API → ADLS |
+| `05_UNITY_CATALOG_EXTERNAL_LOCATIONS.md` | Set up Access Connector, Storage Credential, External Locations, Volumes |
 
 ---
 
-## Part 6 — Databricks Notebooks
+## Part 6 — Verify in Databricks
 
-After running the ADF pipelines, use these notebooks to inspect and register the Bronze data:
+After the ADF pipeline runs, verify the output file exists and read it:
 
-| Notebook | What it does |
-|---|---|
-| `notebooks/03_bronze_api_payments.ipynb` | Read payments Delta from ADLS, register as external + internal table, write audit log |
-| `notebooks/04_bronze_blob_sessions.ipynb` | Read sessions Delta from ADLS, register as external + internal table |
+```python
+# List the output
+display(dbutils.fs.ls("abfss://bronze@evdatalakedev.dfs.core.windows.net/api/payments/raw/"))
 
-See `notebooks/README.md` for import instructions.
+# Read the raw JSON
+df = spark.read.option("multiLine", "true").json(
+    "abfss://bronze@evdatalakedev.dfs.core.windows.net/api/payments/raw/payments.json"
+)
+display(df.limit(3))
+```
+
+Full Bronze table creation (Delta format, schema registration, audit logging) → Day 3.
 
 ---
 
@@ -398,14 +380,14 @@ See `notebooks/README.md` for import instructions.
 | Resource | Cost |
 |---|---|
 | ADF instance (provisioning) | ₹0 |
-| ADF pipeline runs (~5 test runs, ~20 activities total) | ~₹2–5 |
-| Copy Activity DIU hours (small JSON + CSV) | ~₹3–5 |
-| Databricks cluster (2 hours) | ~₹40–45 |
-| ADLS Gen2 writes (Bronze Delta files) | ~₹1 |
-| Key Vault secret reads (~50 reads) | ~₹0 |
-| **Day 2 total** | **~₹46–56** |
+| ADF pipeline runs (~3 test runs, ~5 activities each = ~15 runs) | ~₹1–3 |
+| Copy Activity DIU hours (small JSON payload) | ~₹1–2 |
+| Databricks cluster (1 hour — verify + Unity Catalog setup) | ~₹20–25 |
+| ADLS Gen2 writes (one JSON file) | ~₹0 |
+| Key Vault secret reads (~20 reads) | ~₹0 |
+| **Day 2 total** | **~₹22–30** |
 
-> **Free tier note:** ADF gives you 1,000 free orchestration activity runs per month. For 5 pipeline test runs × ~6 activities each = 30 runs total — well within the free tier.
+> **Free tier note:** ADF gives you 1,000 free orchestration activity runs per month. For 3 pipeline test runs × 5 activities = 15 runs — well within the free tier.
 
 ---
 
@@ -430,31 +412,24 @@ ADF itself has no "stop" — it only runs when triggered. Pipelines are not runn
 - [ ] ADF Managed Identity Object ID noted
 - [ ] `Storage Blob Data Contributor` role assigned to ADF Managed Identity on `evdatalakedev`
 - [ ] `Key Vault Secrets User` role assigned to ADF Managed Identity on `kv-ev-intelligence-dev`
-- [ ] Day 2 secrets added to Key Vault: `source-storage-account`, `source-container`, `source-sas-token`
 
 ### ADF Linked Services
 - [ ] Linked service `ls_keyvault` created and tested — connects to `kv-ev-intelligence-dev`
-- [ ] Linked service `ls_voltgrid_api` created and tested — connects to VoltGrid API
-- [ ] Linked service `ls_source_blob` created and tested — connects to `dataenggdailystorage` via SAS
+- [ ] Linked service `ls_voltgrid_api` created and tested — connects to VoltGrid API base URL
 - [ ] Linked service `ls_adls_bronze` created and tested — connects to `evdatalakedev` via Managed Identity
 
 ### Payments API Pipeline
-- [ ] Dataset `ds_voltgrid_payments_src` created (parameterised URL)
-- [ ] Pipeline `pl_bronze_api_payments` created with: Web Activity (login) → Set Variable (token + watermark) → Until loop → Copy Activity → Notebook (audit)
-- [ ] Full load run completed — rows visible in `abfss://bronze@evdatalakedev.../api/payments/`
-- [ ] Incremental run completed — fewer rows than full load, audit table updated
+- [ ] Dataset `ds_voltgrid_payments_src` created — parameters `p_page`, `p_page_size`
+- [ ] Dataset `ds_bronze_payments_sink` created — fixed path `bronze/api/payments/raw/payments.json`
+- [ ] Pipeline `pl_bronze_api_payments` created — 5 activities: get_username → get_password → api_login → set_token → copy_payments
+- [ ] Manual trigger run — `payments.json` visible at `bronze/api/payments/raw/`
+- [ ] Databricks cell confirms file readable with `spark.read.json()`
 
-### Blob Sessions Pipeline
-- [ ] Dataset `ds_charging_sessions_src` created (parameterised path with date/hour)
-- [ ] Pipeline `pl_bronze_blob_sessions` created
-- [ ] Hourly trigger `tr_blob_sessions_hourly` created and started
-- [ ] Manual run completed — rows visible in `abfss://bronze@evdatalakedev.../blob/iot_sessions/`
-
-### Databricks Tables
-- [ ] Notebook `03_bronze_api_payments.ipynb` ran — external table `bronze.payments` queryable
-- [ ] Notebook `04_bronze_blob_sessions.ipynb` ran — external table `bronze.charging_sessions` queryable
-- [ ] Internal tables `bronze.payments_internal` and `bronze.charging_sessions_internal` created (for comparison)
-- [ ] Row counts match between ADLS files and registered Delta tables
+### Unity Catalog
+- [ ] Access Connector `ac-ev-intelligence-dev` created
+- [ ] Storage Credential `cred-ev-intelligence-dev` created (Managed Identity type)
+- [ ] External Locations created for bronze, silver, gold containers
+- [ ] Volumes created and browsable in Catalog UI
 - [ ] **Cluster terminated at end of session**
 
 ---
@@ -463,12 +438,11 @@ ADF itself has no "stop" — it only runs when triggered. Pipelines are not runn
 
 | Error | Cause | Fix |
 |---|---|---|
-| `403 Forbidden` when ADF runs Copy Activity to ADLS | ADF Managed Identity missing `Storage Blob Data Contributor` role on `evdatalakedev` | Part 2 — assign the role, wait 2 min, retry |
-| `Access denied` when ADF reads a Key Vault secret | ADF Managed Identity missing `Key Vault Secrets User` role on Key Vault | Part 3 — assign the role, wait 2 min, retry |
-| `Secret not found` in ADF linked service test | Secret name typo, or secret not created yet | Part 4 — add the secret, exact name match, retry linked service Test Connection |
-| ADF pipeline runs but writes 0 rows | VoltGrid API returned 0 records (token expired or wrong endpoint) | Re-check linked service URL, re-run pipeline |
-| `DELTA_ILLEGAL_OPERATION` on Delta write | Attempting to overwrite a Delta table with a different schema | Add `mergeSchema` option or drop and recreate the Delta path |
-| `abfss` path error from Databricks notebook | SP OAuth config not set in this session | Re-run Cell 1 and Cell 2 of the notebook (sets SP OAuth for this session) |
-| `Secret scope not found: kv-ev-scope` | Secret scope was not created in Day 1, or cluster was restarted | Day 1 Part 6.5 — recreate the secret scope. The scope itself persists; only the Spark config needs re-running per session. |
-| ADF Studio shows blank after opening | Browser cache issue | Hard refresh: Ctrl + Shift + R. Or open in Incognito. |
-| `ResourceNotFound` on `az datafactory` CLI commands | ADF not registered as a resource provider | `az provider register --namespace Microsoft.DataFactory` then wait 1–2 min |
+| `403 Forbidden` on ADF Copy Activity to ADLS | ADF Managed Identity missing `Storage Blob Data Contributor` on `evdatalakedev` | Part 2 — assign role, wait 2 min, retry |
+| `Access denied` when ADF reads Key Vault secret | ADF Managed Identity missing `Key Vault Secrets User` on Key Vault | Part 3 — assign role, wait 2 min, retry |
+| `401 Unauthorized` on `act_api_login` | Wrong credentials in Key Vault | Check `voltgrid-username` and `voltgrid-password` values |
+| `401 Unauthorized` on `act_copy_payments` | `v_token` not set — `act_api_login` output key wrong | Confirm login response has `token` key: check `act_api_login` output in Monitor |
+| ADF pipeline writes empty file | API returned 0 records | Reduce `p_page_size` to 10 for test; check linked service URL |
+| ADF Studio shows blank after opening | Browser cache issue | Hard refresh: Ctrl + Shift + R, or open in Incognito |
+| `ResourceNotFound` on `az datafactory` CLI commands | ADF not registered as resource provider | `az provider register --namespace Microsoft.DataFactory` then wait 1–2 min |
+| Unity Catalog external location validation fails | Access Connector MI missing `Storage Blob Data Contributor` on ADLS | `05_UNITY_CATALOG_EXTERNAL_LOCATIONS.md` Part 2 — assign role, wait 2 min |
