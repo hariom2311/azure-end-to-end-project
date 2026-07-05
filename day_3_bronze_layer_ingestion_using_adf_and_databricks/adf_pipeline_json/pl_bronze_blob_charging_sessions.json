@@ -1,0 +1,276 @@
+{
+    "name": "pl_bronze_blob_charging_sessions",
+    "properties": {
+        "description": "Copies charging_sessions CSVs from source blob to Bronze ADLS. Full load copies all partitions. Incremental reads the last successful partition from the bronze_blob_audit Delta table via a Databricks notebook and advances by one hour.",
+        "parameters": {
+            "p_load_type": {
+                "type": "string",
+                "defaultValue": "incremental",
+                "description": "full or incremental"
+            }
+        },
+        "variables": {
+            "v_year":      { "type": "String", "defaultValue": "" },
+            "v_month":     { "type": "String", "defaultValue": "" },
+            "v_day":       { "type": "String", "defaultValue": "" },
+            "v_hour":      { "type": "String", "defaultValue": "" },
+            "v_status":    { "type": "String", "defaultValue": "started" },
+            "v_files_copied": { "type": "Integer", "defaultValue": 0 }
+        },
+        "activities": [
+
+            {
+                "name": "act_check_load_type",
+                "description": "Branch on full vs incremental. Full load skips audit lookup and uses wildcard partition.",
+                "type": "IfCondition",
+                "typeProperties": {
+                    "expression": {
+                        "value": "@equals(pipeline().parameters.p_load_type, 'incremental')",
+                        "type": "Expression"
+                    },
+                    "ifTrueActivities": [
+                        {
+                            "name": "act_get_last_partition",
+                            "description": "Runs Databricks notebook nb_get_last_partition. The notebook queries bronze_blob_audit for the last successful YYYY/MM/DD/HH partition and calls dbutils.notebook.exit() with a JSON string: {year, month, day, hour}. ADF reads .output.runOutput to get the result.",
+                            "type": "DatabricksNotebook",
+                            "linkedServiceName": {
+                                "referenceName": "ls_databricks",
+                                "type": "LinkedServiceReference"
+                            },
+                            "typeProperties": {
+                                "notebookPath": "/Shared/ev_intelligence/bronze/nb_get_last_partition",
+                                "baseParameters": {
+                                    "pipeline_name": "pl_bronze_blob_charging_sessions"
+                                }
+                            }
+                        },
+                        {
+                            "name": "act_set_year",
+                            "type": "SetVariable",
+                            "dependsOn": [
+                                { "activity": "act_get_last_partition", "dependencyConditions": ["Succeeded"] }
+                            ],
+                            "typeProperties": {
+                                "variableName": "v_year",
+                                "value": {
+                                    "value": "@json(activity('act_get_last_partition').output.runOutput).year",
+                                    "type": "Expression"
+                                }
+                            }
+                        },
+                        {
+                            "name": "act_set_month",
+                            "type": "SetVariable",
+                            "dependsOn": [
+                                { "activity": "act_get_last_partition", "dependencyConditions": ["Succeeded"] }
+                            ],
+                            "typeProperties": {
+                                "variableName": "v_month",
+                                "value": {
+                                    "value": "@json(activity('act_get_last_partition').output.runOutput).month",
+                                    "type": "Expression"
+                                }
+                            }
+                        },
+                        {
+                            "name": "act_set_day",
+                            "type": "SetVariable",
+                            "dependsOn": [
+                                { "activity": "act_get_last_partition", "dependencyConditions": ["Succeeded"] }
+                            ],
+                            "typeProperties": {
+                                "variableName": "v_day",
+                                "value": {
+                                    "value": "@json(activity('act_get_last_partition').output.runOutput).day",
+                                    "type": "Expression"
+                                }
+                            }
+                        },
+                        {
+                            "name": "act_set_hour",
+                            "type": "SetVariable",
+                            "dependsOn": [
+                                { "activity": "act_get_last_partition", "dependencyConditions": ["Succeeded"] }
+                            ],
+                            "typeProperties": {
+                                "variableName": "v_hour",
+                                "value": {
+                                    "value": "@json(activity('act_get_last_partition').output.runOutput).hour",
+                                    "type": "Expression"
+                                }
+                            }
+                        }
+                    ],
+                    "ifFalseActivities": [
+                        {
+                            "name": "act_set_year_full",
+                            "description": "Full load: set year to wildcard so source dataset reads all years.",
+                            "type": "SetVariable",
+                            "typeProperties": {
+                                "variableName": "v_year",
+                                "value": "*"
+                            }
+                        },
+                        {
+                            "name": "act_set_month_full",
+                            "type": "SetVariable",
+                            "typeProperties": {
+                                "variableName": "v_month",
+                                "value": "*"
+                            }
+                        },
+                        {
+                            "name": "act_set_day_full",
+                            "type": "SetVariable",
+                            "typeProperties": {
+                                "variableName": "v_day",
+                                "value": "*"
+                            }
+                        },
+                        {
+                            "name": "act_set_hour_full",
+                            "type": "SetVariable",
+                            "typeProperties": {
+                                "variableName": "v_hour",
+                                "value": "*"
+                            }
+                        }
+                    ]
+                }
+            },
+
+            {
+                "name": "act_copy_sessions",
+                "description": "Copies CSV files from the resolved source partition to the matching Bronze ADLS path.",
+                "type": "Copy",
+                "dependsOn": [
+                    { "activity": "act_check_load_type", "dependencyConditions": ["Succeeded"] }
+                ],
+                "typeProperties": {
+                    "source": {
+                        "type": "DelimitedTextSource",
+                        "storeSettings": {
+                            "type": "AzureBlobStorageReadSettings",
+                            "recursive": true,
+                            "wildcardFolderPath": {
+                                "value": "@concat('realtime/charging_sessions/', variables('v_year'), '/', variables('v_month'), '/', variables('v_day'), '/', variables('v_hour'))",
+                                "type": "Expression"
+                            },
+                            "wildcardFileName": "*.csv"
+                        },
+                        "formatSettings": {
+                            "type": "DelimitedTextReadSettings"
+                        }
+                    },
+                    "sink": {
+                        "type": "DelimitedTextSink",
+                        "storeSettings": {
+                            "type": "AzureBlobFSWriteSettings"
+                        },
+                        "formatSettings": {
+                            "type": "DelimitedTextWriteSettings",
+                            "fileExtension": ".csv",
+                            "quoteAllText": false
+                        }
+                    },
+                    "enableStaging": false,
+                    "preserve": ["Attributes"]
+                },
+                "inputs": [
+                    {
+                        "referenceName": "ds_charging_sessions_src",
+                        "type": "DatasetReference",
+                        "parameters": {
+                            "p_year":  "@variables('v_year')",
+                            "p_month": "@variables('v_month')",
+                            "p_day":   "@variables('v_day')",
+                            "p_hour":  "@variables('v_hour')"
+                        }
+                    }
+                ],
+                "outputs": [
+                    {
+                        "referenceName": "ds_bronze_sessions_sink",
+                        "type": "DatasetReference",
+                        "parameters": {
+                            "p_year":  "@variables('v_year')",
+                            "p_month": "@variables('v_month')",
+                            "p_day":   "@variables('v_day')",
+                            "p_hour":  "@variables('v_hour')"
+                        }
+                    }
+                ]
+            },
+
+            {
+                "name": "act_set_files_copied",
+                "description": "Stores the number of files written by the Copy Activity into v_files_copied for the audit record.",
+                "type": "SetVariable",
+                "dependsOn": [
+                    { "activity": "act_copy_sessions", "dependencyConditions": ["Succeeded"] }
+                ],
+                "typeProperties": {
+                    "variableName": "v_files_copied",
+                    "value": {
+                        "value": "@activity('act_copy_sessions').output.filesWritten",
+                        "type": "Expression"
+                    }
+                }
+            },
+
+            {
+                "name": "act_set_status_success",
+                "type": "SetVariable",
+                "dependsOn": [
+                    { "activity": "act_set_files_copied", "dependencyConditions": ["Succeeded"] }
+                ],
+                "typeProperties": {
+                    "variableName": "v_status",
+                    "value": "succeeded"
+                }
+            },
+
+            {
+                "name": "act_set_status_failed",
+                "description": "Runs only when act_copy_sessions fails. Sets status to failed so the audit record reflects the actual outcome.",
+                "type": "SetVariable",
+                "dependsOn": [
+                    { "activity": "act_copy_sessions", "dependencyConditions": ["Failed"] }
+                ],
+                "typeProperties": {
+                    "variableName": "v_status",
+                    "value": "failed"
+                }
+            },
+
+            {
+                "name": "act_write_audit",
+                "description": "Always runs (success or failure). Calls nb_write_audit which appends one row to bronze_blob_audit Delta table: pipeline name, load type, partition copied, files written, status, pipeline run ID, run timestamp.",
+                "type": "DatabricksNotebook",
+                "dependsOn": [
+                    { "activity": "act_set_status_success", "dependencyConditions": ["Succeeded"] },
+                    { "activity": "act_set_status_failed",  "dependencyConditions": ["Succeeded"] }
+                ],
+                "linkedServiceName": {
+                    "referenceName": "ls_databricks",
+                    "type": "LinkedServiceReference"
+                },
+                "typeProperties": {
+                    "notebookPath": "/Shared/ev_intelligence/bronze/nb_write_audit",
+                    "baseParameters": {
+                        "pipeline_name": "pl_bronze_blob_charging_sessions",
+                        "load_type":     "@pipeline().parameters.p_load_type",
+                        "p_year":        "@variables('v_year')",
+                        "p_month":       "@variables('v_month')",
+                        "p_day":         "@variables('v_day')",
+                        "p_hour":        "@variables('v_hour')",
+                        "files_copied":  "@string(variables('v_files_copied'))",
+                        "status":        "@variables('v_status')",
+                        "pipeline_run_id": "@pipeline().RunId"
+                    }
+                }
+            }
+
+        ]
+    }
+}

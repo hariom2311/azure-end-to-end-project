@@ -1,0 +1,31 @@
+{
+    "name": "ds_charging_sessions_src",
+    "properties": {
+        "linkedServiceName": {
+            "referenceName": "ls_source_blob",
+            "type": "LinkedServiceReference"
+        },
+        "parameters": {
+            "p_year":  { "type": "string" },
+            "p_month": { "type": "string" },
+            "p_day":   { "type": "string" },
+            "p_hour":  { "type": "string" }
+        },
+        "type": "DelimitedText",
+        "typeProperties": {
+            "location": {
+                "type": "AzureBlobStorageLocation",
+                "container": "source",
+                "folderPath": {
+                    "value": "@concat('realtime/charging_sessions/', dataset().p_year, '/', dataset().p_month, '/', dataset().p_day, '/', dataset().p_hour)",
+                    "type": "Expression"
+                },
+                "fileName": "*.csv"
+            },
+            "columnDelimiter": ",",
+            "rowDelimiter": "\n",
+            "firstRowAsHeader": true,
+            "compressionCodec": "none"
+        }
+    }
+}

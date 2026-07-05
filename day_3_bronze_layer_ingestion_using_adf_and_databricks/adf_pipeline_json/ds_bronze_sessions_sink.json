@@ -1,0 +1,29 @@
+{
+    "name": "ds_bronze_sessions_sink",
+    "properties": {
+        "linkedServiceName": {
+            "referenceName": "ls_adls_bronze",
+            "type": "LinkedServiceReference"
+        },
+        "parameters": {
+            "p_year":  { "type": "string" },
+            "p_month": { "type": "string" },
+            "p_day":   { "type": "string" },
+            "p_hour":  { "type": "string" }
+        },
+        "type": "DelimitedText",
+        "typeProperties": {
+            "location": {
+                "type": "AzureBlobFSLocation",
+                "fileSystem": "bronze",
+                "folderPath": {
+                    "value": "@concat('realtime/charging_sessions/', dataset().p_year, '/', dataset().p_month, '/', dataset().p_day, '/', dataset().p_hour)",
+                    "type": "Expression"
+                }
+            },
+            "columnDelimiter": ",",
+            "rowDelimiter": "\n",
+            "firstRowAsHeader": true
+        }
+    }
+}
