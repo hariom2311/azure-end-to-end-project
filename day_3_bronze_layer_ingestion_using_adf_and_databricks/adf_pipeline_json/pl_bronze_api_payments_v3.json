@@ -1,7 +1,7 @@
 {
   "name": "pl_bronze_api_payments_v3",
   "properties": {
-    "description": "Payments API → Bronze. Full load on first run. Incremental reads watermark automatically from dbw_ev_intelligence_dev.default.pipeline_audit. No manual watermark input required. Audit row written after every run (success or failure).",
+    "description": "Payments API to Bronze. Full load on first run. Incremental reads watermark automatically from dbw_ev_intelligence_dev.default.pipeline_audit via Databricks SQL Warehouse Lookup Activity. Audit row written via Copy Activity after every run (success or failure). Zero Databricks notebooks required.",
     "parameters": {
       "p_load_type": {
         "type": "string",
@@ -11,13 +11,12 @@
     },
     "variables": {
       "v_token":          { "type": "String" },
-      "v_watermark":      { "type": "String" },
+      "v_watermark":      { "type": "String", "defaultValue": "1900-01-01T00:00:00Z" },
       "v_ingestion_date": { "type": "String" },
       "v_current_page":   { "type": "Integer", "defaultValue": 1 },
       "v_temp_page":      { "type": "Integer", "defaultValue": 1 },
       "v_total_pages":    { "type": "Integer", "defaultValue": 1 },
-      "v_status":         { "type": "String",  "defaultValue": "started" },
-      "v_rows_copied":    { "type": "Integer", "defaultValue": 0 }
+      "v_status":         { "type": "String",  "defaultValue": "started" }
     },
     "activities": [
 
@@ -55,7 +54,7 @@
 
       {
         "name": "act_api_login",
-        "description": "POST username+password to VoltGrid login endpoint. Response contains token.",
+        "description": "POST credentials to VoltGrid login. Response body contains token field.",
         "type": "WebActivity",
         "dependsOn": [
           { "activity": "act_get_password", "dependencyConditions": ["Succeeded"] }
@@ -88,7 +87,7 @@
 
       {
         "name": "act_set_ingestion_date",
-        "description": "Capture today's UTC date once — used as the Bronze partition folder name for all pages in this run.",
+        "description": "Capture today UTC date once. Used as Bronze partition folder name for all pages this run.",
         "type": "SetVariable",
         "dependsOn": [
           { "activity": "act_set_token", "dependencyConditions": ["Succeeded"] }
@@ -104,30 +103,30 @@
 
       {
         "name": "act_get_watermark",
-        "description": "Runs nb_get_watermark Databricks notebook. For full load: returns '1900-01-01T00:00:00Z'. For incremental: queries dbw_ev_intelligence_dev.default.pipeline_audit for MAX(watermark_value) where pipeline_name='pl_bronze_api_payments_v3' and status='succeeded', returns that value. ADF reads result via activity().output.runOutput.",
-        "type": "DatabricksNotebook",
+        "description": "Lookup Activity — queries pipeline_audit Delta table via Databricks SQL Warehouse. For full load returns the epoch date constant. For incremental returns MAX(watermark_value) from last succeeded run. Result accessed via activity('act_get_watermark').output.firstRow.last_watermark.",
+        "type": "Lookup",
         "dependsOn": [
           { "activity": "act_set_ingestion_date", "dependencyConditions": ["Succeeded"] }
         ],
-        "linkedServiceName": {
-          "referenceName": "ls_databricks",
-          "type": "LinkedServiceReference"
-        },
         "typeProperties": {
-          "notebookPath": "/Shared/ev_intelligence/bronze/nb_get_watermark",
-          "baseParameters": {
-            "pipeline_name": "pl_bronze_api_payments_v3",
-            "load_type": {
-              "value": "@pipeline().parameters.p_load_type",
+          "source": {
+            "type": "AzureDatabricksDeltaLakeSource",
+            "query": {
+              "value": "@if(\n  equals(pipeline().parameters.p_load_type, 'full'),\n  'SELECT ''1900-01-01T00:00:00Z'' AS last_watermark',\n  concat(\n    'SELECT COALESCE(MAX(watermark_value), ''1900-01-01T00:00:00Z'') AS last_watermark FROM dbw_ev_intelligence_dev.default.pipeline_audit WHERE pipeline_name = ''pl_bronze_api_payments_v3'' AND status = ''succeeded'''\n  )\n)",
               "type": "Expression"
             }
-          }
+          },
+          "dataset": {
+            "referenceName": "ds_pipeline_audit_src",
+            "type": "DatasetReference"
+          },
+          "firstRowOnly": true
         }
       },
 
       {
         "name": "act_set_watermark",
-        "description": "Store the watermark string returned by nb_get_watermark into v_watermark. All subsequent API calls use this value as updated_after.",
+        "description": "Store the watermark resolved by the Lookup into v_watermark. All subsequent API calls use this as updated_after.",
         "type": "SetVariable",
         "dependsOn": [
           { "activity": "act_get_watermark", "dependencyConditions": ["Succeeded"] }
@@ -135,7 +134,7 @@
         "typeProperties": {
           "variableName": "v_watermark",
           "value": {
-            "value": "@activity('act_get_watermark').output.runOutput",
+            "value": "@activity('act_get_watermark').output.firstRow.last_watermark",
             "type": "Expression"
           }
         }
@@ -180,7 +179,7 @@
 
       {
         "name": "act_paginate",
-        "description": "Loop through all pages. Exits when v_current_page exceeds v_total_pages.",
+        "description": "Loop through all pages until v_current_page exceeds v_total_pages.",
         "type": "Until",
         "dependsOn": [
           { "activity": "act_set_total_pages", "dependencyConditions": ["Succeeded"] }
@@ -277,7 +276,7 @@
 
       {
         "name": "act_set_status_success",
-        "description": "Mark run as succeeded after the Until loop completes.",
+        "description": "Mark run succeeded after Until loop completes normally.",
         "type": "SetVariable",
         "dependsOn": [
           { "activity": "act_paginate", "dependencyConditions": ["Succeeded"] }
@@ -290,7 +289,7 @@
 
       {
         "name": "act_set_status_failed",
-        "description": "Mark run as failed if the Until loop or any upstream activity fails.",
+        "description": "Mark run failed if Until loop or any upstream activity fails.",
         "type": "SetVariable",
         "dependsOn": [
           { "activity": "act_paginate", "dependencyConditions": ["Failed"] }
@@ -303,28 +302,40 @@
 
       {
         "name": "act_write_audit",
-        "description": "Always runs — success or failure. Calls nb_write_audit which appends one row to dbw_ev_intelligence_dev.default.pipeline_audit. Stores: pipeline_name, load_type, watermark_value (= v_watermark used this run), ingestion_date, total_pages, status, pipeline_run_id, run_timestamp. Next incremental run will read MAX(watermark_value) from this table.",
-        "type": "DatabricksNotebook",
+        "description": "Copy Activity — writes one audit row into pipeline_audit Delta table via Databricks SQL Warehouse. Always runs (success and failure). Source is an inline query that builds the audit row from pipeline variables and system functions. Sink is ds_pipeline_audit_sink pointing to dbw_ev_intelligence_dev.default.pipeline_audit.",
+        "type": "Copy",
         "dependsOn": [
           { "activity": "act_set_status_success", "dependencyConditions": ["Succeeded"] },
           { "activity": "act_set_status_failed",  "dependencyConditions": ["Succeeded"] }
         ],
-        "linkedServiceName": {
-          "referenceName": "ls_databricks",
-          "type": "LinkedServiceReference"
-        },
         "typeProperties": {
-          "notebookPath": "/Shared/ev_intelligence/bronze/nb_write_audit",
-          "baseParameters": {
-            "pipeline_name":   "pl_bronze_api_payments_v3",
-            "load_type":       { "value": "@pipeline().parameters.p_load_type",    "type": "Expression" },
-            "watermark_value": { "value": "@variables('v_watermark')",              "type": "Expression" },
-            "ingestion_date":  { "value": "@variables('v_ingestion_date')",         "type": "Expression" },
-            "total_pages":     { "value": "@string(variables('v_total_pages'))",    "type": "Expression" },
-            "status":          { "value": "@variables('v_status')",                 "type": "Expression" },
-            "pipeline_run_id": { "value": "@pipeline().RunId",                      "type": "Expression" }
+          "source": {
+            "type": "AzureDatabricksDeltaLakeSource",
+            "query": {
+              "value": "@concat(\n  'SELECT ',\n  '''pl_bronze_api_payments_v3''  AS pipeline_name, ',\n  '''', pipeline().parameters.p_load_type,  ''' AS load_type, ',\n  '''', variables('v_watermark'),            ''' AS watermark_value, ',\n  '''', variables('v_ingestion_date'),        ''' AS ingestion_date, ',\n       string(variables('v_total_pages')),    '   AS total_pages, ',\n  '''', variables('v_status'),               ''' AS status, ',\n  '''', pipeline().RunId,                    ''' AS pipeline_run_id, ',\n  'current_timestamp()                           AS run_timestamp'\n)",
+              "type": "Expression"
+            }
+          },
+          "sink": {
+            "type": "AzureDatabricksDeltaLakeSink",
+            "importSettings": {
+              "type": "AzureDatabricksDeltaLakeImportCommand"
+            }
+          },
+          "enableStaging": false
+        },
+        "inputs": [
+          {
+            "referenceName": "ds_pipeline_audit_src",
+            "type": "DatasetReference"
           }
-        }
+        ],
+        "outputs": [
+          {
+            "referenceName": "ds_pipeline_audit_sink",
+            "type": "DatasetReference"
+          }
+        ]
       }
 
     ]

@@ -1,0 +1,16 @@
+{
+  "name": "ds_pipeline_audit_sink",
+  "properties": {
+    "description": "Copy sink — writes one audit row into pipeline_audit Delta table via Databricks SQL Warehouse. Used by act_write_audit Copy Activity at the end of every pipeline run.",
+    "linkedServiceName": {
+      "referenceName": "ls_databricks_sql",
+      "type": "LinkedServiceReference"
+    },
+    "type": "AzureDatabricksDeltaLakeDataset",
+    "typeProperties": {
+      "database": "default",
+      "table": "pipeline_audit",
+      "catalog": "dbw_ev_intelligence_dev"
+    }
+  }
+}

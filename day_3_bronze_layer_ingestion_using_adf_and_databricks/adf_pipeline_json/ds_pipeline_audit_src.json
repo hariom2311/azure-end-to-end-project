@@ -1,0 +1,16 @@
+{
+  "name": "ds_pipeline_audit_src",
+  "properties": {
+    "description": "Lookup source — reads from pipeline_audit Delta table via Databricks SQL Warehouse. Used by act_get_watermark Lookup Activity to fetch MAX(watermark_value) for the previous succeeded run.",
+    "linkedServiceName": {
+      "referenceName": "ls_databricks_sql",
+      "type": "LinkedServiceReference"
+    },
+    "type": "AzureDatabricksDeltaLakeDataset",
+    "typeProperties": {
+      "database": "default",
+      "table": "pipeline_audit",
+      "catalog": "dbw_ev_intelligence_dev"
+    }
+  }
+}
