@@ -12,10 +12,11 @@ A linked service = a saved connection definition. Think of it as a named connect
 |---|---|---|
 | `ls_keyvault` | Azure Key Vault | `kv-ev-intelligence-dev` |
 | `ls_voltgrid_api` | REST | VoltGrid API base URL |
-| `ls_source_blob` | Azure Blob Storage | `dataenggdailystorage` (SAS token) |
 | `ls_adls_bronze` | Azure Data Lake Storage Gen2 | `evdatalakedev` (Managed Identity) |
 
 **Create them in this order** — `ls_keyvault` must exist before the others because they reference secrets from it.
+
+> **Source blob storage (`dataenggdailystorage`) is NOT connected via ADF.** It is accessed directly from Databricks notebooks using `wasbs://` + SAS token via `spark.conf.set()`. See `04_DATABRICKS_BRONZE_TABLES.md` for the notebook approach.
 
 ---
 
