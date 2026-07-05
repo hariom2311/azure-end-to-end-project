@@ -1,11 +1,13 @@
 # 03 — Build v3 Payments Pipeline: Step by Step in ADF Studio
 **Day 3 | pl_bronze_api_payments_v3**
 
-This guide walks you through creating the v3 pipeline from scratch in ADF Studio UI — no JSON pasting required. v3 upgrades v2 by reading the watermark automatically from a `pipeline_audit` Delta table (no manual input) and writing an audit row after every run using the Databricks SQL Warehouse linked service.
+This guide walks you through creating the v3 pipeline from scratch in ADF Studio UI — no JSON pasting required. v3 upgrades v2 by reading the watermark automatically from a `pipeline_audit` Delta table (no manual input) and writing an audit row via a Databricks notebook after every run.
 
 > **Prerequisite:** Day 2 linked services must exist — `ls_keyvault`, `ls_voltgrid_api`, `ls_adls_bronze`.
-> **Also required:** Create `ls_databricks_sql` in Part A below (new linked service for v3).
+> **Also required:** Upload `notebooks/nb_write_audit.py` to Databricks and create `ls_databricks_cluster` in Part A below.
 > **If you prefer JSON paste:** use the `.json` files in this folder + `PIPELINE_NOTES_V3.md`.
+
+> **Note on SQL Warehouses:** ADF's Azure Databricks Delta Lake linked service supports **Spark clusters only** — it does not list SQL Warehouses in the dropdown. Use your existing `dev-cluster` (All-Purpose cluster) for both the Lookup Activity and the Notebook Activity.
 
 ---
 
@@ -13,11 +15,11 @@ This guide walks you through creating the v3 pipeline from scratch in ADF Studio
 
 | Artifact | Name | Purpose |
 |---|---|---|
-| Linked Service | `ls_databricks_sql` | Connects ADF to Databricks SQL Warehouse — reads/writes Delta tables |
+| Notebook | `nb_write_audit` | Databricks notebook — writes audit row to `pipeline_audit` Delta table |
+| Linked Service | `ls_databricks_cluster` | Connects ADF to `dev-cluster` — used by Lookup + Notebook activities |
 | Dataset | `ds_voltgrid_payments_src_v3` | Source — VoltGrid API with page + watermark parameters |
 | Dataset | `ds_bronze_payments_sink_v3` | Sink — ADLS Bronze, partitioned by date and page |
 | Dataset | `ds_pipeline_audit_src` | Lookup source — reads `pipeline_audit` Delta table |
-| Dataset | `ds_pipeline_audit_sink` | Copy sink — writes to `pipeline_audit` Delta table |
 | Pipeline | `pl_bronze_api_payments_v3` | Full + incremental, auto watermark, audit trail |
 
 **Pipeline parameter:**
@@ -40,40 +42,45 @@ This guide walks you through creating the v3 pipeline from scratch in ADF Studio
 
 ---
 
-## Part A — Create Linked Service: `ls_databricks_sql`
+## Part A — Upload Notebook + Create Linked Service
 
-This is the only new linked service for v3. It connects ADF directly to a Databricks SQL Warehouse, enabling Lookup (read) and Copy sink (write) against Delta tables — no notebooks required.
+### Step A1 — Upload `nb_write_audit` to Databricks
 
-### Find Your SQL Warehouse HTTP Path First
-
-Before creating the linked service, get the HTTP path from Databricks:
+The audit notebook runs on `dev-cluster` after every pipeline run and writes one row to the `pipeline_audit` Delta table.
 
 1. Open your Databricks workspace
-2. Left sidebar → **SQL Warehouses**
-3. Click your warehouse (or create a Serverless one if none exists — cheapest option)
-4. Click the **Connection details** tab
-5. Copy the **HTTP path** — looks like `/sql/1.0/warehouses/abc1234567890abc`
+2. Left sidebar → **Workspace** → **Shared**
+3. Click the **⋮** menu → **Create** → **Folder** → name it `adf_pipelines`
+4. Inside `adf_pipelines` → click **⋮** → **Import**
+5. Select **File** → upload `notebooks/nb_write_audit.py` from this directory
+6. Confirm the notebook appears at: `/Shared/adf_pipelines/nb_write_audit`
 
-Keep this value — you will paste it in step 7 below.
+> This path is hardcoded in `pl_bronze_api_payments_v3.json`. If you use a different path, update the `notebookPath` field in the pipeline JSON.
 
-### Create the Linked Service
+---
 
-1. ADF Studio → **Manage** (toolbox icon) → **Linked services** → **+ New**
-2. In the search box type `Databricks` → select **Azure Databricks Delta Lake** → **Continue**
+### Step A2 — Create `ls_databricks_cluster` Linked Service
+
+This linked service connects ADF to your `dev-cluster` (All-Purpose Spark cluster). It is used by:
+- The **Lookup Activity** (`act_get_watermark`) — reads the `pipeline_audit` Delta table
+- The **Notebook Activity** (`act_write_audit`) — runs `nb_write_audit`
+
+> **Why not SQL Warehouse?** ADF's Azure Databricks linked service only works with Spark clusters. SQL Warehouses are for BI tools (Power BI, JDBC). All ADF pipeline activities require a Spark cluster.
+
+1. ADF Studio → **Manage** → **Linked services** → **+ New**
+2. Search `Azure Databricks` → select **Azure Databricks** *(not "Delta Lake")* → **Continue**
 3. Fill in:
-   - **Name:** `ls_databricks_sql`
-   - **Domain:** your Databricks workspace URL → `https://adb-XXXXXXXXXXXXXXXX.X.azuredatabricks.net`
-     *(find this in Portal → Azure Databricks → Overview → URL)*
-4. **Cluster type:** select **Existing SQL Warehouse**
-5. **Existing SQL Warehouse:** paste the HTTP path from above → `/sql/1.0/warehouses/abc1234567890abc`
-6. **Authentication type:** choose one:
-   - **Managed Identity** *(recommended if ADF MI has Contributor role on Databricks workspace)*
-   - **Access Token** — go to Databricks → User Settings → Developer → Access tokens → Generate new → store in Key Vault → reference it here
-7. Click **Test connection** → must show **Connection successful**
-8. Click **Create**
-9. **Publish all** → **Publish**
+   - **Name:** `ls_databricks_cluster`
+   - **Account selection method:** From Azure subscription
+   - **Azure subscription:** select yours
+   - **Databricks workspace:** `dbw-ev-intelligence-dev`
+   - **Select cluster:** `Existing interactive cluster`
+   - **Existing cluster ID:** select `dev-cluster` from the dropdown
+   - **Authentication:** Access token → click **Azure Key Vault** tab → **AKV linked service:** `ls_keyvault` → **Secret name:** `databricks-pat-token`
+4. Click **Test connection** → **Connection successful**
+5. Click **Create** → **Publish all**
 
-> If test fails with "permission denied": your ADF Managed Identity needs the `Contributor` role on the Databricks workspace resource in Portal → Databricks → IAM.
+> If `dev-cluster` does not appear in the dropdown, make sure the cluster is running in Databricks → Compute. Start it, wait 1 minute, then refresh the ADF linked service form.
 
 ---
 
@@ -158,7 +165,7 @@ Same structure as v2 sink — partitioned Bronze path.
 
 ## Part D — Create Dataset 3: `ds_pipeline_audit_src`
 
-This dataset points to the `pipeline_audit` Delta table in Unity Catalog. It is used by the **Lookup Activity** to read the watermark and by the **Copy Activity** as the source when writing audit rows (via inline SQL query).
+This dataset points to the `pipeline_audit` Delta table in Unity Catalog. It is used only by the **Lookup Activity** (`act_get_watermark`) to read the watermark. The audit write is now done by the notebook — no sink dataset needed.
 
 ### Steps
 
@@ -166,7 +173,7 @@ This dataset points to the `pipeline_audit` Delta table in Unity Catalog. It is 
 2. Search `Databricks` → select **Azure Databricks Delta Lake** → **Continue**
 3. Fill in:
    - **Name:** `ds_pipeline_audit_src`
-   - **Linked service:** `ls_databricks_sql`
+   - **Linked service:** `ls_databricks_cluster`
 4. Click **OK**
 
 ### Set the Table
@@ -178,27 +185,7 @@ This dataset points to the `pipeline_audit` Delta table in Unity Catalog. It is 
 
 6. **Publish all** → **Publish**
 
-> The table will be created automatically by ADF on the first write. You do not need to create it in Databricks first.
-
----
-
-## Part E — Create Dataset 4: `ds_pipeline_audit_sink`
-
-Identical table reference — separate dataset used as the **Copy Activity sink** for writing audit rows.
-
-### Steps
-
-1. **Datasets** → **+** → **New dataset**
-2. Select **Azure Databricks Delta Lake** → **Continue**
-3. Fill in:
-   - **Name:** `ds_pipeline_audit_sink`
-   - **Linked service:** `ls_databricks_sql`
-4. Click **OK**
-5. **Connection** tab:
-   - **Catalog:** `dbw_ev_intelligence_dev`
-   - **Database:** `default`
-   - **Table:** `pipeline_audit`
-6. **Publish all** → **Publish**
+> The table will be created automatically by `nb_write_audit` on the first pipeline run. You do not need to create it in Databricks first.
 
 ---
 
@@ -474,45 +461,37 @@ Identical table reference — separate dataset used as the **Copy Activity sink*
 
 ### Step 19 — Activity 13: `act_write_audit` ⭐ *New in v3*
 
-**Type:** Copy Activity — writes one audit row to the `pipeline_audit` Delta table. Runs after **both** `act_set_status_success` and `act_set_status_failed` — so it always runs regardless of outcome.
+**Type:** Notebook Activity — runs `nb_write_audit` on `dev-cluster`. Writes one audit row to `pipeline_audit` Delta table. Always runs after both status activities — success path and failure path.
 
-1. Drag **Copy data** → **Name:** `act_write_audit`
-2. Connect **two** arrows into `act_write_audit`:
+1. In the Activities panel → expand **Databricks** → drag **Notebook** onto the canvas
+2. **Name:** `act_write_audit`
+3. Connect **two** arrows into `act_write_audit`:
    - `act_set_status_success` → `act_write_audit` (condition: **Success**)
    - `act_set_status_failed` → `act_write_audit` (condition: **Success**)
 
-   > Both connections use "Success" — meaning "this activity completed" (even if the overall run is in a failed state). This ensures the audit row is always written.
+   > Both use "Success" condition — meaning "this activity completed running", not "the overall pipeline succeeded". This ensures the audit row is always written regardless of whether the loop succeeded or failed.
 
-#### Source tab:
+#### Azure Databricks tab:
 
-3. **Source dataset:** `ds_pipeline_audit_src`
-4. **Use query:** select **Query**
-5. **Query:** click **Add dynamic content** and paste:
-
-   ```
-   @concat(
-     'SELECT ',
-     '''pl_bronze_api_payments_v3'' AS pipeline_name, ',
-     '''', pipeline().parameters.p_load_type, ''' AS load_type, ',
-     '''', variables('v_watermark'), ''' AS watermark_value, ',
-     '''', variables('v_ingestion_date'), ''' AS ingestion_date, ',
-     string(variables('v_total_pages')), ' AS total_pages, ',
-     '''', variables('v_status'), ''' AS status, ',
-     '''', pipeline().RunId, ''' AS pipeline_run_id, ',
-     'current_timestamp() AS run_timestamp'
-   )
-   ```
-   Click **OK**
-
-   > This builds a SQL SELECT that returns exactly one row with all audit columns. ADF uses this as the source of the Copy Activity.
-
-#### Sink tab:
-
-6. **Sink dataset:** `ds_pipeline_audit_sink`
-7. **Import settings:** leave default (`AzureDatabricksDeltaLakeImportCommand`)
+4. **Databricks linked service:** `ls_databricks_cluster`
+5. **Notebook path:** `/Shared/adf_pipelines/nb_write_audit`
+   *(click the folder icon to browse, or type the path directly)*
 
 #### Settings tab:
-8. **Enable staging:** OFF
+
+6. **Base parameters** → click **+ New** for each:
+
+   | Name | Value (click Add dynamic content for each) |
+   |---|---|
+   | `pipeline_name` | `pl_bronze_api_payments_v3` *(type directly)* |
+   | `load_type` | `@pipeline().parameters.p_load_type` |
+   | `watermark_value` | `@variables('v_watermark')` |
+   | `ingestion_date` | `@variables('v_ingestion_date')` |
+   | `total_pages` | `@string(variables('v_total_pages'))` |
+   | `status` | `@variables('v_status')` |
+   | `pipeline_run_id` | `@pipeline().RunId` |
+
+> These parameters are read inside the notebook via `dbutils.widgets.get()` — each widget name must match exactly.
 
 ---
 
@@ -642,10 +621,11 @@ Auto-created on first `act_write_audit` run.
 
 | Error | Cause | Fix |
 |---|---|---|
-| `act_get_watermark` fails: `LinkedService not found` | `ls_databricks_sql` not created | Part A — create the linked service first |
-| `act_get_watermark` fails: `Table not found` | `pipeline_audit` table does not exist yet | Run a full load — `act_write_audit` creates the table automatically on first run |
-| `act_get_watermark` returns no rows | Table exists but has no succeeded rows | Check audit table — if all rows show `failed`, fix the pipeline and re-run |
-| `act_write_audit` fails: warehouse stopped | SQL Warehouse is paused | Start the warehouse in Databricks, or enable auto-start on the warehouse settings |
+| `act_get_watermark` fails: `LinkedService not found` | `ls_databricks_cluster` not created | Part A Step A2 — create the linked service first |
+| `act_get_watermark` fails: `Table not found` | `pipeline_audit` table does not exist yet | Run a full load first — `nb_write_audit` creates the table on first run |
+| `act_get_watermark` returns no rows | Table exists but has no succeeded rows | Check audit table in Databricks — if all rows show `failed`, fix the pipeline and re-run |
+| `act_write_audit` fails: notebook not found | Notebook not uploaded | Upload `nb_write_audit.py` to `/Shared/adf_pipelines/` in Databricks (Part A Step A1) |
+| `act_write_audit` fails: cluster terminated | `dev-cluster` auto-terminated | Databricks → Compute → start `dev-cluster` before triggering |
 | `act_get_username` 403 | ADF MI missing `Key Vault Secrets User` | Portal → Key Vault → IAM → assign role, wait 2 min |
 | `act_api_login` 401 | Wrong credentials | Check `voltgrid-username` and `voltgrid-password` in Key Vault |
 | Until loop runs only once | `v_total_pages` stayed at 1 | Monitor → `act_get_total_pages` output → confirm `pagination.total_pages` key |
