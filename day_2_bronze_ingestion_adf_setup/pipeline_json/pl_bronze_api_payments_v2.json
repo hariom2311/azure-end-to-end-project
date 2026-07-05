@@ -139,11 +139,51 @@
         }
       },
       {
+        "name": "act_get_total_pages",
+        "type": "WebActivity",
+        "dependsOn": [
+          {
+            "activity": "act_set_watermark",
+            "dependencyConditions": ["Succeeded"]
+          }
+        ],
+        "typeProperties": {
+          "url": {
+            "value": "@concat('https://ev-project-navy-mu.vercel.app/api/db/payments/?page=1&page_size=100', if(equals(variables('v_watermark'), '1900-01-01T00:00:00Z'), '', concat('&updated_after=', variables('v_watermark'))))",
+            "type": "Expression"
+          },
+          "method": "GET",
+          "headers": {
+            "Authorization": {
+              "value": "@concat('Token ', variables('v_token'))",
+              "type": "Expression"
+            }
+          }
+        }
+      },
+      {
+        "name": "act_set_total_pages",
+        "type": "SetVariable",
+        "dependsOn": [
+          {
+            "activity": "act_get_total_pages",
+            "dependencyConditions": ["Succeeded"]
+          }
+        ],
+        "typeProperties": {
+          "variableName": "v_total_pages",
+          "value": {
+            "value": "@activity('act_get_total_pages').output.pagination.total_pages",
+            "type": "Expression"
+          }
+        }
+      },
+      {
         "name": "act_paginate",
         "type": "Until",
         "dependsOn": [
           {
-            "activity": "act_set_watermark",
+            "activity": "act_set_total_pages",
             "dependencyConditions": ["Succeeded"]
           }
         ],
@@ -178,16 +218,7 @@
                     "filePattern": "setOfObjects"
                   }
                 },
-                "enableStaging": false,
-                "translator": {
-                  "type": "TabularTranslator",
-                  "mappings": [
-                    {
-                      "source": { "path": "['pagination']['total_pages']" },
-                      "sink": { "name": "total_pages_sink" }
-                    }
-                  ]
-                }
+                "enableStaging": false
               },
               "inputs": [
                 {
