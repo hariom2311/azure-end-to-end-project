@@ -1,13 +1,14 @@
 # 03 — Build v3 Payments Pipeline: Step by Step in ADF Studio
 **Day 3 | pl_bronze_api_payments_v3**
 
-This guide walks you through creating the v3 pipeline from scratch in ADF Studio UI — no JSON pasting required. v3 upgrades v2 by reading the watermark automatically from a `pipeline_audit` Delta table (no manual input) and writing an audit row via a Databricks notebook after every run.
+v3 upgrades v2 by:
+1. Reading the watermark automatically from `pipeline_audit.csv` in Bronze — no manual input needed.
+2. Writing an audit row to that same CSV after every run (success or failure).
+
+**No new linked services.** Everything reuses `ls_adls_bronze` from Day 2.
 
 > **Prerequisite:** Day 2 linked services must exist — `ls_keyvault`, `ls_voltgrid_api`, `ls_adls_bronze`.
-> **Also required:** Upload `notebooks/nb_write_audit.py` to Databricks and create `ls_databricks_cluster` in Part A below.
 > **If you prefer JSON paste:** use the `.json` files in this folder + `PIPELINE_NOTES_V3.md`.
-
-> **Note on SQL Warehouses:** ADF's Azure Databricks Delta Lake linked service supports **Spark clusters only** — it does not list SQL Warehouses in the dropdown. Use your existing `dev-cluster` (All-Purpose cluster) for both the Lookup Activity and the Notebook Activity.
 
 ---
 
@@ -15,12 +16,11 @@ This guide walks you through creating the v3 pipeline from scratch in ADF Studio
 
 | Artifact | Name | Purpose |
 |---|---|---|
-| Notebook | `nb_write_audit` | Databricks notebook — writes audit row to `pipeline_audit` Delta table |
-| Linked Service | `ls_databricks_cluster` | Connects ADF to `dev-cluster` — used by Lookup + Notebook activities |
-| Dataset | `ds_voltgrid_payments_src_v3` | Source — VoltGrid API with page + watermark parameters |
+| CSV file | `bronze/audit/pipeline_audit.csv` | Audit trail + watermark store — lives in Bronze ADLS |
+| Dataset | `ds_voltgrid_payments_src_v3` | Source — VoltGrid API (same as v2) |
 | Dataset | `ds_bronze_payments_sink_v3` | Sink — ADLS Bronze, partitioned by date and page |
-| Dataset | `ds_pipeline_audit_src` | Lookup source — reads `pipeline_audit` Delta table |
-| Pipeline | `pl_bronze_api_payments_v3` | Full + incremental, auto watermark, audit trail |
+| Dataset | `ds_pipeline_audit_csv` | Read/write `pipeline_audit.csv` via `ls_adls_bronze` |
+| Pipeline | `pl_bronze_api_payments_v3` | Full + incremental, auto watermark, CSV audit trail |
 
 **Pipeline parameter:**
 
@@ -32,9 +32,9 @@ This guide walks you through creating the v3 pipeline from scratch in ADF Studio
 
 | Variable | Type | Default | Purpose |
 |---|---|---|---|
-| `v_token` | String | — | API bearer token |
-| `v_watermark` | String | `1900-01-01T00:00:00Z` | Resolved from audit table automatically |
-| `v_ingestion_date` | String | — | Today's date — Bronze partition folder |
+| `v_token` | String | *(blank)* | API bearer token |
+| `v_watermark` | String | `1900-01-01T00:00:00Z` | Resolved from audit CSV automatically |
+| `v_ingestion_date` | String | *(blank)* | Today's date — Bronze partition folder |
 | `v_current_page` | Integer | `1` | Current loop page |
 | `v_temp_page` | Integer | `1` | Intermediate for page increment |
 | `v_total_pages` | Integer | `1` | Total pages from API |
@@ -42,56 +42,29 @@ This guide walks you through creating the v3 pipeline from scratch in ADF Studio
 
 ---
 
-## Part A — Upload Notebook + Create Linked Service
+## Part A — One-Time Setup: Create `pipeline_audit.csv` in Bronze
 
-### Step A1 — Upload `nb_write_audit` to Databricks
+This is done **once before the first pipeline run**. The file must exist with a header row so the Lookup Activity can parse column names.
 
-The audit notebook runs on `dev-cluster` after every pipeline run and writes one row to the `pipeline_audit` Delta table.
+### Step A1 — Create the file via Azure Portal
 
-1. Open your Databricks workspace
-2. Left sidebar → **Workspace** → **Shared**
-3. Click the **⋮** menu → **Create** → **Folder** → name it `adf_pipelines`
-4. Inside `adf_pipelines` → click **⋮** → **Import**
-5. Select **File** → upload `notebooks/nb_write_audit.py` from this directory
-6. Confirm the notebook appears at: `/Shared/adf_pipelines/nb_write_audit`
+1. Go to [portal.azure.com](https://portal.azure.com) → your storage account → **Containers** → `bronze`
+2. Click **+ Add directory** → type `audit` → click **Save**
+3. Click into the `audit` folder
+4. On your local machine, create a file named `pipeline_audit.csv` with exactly this content (one line only):
+   ```
+   pipeline_name,load_type,watermark_value,ingestion_date,total_pages,status,pipeline_run_id,run_timestamp
+   ```
+5. In the Portal, click **Upload** → select your `pipeline_audit.csv` → **Upload**
+6. Confirm the file appears at: `bronze/audit/pipeline_audit.csv`
 
-> This path is hardcoded in `pl_bronze_api_payments_v3.json`. If you use a different path, update the `notebookPath` field in the pipeline JSON.
-
----
-
-### Step A2 — Create `ls_databricks_cluster` Linked Service
-
-This linked service connects ADF to your `dev-cluster` (All-Purpose Spark cluster). It is used by:
-- The **Lookup Activity** (`act_get_watermark`) — reads the `pipeline_audit` Delta table
-- The **Notebook Activity** (`act_write_audit`) — runs `nb_write_audit`
-
-> **Why not SQL Warehouse?** ADF's Azure Databricks linked service only works with Spark clusters. SQL Warehouses are for BI tools (Power BI, JDBC). All ADF pipeline activities require a Spark cluster.
-
-1. ADF Studio → **Manage** → **Linked services** → **+ New**
-2. In the new linked service dialog → click the **Compute** tab (next to Data Store)
-3. Select **Azure Databricks** → **Continue**
-
-   > **Important:** Do NOT search in the Data Store tab — it only shows "Azure Databricks Delta Lake" which is for Delta table datasets, not cluster/notebook activities. The plain "Azure Databricks" entry is under the **Compute** tab.
-3. Fill in:
-   - **Name:** `ls_databricks_cluster`
-   - **Account selection method:** From Azure subscription
-   - **Azure subscription:** select yours
-   - **Databricks workspace:** `dbw-ev-intelligence-dev`
-   - **Select cluster:** `Existing interactive cluster`
-   - **Existing cluster ID:** select `dev-cluster` from the dropdown
-   - **Authentication:** Access token → click **Azure Key Vault** tab → **AKV linked service:** `ls_keyvault` → **Secret name:** `databricks-pat-token`
-4. Click **Test connection** → **Connection successful**
-5. Click **Create** → **Publish all**
-
-> If `dev-cluster` does not appear in the dropdown, make sure the cluster is running in Databricks → Compute. Start it, wait 1 minute, then refresh the ADF linked service form.
+> After the first full-load pipeline run, this file will have one data row appended below the header. You can open it in the Portal or Storage Explorer at any time to inspect or manually edit the watermark.
 
 ---
 
 ## Part B — Create Dataset 1: `ds_voltgrid_payments_src_v3`
 
-Same as `ds_voltgrid_payments_src_v2` — three parameters, dynamic URL. Create a separate v3 version to keep it independent.
-
-### Steps
+Same as `ds_voltgrid_payments_src_v2` — three parameters, dynamic URL. Create a separate v3 copy.
 
 1. **Author** → **Datasets** → **+** → **New dataset**
 2. Search `REST` → select **REST** → **Continue**
@@ -111,7 +84,7 @@ Same as `ds_voltgrid_payments_src_v2` — three parameters, dynamic URL. Create 
    | `p_page_size` | Int | `100` |
    | `p_updated_after` | String | `1900-01-01T00:00:00Z` |
 
-### Set the Dynamic URL
+### Set Dynamic URL
 
 6. **Connection** tab → **Relative URL** → **Add dynamic content**:
    ```
@@ -124,10 +97,6 @@ Same as `ds_voltgrid_payments_src_v2` — three parameters, dynamic URL. Create 
 ---
 
 ## Part C — Create Dataset 2: `ds_bronze_payments_sink_v3`
-
-Same structure as v2 sink — partitioned Bronze path.
-
-### Steps
 
 1. **Datasets** → **+** → **New dataset**
 2. Search `Azure Data Lake Storage Gen2` → **Continue**
@@ -155,44 +124,41 @@ Same structure as v2 sink — partitioned Bronze path.
      ```
      @concat('api/payments/raw/ingestion_date=', dataset().p_ingestion_date)
      ```
-     Click **OK**
    - **File** → **Add dynamic content**:
      ```
      @concat('page_', string(dataset().p_page), '.json')
      ```
-     Click **OK**
 
 8. **Publish all** → **Publish**
 
 ---
 
-## Part D — Create Dataset 3: `ds_pipeline_audit_src`
+## Part D — Create Dataset 3: `ds_pipeline_audit_csv`
 
-This dataset points to the `pipeline_audit` Delta table in Unity Catalog. It is used only by the **Lookup Activity** (`act_get_watermark`) to read the watermark. The audit write is now done by the notebook — no sink dataset needed.
-
-### Steps
+This single dataset is used for **both reading** (Lookup Activity) and **writing** (Copy Activity sink) the audit CSV. It points to `bronze/audit/pipeline_audit.csv` using `ls_adls_bronze` — no new linked service needed.
 
 1. **Datasets** → **+** → **New dataset**
-2. Search `Databricks` → select **Azure Databricks Delta Lake** → **Continue**
-3. Fill in:
-   - **Name:** `ds_pipeline_audit_src`
-   - **Linked service:** `ls_databricks_cluster`
-4. Click **OK**
+2. Search `Azure Data Lake Storage Gen2` → **Continue**
+3. Select **DelimitedText** → **Continue**
+4. Fill in:
+   - **Name:** `ds_pipeline_audit_csv`
+   - **Linked service:** `ls_adls_bronze`
+   - **File system:** `bronze`
+   - **Directory:** `audit`
+   - **File:** `pipeline_audit.csv`
+   - **First row as header:** toggle **ON**
+5. Click **OK**
 
-### Set the Table
+6. **Connection** tab — verify:
+   - **Column delimiter:** Comma (`,`)
+   - **Row delimiter:** Default (`\n`)
+   - **First row as header:** checked
 
-5. **Connection** tab:
-   - **Catalog:** `dbw_ev_intelligence_dev`
-   - **Database:** `default`
-   - **Table:** `pipeline_audit`
-
-6. **Publish all** → **Publish**
-
-> The table will be created automatically by `nb_write_audit` on the first pipeline run. You do not need to create it in Databricks first.
+7. **Publish all** → **Publish**
 
 ---
 
-## Part F — Create Pipeline: `pl_bronze_api_payments_v3`
+## Part E — Create Pipeline: `pl_bronze_api_payments_v3`
 
 ### Step 1 — Create the Pipeline Shell
 
@@ -241,7 +207,7 @@ This dataset points to the `pipeline_audit` Delta table in Unity Catalog. It is 
 **Type:** Web Activity
 
 1. Drag **Web** → **Name:** `act_get_password`
-2. Connect success arrow: `act_get_username` → `act_get_password`
+2. Connect: `act_get_username` → `act_get_password`
 3. **Settings:**
    - **URL:** `https://kv-ev-intelligence-dev.vault.azure.net/secrets/voltgrid-password/?api-version=7.0`
    - **Method:** GET
@@ -260,11 +226,10 @@ This dataset points to the `pipeline_audit` Delta table in Unity Catalog. It is 
    - **URL:** `https://ev-project-navy-mu.vercel.app/api/auth/login/`
    - **Method:** POST
    - **Headers:** `Content-Type` = `application/json`
-   - **Body:** **Add dynamic content**:
+   - **Body** → **Add dynamic content**:
      ```
      @concat('{"username":"', activity('act_get_username').output.value, '","password":"', activity('act_get_password').output.value, '"}')
      ```
-     Click **OK**
 
 ---
 
@@ -276,7 +241,7 @@ This dataset points to the `pipeline_audit` Delta table in Unity Catalog. It is 
 2. Connect: `act_api_login` → `act_set_token`
 3. **Settings:**
    - **Variable:** `v_token`
-   - **Value:** **Add dynamic content** → `@activity('act_api_login').output.token` → OK
+   - **Value:** `@activity('act_api_login').output.token`
 
 ---
 
@@ -288,74 +253,64 @@ This dataset points to the `pipeline_audit` Delta table in Unity Catalog. It is 
 2. Connect: `act_set_token` → `act_set_ingestion_date`
 3. **Settings:**
    - **Variable:** `v_ingestion_date`
-   - **Value:** **Add dynamic content** → `@formatDateTime(utcNow(), 'yyyy-MM-dd')` → OK
+   - **Value:** `@formatDateTime(utcNow(), 'yyyy-MM-dd')`
 
 ---
 
 ### Step 9 — Activity 6: `act_get_watermark` ⭐ *New in v3*
 
-**Type:** Lookup Activity — queries `pipeline_audit` Delta table via Databricks SQL Warehouse to get the watermark automatically. No manual input needed.
+**Type:** Lookup Activity — reads `pipeline_audit.csv` from Bronze to get the watermark automatically.
 
-1. In the Activities panel → expand **General** → drag **Lookup** onto the canvas
-2. **Name:** `act_get_watermark`
-3. Connect: `act_set_ingestion_date` → `act_get_watermark`
+> For a **full load** the pipeline ignores the Lookup output and uses the `v_watermark` default (`1900-01-01T00:00:00Z`). For an **incremental load** it reads `watermark_value` from the first data row of the CSV.
+
+1. Activities panel → expand **General** → drag **Lookup** → **Name:** `act_get_watermark`
+2. Connect: `act_set_ingestion_date` → `act_get_watermark`
 
 #### Settings tab:
 
-4. **Source dataset:** `ds_pipeline_audit_src`
-5. **Use query:** select **Query** (not Table)
-6. **Query:** click **Add dynamic content** and paste this expression:
+3. **Source dataset:** `ds_pipeline_audit_csv`
+4. **Use query:** select **Dataset** (reads all rows; first row only will be taken)
+5. **First row only:** toggle **ON**
 
-   ```
-   @if(
-     equals(pipeline().parameters.p_load_type, 'full'),
-     'SELECT ''1900-01-01T00:00:00Z'' AS last_watermark',
-     concat(
-       'SELECT COALESCE(MAX(watermark_value), ''1900-01-01T00:00:00Z'') AS last_watermark FROM dbw_ev_intelligence_dev.default.pipeline_audit WHERE pipeline_name = ''pl_bronze_api_payments_v3'' AND status = ''succeeded'''
-     )
-   )
-   ```
-   Click **OK**
-
-7. **First row only:** toggle **ON**
-
-> **What this does:**
-> - Full load → returns the constant `1900-01-01T00:00:00Z` (no table read needed)
-> - Incremental → reads `MAX(watermark_value)` from the last succeeded run
-> - Output accessed as: `activity('act_get_watermark').output.firstRow.last_watermark`
+> This returns `activity('act_get_watermark').output.firstRow.watermark_value` — the `watermark_value` column from the first data row of the CSV.
 
 ---
 
 ### Step 10 — Activity 7: `act_set_watermark`
 
-**Type:** Set Variable — stores the watermark returned by the Lookup.
+**Type:** Set Variable — chooses the watermark based on load type.
 
 1. Drag **Set variable** → **Name:** `act_set_watermark`
 2. Connect: `act_get_watermark` → `act_set_watermark`
 3. **Settings:**
    - **Variable:** `v_watermark`
-   - **Value:** **Add dynamic content**:
+   - **Value** → **Add dynamic content**:
      ```
-     @activity('act_get_watermark').output.firstRow.last_watermark
+     @if(
+       equals(pipeline().parameters.p_load_type, 'full'),
+       '1900-01-01T00:00:00Z',
+       activity('act_get_watermark').output.firstRow.watermark_value
+     )
      ```
      Click **OK**
+
+> Full load always uses the epoch constant regardless of what is in the CSV. Incremental reads from the CSV.
 
 ---
 
 ### Step 11 — Activity 8: `act_get_total_pages`
 
-**Type:** Web Activity — calls page 1 to read total pages before starting the loop.
+**Type:** Web Activity
 
 1. Drag **Web** → **Name:** `act_get_total_pages`
 2. Connect: `act_set_watermark` → `act_get_total_pages`
 3. **Settings:**
-   - **URL:** **Add dynamic content**:
+   - **URL** → **Add dynamic content**:
      ```
      @concat('https://ev-project-navy-mu.vercel.app/api/db/payments/?page=1&page_size=100&updated_after=', variables('v_watermark'))
      ```
-     Click **OK**
    - **Method:** GET
-   - **Headers:** `Authorization` → **Add dynamic content** → `@concat('Token ', variables('v_token'))` → OK
+   - **Headers:** `Authorization` → `@concat('Token ', variables('v_token'))`
 
 ---
 
@@ -367,11 +322,7 @@ This dataset points to the `pipeline_audit` Delta table in Unity Catalog. It is 
 2. Connect: `act_get_total_pages` → `act_set_total_pages`
 3. **Settings:**
    - **Variable:** `v_total_pages`
-   - **Value:** **Add dynamic content**:
-     ```
-     @activity('act_get_total_pages').output.pagination.total_pages
-     ```
-     Click **OK**
+   - **Value:** `@activity('act_get_total_pages').output.pagination.total_pages`
 
 ---
 
@@ -380,11 +331,7 @@ This dataset points to the `pipeline_audit` Delta table in Unity Catalog. It is 
 1. Drag **Until** → **Name:** `act_paginate`
 2. Connect: `act_set_total_pages` → `act_paginate`
 3. **Settings:**
-   - **Expression:** **Add dynamic content**:
-     ```
-     @greater(variables('v_current_page'), variables('v_total_pages'))
-     ```
-     Click **OK**
+   - **Expression:** `@greater(variables('v_current_page'), variables('v_total_pages'))`
    - **Timeout:** `0.12:00:00`
 
 #### Open loop canvas — click the pencil icon inside the Until box
@@ -400,17 +347,17 @@ This dataset points to the `pipeline_audit` Delta table in Unity Catalog. It is 
 #### Source tab:
 - **Source dataset:** `ds_voltgrid_payments_src_v3`
 - **Dataset parameters:**
-  - `p_page` → **Add dynamic content** → `@variables('v_current_page')` → OK
+  - `p_page` → `@variables('v_current_page')`
   - `p_page_size` → `100`
-  - `p_updated_after` → **Add dynamic content** → `@variables('v_watermark')` → OK
-- **Additional headers:** `Authorization` → **Add dynamic content** → `@concat('Token ', variables('v_token'))` → OK
+  - `p_updated_after` → `@variables('v_watermark')`
+- **Additional headers:** `Authorization` → `@concat('Token ', variables('v_token'))`
 - **Request method:** GET
 
 #### Sink tab:
 - **Sink dataset:** `ds_bronze_payments_sink_v3`
 - **Dataset parameters:**
-  - `p_ingestion_date` → **Add dynamic content** → `@variables('v_ingestion_date')` → OK
-  - `p_page` → **Add dynamic content** → `@variables('v_current_page')` → OK
+  - `p_ingestion_date` → `@variables('v_ingestion_date')`
+  - `p_page` → `@variables('v_current_page')`
 
 ---
 
@@ -420,7 +367,7 @@ This dataset points to the `pipeline_audit` Delta table in Unity Catalog. It is 
 2. Connect: `act_copy_payments_page` → `act_set_temp_page`
 3. **Settings:**
    - **Variable:** `v_temp_page`
-   - **Value:** **Add dynamic content** → `@add(variables('v_current_page'), 1)` → OK
+   - **Value:** `@add(variables('v_current_page'), 1)`
 
 ---
 
@@ -430,31 +377,31 @@ This dataset points to the `pipeline_audit` Delta table in Unity Catalog. It is 
 2. Connect: `act_set_temp_page` → `act_increment_page`
 3. **Settings:**
    - **Variable:** `v_current_page`
-   - **Value:** **Add dynamic content** → `@variables('v_temp_page')` → OK
+   - **Value:** `@variables('v_temp_page')`
 
-#### Exit the loop — click the pipeline name in the breadcrumb to return to the main canvas
+#### Exit the loop — click the pipeline name in the breadcrumb
 
 ---
 
 ### Step 17 — Activity 11: `act_set_status_success` ⭐ *New in v3*
 
-**Type:** Set Variable — marks the run as succeeded after the loop completes normally.
+**Type:** Set Variable
 
 1. Drag **Set variable** → **Name:** `act_set_status_success`
-2. Connect arrow from `act_paginate` → `act_set_status_success`
+2. Connect: `act_paginate` → `act_set_status_success`
    - **Dependency condition:** **Success** (default)
 3. **Settings:**
    - **Variable:** `v_status`
-   - **Value:** type `succeeded` directly (no dynamic content needed)
+   - **Value:** type `succeeded` directly (no dynamic content)
 
 ---
 
 ### Step 18 — Activity 12: `act_set_status_failed` ⭐ *New in v3*
 
-**Type:** Set Variable — marks the run as failed if the loop fails.
+**Type:** Set Variable
 
 1. Drag **Set variable** → **Name:** `act_set_status_failed`
-2. Connect arrow from `act_paginate` → `act_set_status_failed`
+2. Connect: `act_paginate` → `act_set_status_failed`
    - Click the arrow → change **Dependency condition** to **Failure**
 3. **Settings:**
    - **Variable:** `v_status`
@@ -464,37 +411,55 @@ This dataset points to the `pipeline_audit` Delta table in Unity Catalog. It is 
 
 ### Step 19 — Activity 13: `act_write_audit` ⭐ *New in v3*
 
-**Type:** Notebook Activity — runs `nb_write_audit` on `dev-cluster`. Writes one audit row to `pipeline_audit` Delta table. Always runs after both status activities — success path and failure path.
+**Type:** Copy Activity — appends one CSV row to `pipeline_audit.csv` in Bronze. Uses an **inline dataset** as source (no separate file needed) and `ds_pipeline_audit_csv` as sink.
 
-1. In the Activities panel → expand **Databricks** → drag **Notebook** onto the canvas
-2. **Name:** `act_write_audit`
-3. Connect **two** arrows into `act_write_audit`:
+Always runs after both status activities — regardless of whether the loop succeeded or failed.
+
+1. Drag **Copy data** → **Name:** `act_write_audit`
+2. Connect **two** arrows into `act_write_audit`:
    - `act_set_status_success` → `act_write_audit` (condition: **Success**)
    - `act_set_status_failed` → `act_write_audit` (condition: **Success**)
 
-   > Both use "Success" condition — meaning "this activity completed running", not "the overall pipeline succeeded". This ensures the audit row is always written regardless of whether the loop succeeded or failed.
+   > Both use "Success" condition — meaning "this Set Variable activity completed running", not "the pipeline succeeded". This ensures the audit row is always written.
 
-#### Azure Databricks tab:
+#### Source tab:
 
-4. **Databricks linked service:** `ls_databricks_cluster`
-5. **Notebook path:** `/Shared/adf_pipelines/nb_write_audit`
-   *(click the folder icon to browse, or type the path directly)*
+3. **Source type:** select **DelimitedText**
+4. Click **Use inline dataset**
+5. **Linked service:** `ls_adls_bronze`
 
-#### Settings tab:
+   Under **Inline dataset** → set these to blank/default so we override with dynamic content:
+   - **File system:** `bronze`
+   - **Directory:** leave blank
+   - **File name:** leave blank
 
-6. **Base parameters** → click **+ New** for each:
+6. **File path type:** select **Wildcard file path** — but we will supply the content via the **Additional columns** approach instead.
 
-   | Name | Value (click Add dynamic content for each) |
-   |---|---|
-   | `pipeline_name` | `pl_bronze_api_payments_v3` *(type directly)* |
-   | `load_type` | `@pipeline().parameters.p_load_type` |
-   | `watermark_value` | `@variables('v_watermark')` |
-   | `ingestion_date` | `@variables('v_ingestion_date')` |
-   | `total_pages` | `@string(variables('v_total_pages'))` |
-   | `status` | `@variables('v_status')` |
-   | `pipeline_run_id` | `@pipeline().RunId` |
+   > **Simpler approach:** Rather than an inline file, use the Copy Activity's **Additional columns** feature to inject dynamic values into a static source file. Here is the actual pattern:
 
-> These parameters are read inside the notebook via `dbutils.widgets.get()` — each widget name must match exactly.
+   **Revised Source setup:**
+   - **Source dataset:** `ds_pipeline_audit_csv` (same dataset, reuse it)
+   - **Additional columns** → **+ New** for each audit field:
+
+     | Name | Value (Add dynamic content) |
+     |---|---|
+     | `pipeline_name` | `pl_bronze_api_payments_v3` |
+     | `load_type` | `@pipeline().parameters.p_load_type` |
+     | `watermark_value` | `@variables('v_watermark')` |
+     | `ingestion_date` | `@variables('v_ingestion_date')` |
+     | `total_pages` | `@string(variables('v_total_pages'))` |
+     | `status` | `@variables('v_status')` |
+     | `pipeline_run_id` | `@pipeline().RunId` |
+     | `run_timestamp` | `@utcNow()` |
+
+   > This copies the existing header row, injects the dynamic values as a new row, and writes it to the sink. The sink uses **append** mode so each run adds a row.
+
+   > **Alternative (simpler, paste JSON approach):** Paste `pl_bronze_api_payments_v3.json` which uses a **Web Activity** to construct the CSV row as a string and a Copy Activity with a binary inline source. See the JSON file for the exact definition — it is easier to paste than to configure the inline dataset via UI.
+
+#### Sink tab:
+
+7. **Sink dataset:** `ds_pipeline_audit_csv`
+8. **Copy behavior:** select **Append dynamic content** — or leave default; ADF writes to the same file in append mode because the sink dataset points to an existing file
 
 ---
 
@@ -505,9 +470,9 @@ This dataset points to the `pipeline_audit` Delta table in Unity Catalog. It is 
 
 ---
 
-## Part G — Trigger and Verify
+## Part F — Trigger and Verify
 
-### First run — Full load (run once manually)
+### First run — Full load
 
 1. `pl_bronze_api_payments_v3` → **Add trigger** → **Trigger now**
 2. Parameters:
@@ -515,108 +480,43 @@ This dataset points to the `pipeline_audit` Delta table in Unity Catalog. It is 
 3. Click **OK**
 4. **Monitor** → **Pipeline runs** → all 13 activities should turn green
 
-### Check the audit table after full load
+### Check the audit CSV after full load
 
-In a Databricks notebook or SQL editor:
-```sql
-SELECT pipeline_name, load_type, watermark_value, ingestion_date, total_pages, status, run_timestamp
-FROM dbw_ev_intelligence_dev.default.pipeline_audit
-ORDER BY run_timestamp DESC
-LIMIT 5;
-```
+1. Portal → your storage account → **Containers** → `bronze` → `audit` → click `pipeline_audit.csv`
+2. Click **Edit** (or download)
+3. You should see two rows: the header + one data row with `load_type = full` and `status = succeeded`
 
-You should see one row with `load_type = full` and `status = succeeded`.
+### Update the watermark after full load (one-time manual step)
 
-### Advance the watermark after full load
+The full load wrote `watermark_value = 1900-01-01T00:00:00Z`. Edit `pipeline_audit.csv` to set this to the actual latest `updated_at` timestamp from your Bronze payment data:
 
-The full load wrote `watermark_value = 1900-01-01T00:00:00Z`. For the next incremental run to fetch only new records, update the audit table once with the actual max timestamp from your Bronze data:
+1. Download `pipeline_audit.csv` from Portal
+2. Change `watermark_value` in the data row to the max `updated_at` value (e.g. `2026-07-05T23:59:00Z`)
+3. Re-upload to `bronze/audit/pipeline_audit.csv` (overwrite)
 
-```sql
-UPDATE dbw_ev_intelligence_dev.default.pipeline_audit
-SET watermark_value = (
-  SELECT MAX(updated_at)
-  FROM delta.`abfss://bronze@evdatalakedev.dfs.core.windows.net/api/payments/raw/`
-  LATERAL VIEW explode(data) t AS updated_at
-  WHERE ingestion_date = '<your ingestion_date folder>'
-)
-WHERE pipeline_name = 'pl_bronze_api_payments_v3'
-  AND status = 'succeeded'
-  AND load_type = 'full';
-```
+> Day 8 (Orchestration) will automate this step.
 
-> Day 8 (Orchestration) will automate this step — a separate pipeline reads `MAX(updated_at)` from Bronze and updates the audit record automatically.
-
-### Daily scheduled run — Incremental
-
-Set up a daily trigger so the pipeline runs automatically:
-
-1. `pl_bronze_api_payments_v3` → **Add trigger** → **New/Edit**
-2. **+ New**:
-   - **Name:** `trg_payments_daily`
-   - **Type:** Schedule
-   - **Recurrence:** Every 1 Day at `01:00 UTC`
-3. Click **Next**
-4. **Parameters:**
-   - `p_load_type`: `incremental`
-5. Click **Finish** → **Publish all**
-
-Each run automatically reads the watermark from the last succeeded row in `pipeline_audit` — no manual input ever again.
-
-### Verify Bronze output
+### Verify Bronze payment output
 
 ```python
-# List all partitions
+# In a Databricks notebook or ADF Data Flow preview:
 display(dbutils.fs.ls("abfss://bronze@evdatalakedev.dfs.core.windows.net/api/payments/raw/"))
 
-# Read one page
 df = spark.read.option("multiLine", "true").json(
-    "abfss://bronze@evdatalakedev.dfs.core.windows.net/api/payments/raw/ingestion_date=2026-07-05/page_1.json"
+    "abfss://bronze@evdatalakedev.dfs.core.windows.net/api/payments/raw/ingestion_date=2026-07-06/page_1.json"
 )
 display(df.limit(5))
 ```
 
----
+### Daily scheduled run — Incremental
 
-## How the Watermark Advances Automatically
-
-```
-Run 1  (full)
-  act_get_watermark  → SELECT '1900-01-01T00:00:00Z' AS last_watermark
-  v_watermark        = 1900-01-01T00:00:00Z
-  API fetches ALL records
-  act_write_audit    → watermark_value = 1900-01-01T00:00:00Z, status = succeeded
-
-  [Manual step once: UPDATE audit SET watermark_value = MAX(updated_at) from Bronze]
-
-Run 2  (incremental)
-  act_get_watermark  → SELECT COALESCE(MAX(watermark_value),...) → returns 2026-07-04T09:43:00Z
-  v_watermark        = 2026-07-04T09:43:00Z
-  API fetches only records updated after that timestamp
-  act_write_audit    → watermark_value = 2026-07-04T09:43:00Z, status = succeeded
-
-Run 3  (incremental — next day)
-  act_get_watermark  → returns 2026-07-04T09:43:00Z (last succeeded watermark)
-  API fetches only new records since Run 2
-  ...and so on
-```
-
----
-
-## Audit Table Schema
-
-**Table:** `dbw_ev_intelligence_dev.default.pipeline_audit`
-Auto-created on first `act_write_audit` run.
-
-| Column | Type | Description |
-|---|---|---|
-| `pipeline_name` | STRING | `pl_bronze_api_payments_v3` |
-| `load_type` | STRING | `full` or `incremental` |
-| `watermark_value` | STRING | `updated_after` value used this run |
-| `ingestion_date` | STRING | Bronze partition date |
-| `total_pages` | INT | Pages fetched this run |
-| `status` | STRING | `succeeded` or `failed` |
-| `pipeline_run_id` | STRING | ADF RunId — links to ADF Monitor |
-| `run_timestamp` | TIMESTAMP | UTC time this row was written |
+1. `pl_bronze_api_payments_v3` → **Add trigger** → **New/Edit** → **+ New**
+   - **Name:** `trg_payments_daily`
+   - **Type:** Schedule
+   - **Recurrence:** Every 1 Day at `01:00 UTC`
+2. Click **Next**
+3. **Parameters:** `p_load_type` = `incremental`
+4. Click **Finish** → **Publish all**
 
 ---
 
@@ -624,15 +524,11 @@ Auto-created on first `act_write_audit` run.
 
 | Error | Cause | Fix |
 |---|---|---|
-| `act_get_watermark` fails: `LinkedService not found` | `ls_databricks_cluster` not created | Part A Step A2 — create the linked service first |
-| `act_get_watermark` fails: `Table not found` | `pipeline_audit` table does not exist yet | Run a full load first — `nb_write_audit` creates the table on first run |
-| `act_get_watermark` returns no rows | Table exists but has no succeeded rows | Check audit table in Databricks — if all rows show `failed`, fix the pipeline and re-run |
-| `act_write_audit` fails: notebook not found | Notebook not uploaded | Upload `nb_write_audit.py` to `/Shared/adf_pipelines/` in Databricks (Part A Step A1) |
-| `act_write_audit` fails: cluster terminated | `dev-cluster` auto-terminated | Databricks → Compute → start `dev-cluster` before triggering |
+| `act_get_watermark` fails: file not found | `pipeline_audit.csv` not in `bronze/audit/` | Upload the CSV with header row (Part A above) |
+| `act_get_watermark` returns `firstRow` with empty `watermark_value` | CSV has only the header row, no data yet | Run a full load first to write the first data row |
+| Incremental run fetches all records | Watermark still shows `1900-01-01T00:00:00Z` | Edit `pipeline_audit.csv` and set `watermark_value` to the actual max timestamp (see Part F above) |
+| `act_write_audit` not always running | Missing second dependency arrow | Ensure both `act_set_status_success` and `act_set_status_failed` connect to `act_write_audit` with **Success** condition |
+| `act_write_audit` permission denied | ADF MI missing `Storage Blob Data Contributor` | Portal → Storage Account → IAM → assign `Storage Blob Data Contributor` to ADF managed identity |
 | `act_get_username` 403 | ADF MI missing `Key Vault Secrets User` | Portal → Key Vault → IAM → assign role, wait 2 min |
 | `act_api_login` 401 | Wrong credentials | Check `voltgrid-username` and `voltgrid-password` in Key Vault |
-| Until loop runs only once | `v_total_pages` stayed at 1 | Monitor → `act_get_total_pages` output → confirm `pagination.total_pages` key |
-| `act_copy_payments_page` 403 | ADF MI missing `Storage Blob Data Contributor` | Portal → Storage → IAM → assign role |
-| Incremental fetches all records | Watermark not updated after full load | Run the UPDATE SQL above after the first full load |
-| `act_set_status_failed` never runs | Wrong dependency condition | Click the arrow from `act_paginate` to this activity → ensure condition is **Failure** |
-| `act_write_audit` not always running | Missing second dependency | Ensure both `act_set_status_success` and `act_set_status_failed` connect to `act_write_audit` with Success condition |
+| Until loop runs only once | `v_total_pages` stayed at 1 | Monitor → `act_get_total_pages` output → confirm `pagination.total_pages` key exists |

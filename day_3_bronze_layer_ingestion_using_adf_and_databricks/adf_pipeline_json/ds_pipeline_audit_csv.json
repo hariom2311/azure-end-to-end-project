@@ -1,0 +1,24 @@
+{
+  "name": "ds_pipeline_audit_csv",
+  "properties": {
+    "description": "DelimitedText dataset pointing to bronze/audit/pipeline_audit.csv on ADLS Gen2. Used as both the Lookup source (act_get_watermark reads watermark_value from first row) and the Copy sink (act_write_audit appends one audit row after each run). Uses ls_adls_bronze — no new linked service needed.",
+    "linkedServiceName": {
+      "referenceName": "ls_adls_bronze",
+      "type": "LinkedServiceReference"
+    },
+    "type": "DelimitedText",
+    "typeProperties": {
+      "location": {
+        "type": "AzureBlobFSLocation",
+        "fileSystem": "bronze",
+        "folderPath": "audit",
+        "fileName": "pipeline_audit.csv"
+      },
+      "columnDelimiter": ",",
+      "rowDelimiter": "\n",
+      "firstRowAsHeader": true,
+      "quoteChar": "\"",
+      "escapeChar": "\\"
+    }
+  }
+}

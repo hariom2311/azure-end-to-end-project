@@ -1,7 +1,7 @@
 {
   "name": "pl_bronze_api_payments_v3",
   "properties": {
-    "description": "Payments API to Bronze. Full load on first run. Incremental reads watermark automatically from dbw_ev_intelligence_dev.default.pipeline_audit via Databricks Delta Lake Lookup Activity (uses dev-cluster). Audit row written via Notebook Activity (nb_write_audit) after every run (success or failure).",
+    "description": "Payments API to Bronze. Full load on first run. Incremental reads watermark automatically from bronze/audit/pipeline_audit.csv via Lookup Activity (ls_adls_bronze). Audit row appended to same CSV via Copy Activity after every run (success or failure). No Databricks linked service required.",
     "parameters": {
       "p_load_type": {
         "type": "string",
@@ -103,21 +103,25 @@
 
       {
         "name": "act_get_watermark",
-        "description": "Lookup Activity — queries pipeline_audit Delta table via ls_databricks_cluster (dev-cluster, All-Purpose Spark cluster). For full load returns the epoch date constant. For incremental returns MAX(watermark_value) from last succeeded run. Result accessed via activity('act_get_watermark').output.firstRow.last_watermark.",
+        "description": "Lookup Activity — reads the first row of bronze/audit/pipeline_audit.csv via ls_adls_bronze. Returns watermark_value column from the last audit row. Used by act_set_watermark to resolve the incremental watermark. For full loads the output is ignored.",
         "type": "Lookup",
         "dependsOn": [
           { "activity": "act_set_ingestion_date", "dependencyConditions": ["Succeeded"] }
         ],
         "typeProperties": {
           "source": {
-            "type": "AzureDatabricksDeltaLakeSource",
-            "query": {
-              "value": "@if(\n  equals(pipeline().parameters.p_load_type, 'full'),\n  'SELECT ''1900-01-01T00:00:00Z'' AS last_watermark',\n  concat(\n    'SELECT COALESCE(MAX(watermark_value), ''1900-01-01T00:00:00Z'') AS last_watermark FROM dbw_ev_intelligence_dev.default.pipeline_audit WHERE pipeline_name = ''pl_bronze_api_payments_v3'' AND status = ''succeeded'''\n  )\n)",
-              "type": "Expression"
+            "type": "DelimitedTextSource",
+            "storeSettings": {
+              "type": "AzureBlobFSReadSettings",
+              "recursive": false,
+              "enablePartitionDiscovery": false
+            },
+            "formatSettings": {
+              "type": "DelimitedTextReadSettings"
             }
           },
           "dataset": {
-            "referenceName": "ds_pipeline_audit_src",
+            "referenceName": "ds_pipeline_audit_csv",
             "type": "DatasetReference"
           },
           "firstRowOnly": true
@@ -126,7 +130,7 @@
 
       {
         "name": "act_set_watermark",
-        "description": "Store the watermark resolved by the Lookup into v_watermark. All subsequent API calls use this as updated_after.",
+        "description": "For full load: use epoch constant. For incremental: use watermark_value from the CSV Lookup result.",
         "type": "SetVariable",
         "dependsOn": [
           { "activity": "act_get_watermark", "dependencyConditions": ["Succeeded"] }
@@ -134,7 +138,7 @@
         "typeProperties": {
           "variableName": "v_watermark",
           "value": {
-            "value": "@activity('act_get_watermark').output.firstRow.last_watermark",
+            "value": "@if(\n  equals(pipeline().parameters.p_load_type, 'full'),\n  '1900-01-01T00:00:00Z',\n  activity('act_get_watermark').output.firstRow.watermark_value\n)",
             "type": "Expression"
           }
         }
@@ -302,28 +306,59 @@
 
       {
         "name": "act_write_audit",
-        "description": "Notebook Activity — runs nb_write_audit on dev-cluster to write one audit row to dbw_ev_intelligence_dev.default.pipeline_audit. Always runs after both status activities (success and failure paths). Passes all pipeline variables as notebook parameters via dbutils.widgets.",
-        "type": "DatabricksNotebook",
+        "description": "Copy Activity — appends one audit row to bronze/audit/pipeline_audit.csv via ls_adls_bronze. Always runs after both status activities. Source is the same CSV (additional columns inject dynamic values). Sink appends to the same file.",
+        "type": "Copy",
         "dependsOn": [
           { "activity": "act_set_status_success", "dependencyConditions": ["Succeeded"] },
           { "activity": "act_set_status_failed",  "dependencyConditions": ["Succeeded"] }
         ],
         "typeProperties": {
-          "notebookPath": "/Shared/adf_pipelines/nb_write_audit",
-          "baseParameters": {
-            "pipeline_name":   { "value": "pl_bronze_api_payments_v3", "type": "Expression" },
-            "load_type":       { "value": "@pipeline().parameters.p_load_type",        "type": "Expression" },
-            "watermark_value": { "value": "@variables('v_watermark')",                 "type": "Expression" },
-            "ingestion_date":  { "value": "@variables('v_ingestion_date')",            "type": "Expression" },
-            "total_pages":     { "value": "@string(variables('v_total_pages'))",       "type": "Expression" },
-            "status":          { "value": "@variables('v_status')",                    "type": "Expression" },
-            "pipeline_run_id": { "value": "@pipeline().RunId",                         "type": "Expression" }
-          }
+          "source": {
+            "type": "DelimitedTextSource",
+            "additionalColumns": [
+              { "name": "pipeline_name",   "value": "pl_bronze_api_payments_v3" },
+              { "name": "load_type",       "value": { "value": "@pipeline().parameters.p_load_type",        "type": "Expression" } },
+              { "name": "watermark_value", "value": { "value": "@variables('v_watermark')",                 "type": "Expression" } },
+              { "name": "ingestion_date",  "value": { "value": "@variables('v_ingestion_date')",            "type": "Expression" } },
+              { "name": "total_pages",     "value": { "value": "@string(variables('v_total_pages'))",       "type": "Expression" } },
+              { "name": "status",          "value": { "value": "@variables('v_status')",                    "type": "Expression" } },
+              { "name": "pipeline_run_id", "value": { "value": "@pipeline().RunId",                         "type": "Expression" } },
+              { "name": "run_timestamp",   "value": { "value": "@utcNow()",                                 "type": "Expression" } }
+            ],
+            "storeSettings": {
+              "type": "AzureBlobFSReadSettings",
+              "recursive": false,
+              "enablePartitionDiscovery": false
+            },
+            "formatSettings": {
+              "type": "DelimitedTextReadSettings"
+            }
+          },
+          "sink": {
+            "type": "DelimitedTextSink",
+            "storeSettings": {
+              "type": "AzureBlobFSWriteSettings"
+            },
+            "formatSettings": {
+              "type": "DelimitedTextWriteSettings",
+              "quoteAllText": false,
+              "fileExtension": ".csv"
+            }
+          },
+          "enableStaging": false
         },
-        "linkedServiceName": {
-          "referenceName": "ls_databricks_cluster",
-          "type": "LinkedServiceReference"
-        }
+        "inputs": [
+          {
+            "referenceName": "ds_pipeline_audit_csv",
+            "type": "DatasetReference"
+          }
+        ],
+        "outputs": [
+          {
+            "referenceName": "ds_pipeline_audit_csv",
+            "type": "DatasetReference"
+          }
+        ]
       }
 
     ]
