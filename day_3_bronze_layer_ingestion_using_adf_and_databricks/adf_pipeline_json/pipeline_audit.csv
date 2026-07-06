@@ -1,2 +1,2 @@
 pipeline_name,load_type,watermark_value,ingestion_date,total_pages,status,pipeline_run_id,run_timestamp
-pl_bronze_api_payments_v3,full,1900-01-01T00:00:00Z,2026-07-04,12,succeeded,run-20260704-full-001,2026-07-04T01:05:00Z
+pl_bronze_api_payments_v3,full,2026-07-04T23:59:59Z,2026-07-04,12,succeeded,run-20260704-full-001,2026-07-04T01:05:00Z
