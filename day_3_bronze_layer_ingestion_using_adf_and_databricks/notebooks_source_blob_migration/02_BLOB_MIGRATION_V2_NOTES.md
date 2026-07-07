@@ -59,7 +59,7 @@ Same as v1 — these must exist before scheduling the Job:
 2. Left sidebar → **Workspace** → **Shared**
 3. Click **⋮** → **Create** → **Folder** → name it `bronze_ingestion` (or open existing `adf_pipelines` folder)
 4. Inside the folder → click **⋮** → **Import**
-5. Select **File** → upload `02_bronze_blob_charging_sessions_v2.py`
+5. Select **File** → upload `02_bronze_blob_charging_sessions_v2.ipynb`
 6. Confirm notebook appears at: `/Shared/bronze_ingestion/02_bronze_blob_charging_sessions_v2`
 
 > The Job will reference this path. If you upload to a different location, update the notebook path in Part B Step 5.
