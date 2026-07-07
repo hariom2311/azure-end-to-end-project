@@ -10,7 +10,8 @@
 | **Trigger** | Manual — run notebook by hand | Databricks Job — cron `0 * * * *` (top of every hour) |
 | **Partition selection** | You edit `LOAD_YEAR`, `LOAD_MONTH`, `LOAD_DAY`, `LOAD_HOUR` manually | Auto-computed from `datetime.now(UTC)` at runtime |
 | **Full load** | `LOAD_MODE = "full"` in Cell 2 | `FULL_LOAD_OVERRIDE = True` in Cell 2 (one-off, then set back to False) |
-| **Missing hour handling** | Crashes with `Path does not exist` | Checks folder exists first — logs warning and exits cleanly |
+| **Bronze folder creation** | Auto-created by `dbutils.fs.cp` when file is copied | Same — `YYYY/MM/DD/HH/` hierarchy is created automatically on Bronze Volume during copy |
+| **Missing source hour** | Crashes with `Path does not exist` if source folder absent | Checks source folder exists first — logs warning and exits cleanly if source has no data for that hour |
 | **Idempotency** | Overwrites if re-run same hour | Same — overwrite is safe, re-running produces identical result |
 | **Failure alerting** | No | Job marks run Failed + sends email alert if copy errors occur |
 
