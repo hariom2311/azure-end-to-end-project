@@ -19,22 +19,39 @@
 
 ## How the Hourly Schedule Works
 
+The Job fires at the **top of every hour** (cron `0 * * * *`). At that point the previous hour has fully completed — the source system finishes writing its CSV before the next hour boundary. The notebook therefore targets the **previous hour**, not the current one.
+
+### 3-Hour Look-Back Window
+
+Instead of loading only the previous hour, each run checks the **3 most recently completed hours**. This handles late-arriving data automatically:
+
 ```
-Source system writes:
-  wasbs://.../realtime/charging_sessions/2026/07/06/09/sessions_20260706_0900.csv
-                                          ↑    ↑   ↑  ↑
-                                        year month day hour
+Job fires at 09:00 UTC → look-back window = [08, 07, 06]
 
-Job fires at 09:00 UTC
-  datetime.now(UTC) → 2026-07-06 09:00:xx
-  LOAD_YEAR=2026, LOAD_MONTH=07, LOAD_DAY=06, LOAD_HOUR=09
+For each hour in the window:
+  ┌─ Check 1: Is it already in Bronze?
+  │     YES → SKIP (already loaded on a previous run)
+  │     NO  → continue
+  └─ Check 2: Does the source folder exist?
+        NO  → SKIP (data not arrived yet — will retry on next run's window)
+        YES → COPY to Bronze
 
-Notebook copies:
-  source: wasbs://.../realtime/charging_sessions/2026/07/06/09/
-  bronze: /Volumes/.../bronze-volume/realtime/charging_sessions/2026/07/06/09/
+Example:
+  Hour 08 → source exists, Bronze empty  → COPY   ← primary target (prev hour)
+  Hour 07 → source exists, Bronze empty  → COPY   ← late data catch-up
+  Hour 06 → Bronze already has data      → SKIP
 ```
 
-Each run handles exactly one hour. 24 runs per day. One CSV file per run (typically).
+**Late arriving data scenario:**
+```
+Run at 08:00 → checks [07, 06, 05]
+  Hour 07 source not found yet (late) → SKIP
+
+Run at 09:00 → checks [08, 07, 06]
+  Hour 07 source now available        → COPY  ← automatically caught up
+```
+
+Each run handles 1–3 hours (only what's actually missing). 24 runs per day.
 
 ---
 
@@ -210,30 +227,53 @@ Before waiting for the next scheduled hour, trigger a run manually to confirm th
 2. Click **Run history** tab
 3. Each row = one Job run — click into any row to see cell-by-cell output
 
-### What a healthy run looks like
+### What a healthy run looks like (all 3 hours need copying)
 
 ```
-Cell 1: Source blob authenticated — OK
-Cell 2: Run time (UTC): 2026-07-06 09:00:12 UTC
-        Load mode: INCREMENTAL — 2026/07/06/09
-        Source path: wasbs://.../realtime/charging_sessions/2026/07/06/09/
-        Bronze path: /Volumes/.../bronze-volume/realtime/charging_sessions/2026/07/06/09/
-Cell 3: Source folder confirmed
-Cell 4: Files found: 1
-          wasbs://.../sessions_20260706_0900.csv  [142.3 KB]
-Cell 5: COPIED  sessions_20260706_0900.csv
-        Copy complete: 1 copied, 0 failed
-Cell 6: Files in Bronze Volume: 1
-        Verification passed
-Cell 7: [schema + 5 rows]
-Cell 8: Files copied: 1 | Files failed: 0
+Cell 2: Job fire time (UTC): 2026-07-06 09:00:12 UTC
+        Look-back window (3 hours): [08, 07, 06]
+
+Cell 3:   QUEUE for copy : INCREMENTAL — 2026/07/06/08
+          QUEUE for copy : INCREMENTAL — 2026/07/06/07
+          QUEUE for copy : INCREMENTAL — 2026/07/06/06
+        Hours queued: 3
+
+Cell 5: --- INCREMENTAL — 2026/07/06/08 ---
+          COPIED  sessions_20260706_0800.csv  → Result: 1 copied, 0 failed
+        --- INCREMENTAL — 2026/07/06/07 ---
+          COPIED  sessions_20260706_0700.csv  → Result: 1 copied, 0 failed
+        --- INCREMENTAL — 2026/07/06/06 ---
+          COPIED  sessions_20260706_0600.csv  → Result: 1 copied, 0 failed
+        Total: 3 copied, 0 failed
+
+Cell 8: Hours copied: 3 | Hours skipped: 0 | Files copied: 3
+          [COPIED] INCREMENTAL — 2026/07/06/08
+          [COPIED] INCREMENTAL — 2026/07/06/07
+          [COPIED] INCREMENTAL — 2026/07/06/06
 ```
 
-### What a missing-hour exit looks like (not a failure)
+### What a normal steady-state run looks like (prev hour already loaded, one late)
 
 ```
-Cell 3: WARNING: Source folder not found — wasbs://.../2026/07/06/03/
-         Data may not have arrived yet. Exiting.
+Cell 3:   SKIP (already in Bronze) : INCREMENTAL — 2026/07/06/08
+          QUEUE for copy           : INCREMENTAL — 2026/07/06/07  ← late data caught up
+          SKIP (already in Bronze) : INCREMENTAL — 2026/07/06/06
+        Hours queued: 1
+
+Cell 8: Hours copied: 1 | Hours skipped: 2 | Files copied: 1
+          [SKIPPED] INCREMENTAL — 2026/07/06/08
+          [COPIED]  INCREMENTAL — 2026/07/06/07
+          [SKIPPED] INCREMENTAL — 2026/07/06/06
+```
+
+### What a nothing-to-do exit looks like (not a failure)
+
+```
+Cell 3:   SKIP (already in Bronze) : INCREMENTAL — 2026/07/06/08
+          SKIP (source not found)  : INCREMENTAL — 2026/07/06/07
+          SKIP (already in Bronze) : INCREMENTAL — 2026/07/06/06
+        Hours queued: 0
+        INFO: Nothing to copy — all hours in window already loaded or source data not yet available.
 Run status: Succeeded
 ```
 
@@ -265,13 +305,13 @@ display(df.limit(10))
 | Cell | What it does | Needed for scheduled Job? |
 |---|---|---|
 | Cell 1 | Authenticate to source blob via Key Vault secrets | Yes — always |
-| Cell 2 | Auto-resolve hour partition from `datetime.now(UTC)` | Yes — always |
-| Cell 3 | Check source folder exists — exits cleanly if missing | Yes — always |
-| Cell 4 | List all source files at resolved path | Yes — always |
-| Cell 5 | Copy files to Bronze Volume | Yes — this is the main operation |
-| Cell 6 | Assert Bronze file count matches source | Yes — failure here triggers Job alert |
-| Cell 7 | Read sample CSV and print schema | Optional — safe to keep |
-| Cell 8 | Print run summary | Yes — visible in Job run output |
+| Cell 2 | Build 3-hour look-back window from `datetime.now(UTC) - 1h` | Yes — always |
+| Cell 3 | Filter window: skip hours already in Bronze OR missing from source | Yes — always |
+| Cell 4 | List source files for each queued hour | Yes — always |
+| Cell 5 | Copy files to Bronze for each queued hour (auto-creates `YYYY/MM/DD/HH/` folders) | Yes — main operation |
+| Cell 6 | Assert Bronze file count matches source per hour | Yes — failure triggers Job alert |
+| Cell 7 | Read sample CSV from first copied hour, print schema | Optional — safe to keep |
+| Cell 8 | Print run summary: hours copied vs skipped, total file counts | Yes — visible in Job run output |
 
 ---
 
