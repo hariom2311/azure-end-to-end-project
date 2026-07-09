@@ -1,0 +1,81 @@
+{
+  "name": "pl_bronze_api_master_v4",
+  "properties": {
+    "description": "Master metadata-driven pipeline. Reads pipeline_metadata_config.json from Bronze ADLS, filters enabled=true entities, then calls pl_bronze_api_ingest_v4 (child pipeline) once per entity via ForEach. Adding a new entity = add one row to the config JSON, zero pipeline changes.",
+    "parameters": {
+      "p_load_type": {
+        "type": "string",
+        "defaultValue": "incremental",
+        "description": "full or incremental — passed through to every child pipeline run"
+      }
+    },
+    "activities": [
+
+      {
+        "name": "act_read_metadata",
+        "description": "Lookup Activity — reads pipeline_metadata_config.json from Bronze ADLS. Returns the full JSON array of entity configs. firstRowOnly is false so all rows are returned in output.value array.",
+        "type": "Lookup",
+        "dependsOn": [],
+        "typeProperties": {
+          "source": {
+            "type": "JsonSource",
+            "storeSettings": {
+              "type": "AzureBlobFSReadSettings",
+              "recursive": false,
+              "enablePartitionDiscovery": false
+            },
+            "formatSettings": {
+              "type": "JsonReadSettings"
+            }
+          },
+          "dataset": {
+            "referenceName": "ds_pipeline_metadata_config",
+            "type": "DatasetReference"
+          },
+          "firstRowOnly": false
+        }
+      },
+
+      {
+        "name": "act_foreach_entity",
+        "description": "Iterate over every enabled entity in the metadata config. isSequential is false — all entities run in parallel (max 20 concurrent). Each iteration calls the child pipeline with entity-specific parameters.",
+        "type": "ForEach",
+        "dependsOn": [
+          { "activity": "act_read_metadata", "dependencyConditions": ["Succeeded"] }
+        ],
+        "typeProperties": {
+          "items": {
+            "value": "@activity('act_read_metadata').output.value",
+            "type": "Expression"
+          },
+          "isSequential": false,
+          "batchCount": 20,
+          "activities": [
+
+            {
+              "name": "act_ingest_entity",
+              "description": "Execute child pipeline for this entity. Passes entity_name, api_path, page_size, and load_type from metadata config and master pipeline parameter.",
+              "type": "ExecutePipeline",
+              "dependsOn": [],
+              "typeProperties": {
+                "pipeline": {
+                  "referenceName": "pl_bronze_api_ingest_v4",
+                  "type": "PipelineReference"
+                },
+                "waitOnCompletion": true,
+                "parameters": {
+                  "p_entity_name": { "value": "@item().entity_name", "type": "Expression" },
+                  "p_api_path":    { "value": "@item().api_path",    "type": "Expression" },
+                  "p_page_size":   { "value": "@item().page_size",   "type": "Expression" },
+                  "p_load_type":   { "value": "@pipeline().parameters.p_load_type", "type": "Expression" }
+                }
+              }
+            }
+
+          ]
+        }
+      }
+
+    ]
+  }
+}

@@ -1,0 +1,138 @@
+[
+  {
+    "entity_name":   "payments",
+    "api_path":      "/api/db/payments/",
+    "natural_key":   "payment_id",
+    "cdc_field":     "updated_at",
+    "page_size":     500,
+    "enabled":       true
+  },
+  {
+    "entity_name":   "sessions",
+    "api_path":      "/api/db/sessions/",
+    "natural_key":   "session_id",
+    "cdc_field":     "updated_at",
+    "page_size":     500,
+    "enabled":       true
+  },
+  {
+    "entity_name":   "customers",
+    "api_path":      "/api/db/customers/",
+    "natural_key":   "customer_id",
+    "cdc_field":     "updated_at",
+    "page_size":     500,
+    "enabled":       true
+  },
+  {
+    "entity_name":   "fleet",
+    "api_path":      "/api/db/fleet/",
+    "natural_key":   "vehicle_id",
+    "cdc_field":     "updated_at",
+    "page_size":     500,
+    "enabled":       true
+  },
+  {
+    "entity_name":   "chargers",
+    "api_path":      "/api/db/chargers/",
+    "natural_key":   "charger_id",
+    "cdc_field":     "updated_at",
+    "page_size":     500,
+    "enabled":       true
+  },
+  {
+    "entity_name":   "vehicles",
+    "api_path":      "/api/db/vehicles/",
+    "natural_key":   "vehicle_id",
+    "cdc_field":     "updated_at",
+    "page_size":     500,
+    "enabled":       true
+  },
+  {
+    "entity_name":   "stations",
+    "api_path":      "/api/db/stations/",
+    "natural_key":   "station_id",
+    "cdc_field":     "updated_at",
+    "page_size":     500,
+    "enabled":       true
+  },
+  {
+    "entity_name":   "complaints",
+    "api_path":      "/api/db/complaints/",
+    "natural_key":   "complaint_id",
+    "cdc_field":     "updated_at",
+    "page_size":     500,
+    "enabled":       true
+  },
+  {
+    "entity_name":   "maintenance_events",
+    "api_path":      "/api/db/maintenance_events/",
+    "natural_key":   "event_id",
+    "cdc_field":     "updated_at",
+    "page_size":     500,
+    "enabled":       true
+  },
+  {
+    "entity_name":   "energy_prices",
+    "api_path":      "/api/db/energy_prices/",
+    "natural_key":   "price_id",
+    "cdc_field":     "updated_at",
+    "page_size":     500,
+    "enabled":       true
+  },
+  {
+    "entity_name":   "tariffs",
+    "api_path":      "/api/db/tariffs/",
+    "natural_key":   "tariff_id",
+    "cdc_field":     "updated_at",
+    "page_size":     500,
+    "enabled":       true
+  },
+  {
+    "entity_name":   "charge_cards",
+    "api_path":      "/api/db/charge_cards/",
+    "natural_key":   "card_id",
+    "cdc_field":     "updated_at",
+    "page_size":     500,
+    "enabled":       true
+  },
+  {
+    "entity_name":   "employees",
+    "api_path":      "/api/db/employees/",
+    "natural_key":   "employee_id",
+    "cdc_field":     "updated_at",
+    "page_size":     500,
+    "enabled":       true
+  },
+  {
+    "entity_name":   "partners",
+    "api_path":      "/api/db/partners/",
+    "natural_key":   "partner_id",
+    "cdc_field":     "updated_at",
+    "page_size":     500,
+    "enabled":       true
+  },
+  {
+    "entity_name":   "cities",
+    "api_path":      "/api/db/cities/",
+    "natural_key":   "city_id",
+    "cdc_field":     "updated_at",
+    "page_size":     500,
+    "enabled":       true
+  },
+  {
+    "entity_name":   "states",
+    "api_path":      "/api/db/states/",
+    "natural_key":   "state_code",
+    "cdc_field":     "updated_at",
+    "page_size":     500,
+    "enabled":       true
+  },
+  {
+    "entity_name":   "weather",
+    "api_path":      "/api/db/weather/",
+    "natural_key":   "city_id",
+    "cdc_field":     "updated_at",
+    "page_size":     500,
+    "enabled":       true
+  }
+]

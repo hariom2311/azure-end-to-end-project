@@ -1,0 +1,367 @@
+{
+  "name": "pl_bronze_api_ingest_v4",
+  "properties": {
+    "description": "Child pipeline — called by pl_bronze_api_master_v4 once per entity. Handles auth, watermark lookup, paginated copy, and audit write for ONE entity. All entity-specific values come in as parameters. Never triggered directly.",
+    "parameters": {
+      "p_entity_name":   { "type": "string",  "description": "e.g. payments, sessions, customers" },
+      "p_api_path":      { "type": "string",  "description": "e.g. /api/db/payments/" },
+      "p_page_size":     { "type": "int",     "defaultValue": 500 },
+      "p_load_type":     { "type": "string",  "defaultValue": "incremental", "description": "full or incremental" }
+    },
+    "variables": {
+      "v_token":          { "type": "String" },
+      "v_watermark":      { "type": "String",  "defaultValue": "1900-01-01T00:00:00Z" },
+      "v_ingestion_date": { "type": "String" },
+      "v_current_page":   { "type": "Integer", "defaultValue": 1 },
+      "v_temp_page":      { "type": "Integer", "defaultValue": 1 },
+      "v_total_pages":    { "type": "Integer", "defaultValue": 1 },
+      "v_status":         { "type": "String",  "defaultValue": "started" }
+    },
+    "activities": [
+
+      {
+        "name": "act_get_username",
+        "description": "Read VoltGrid username from Key Vault using ADF Managed Identity.",
+        "type": "WebActivity",
+        "dependsOn": [],
+        "typeProperties": {
+          "url": "https://kv-ev-intelligence-dev.vault.azure.net/secrets/voltgrid-username/?api-version=7.0",
+          "method": "GET",
+          "authentication": {
+            "type": "MSI",
+            "resource": "https://vault.azure.net"
+          }
+        }
+      },
+
+      {
+        "name": "act_get_password",
+        "description": "Read VoltGrid password from Key Vault using ADF Managed Identity.",
+        "type": "WebActivity",
+        "dependsOn": [
+          { "activity": "act_get_username", "dependencyConditions": ["Succeeded"] }
+        ],
+        "typeProperties": {
+          "url": "https://kv-ev-intelligence-dev.vault.azure.net/secrets/voltgrid-password/?api-version=7.0",
+          "method": "GET",
+          "authentication": {
+            "type": "MSI",
+            "resource": "https://vault.azure.net"
+          }
+        }
+      },
+
+      {
+        "name": "act_api_login",
+        "description": "POST credentials to VoltGrid login. Token is shared across all entity calls in this run.",
+        "type": "WebActivity",
+        "dependsOn": [
+          { "activity": "act_get_password", "dependencyConditions": ["Succeeded"] }
+        ],
+        "typeProperties": {
+          "url": "https://ev-project-navy-mu.vercel.app/api/auth/login/",
+          "method": "POST",
+          "headers": { "Content-Type": "application/json" },
+          "body": {
+            "value": "@concat('{\"username\":\"', activity('act_get_username').output.value, '\",\"password\":\"', activity('act_get_password').output.value, '\"}')",
+            "type": "Expression"
+          }
+        }
+      },
+
+      {
+        "name": "act_set_token",
+        "type": "SetVariable",
+        "dependsOn": [
+          { "activity": "act_api_login", "dependencyConditions": ["Succeeded"] }
+        ],
+        "typeProperties": {
+          "variableName": "v_token",
+          "value": {
+            "value": "@activity('act_api_login').output.token",
+            "type": "Expression"
+          }
+        }
+      },
+
+      {
+        "name": "act_set_ingestion_date",
+        "description": "Capture today UTC date once. Used as Bronze partition folder for all pages this entity run.",
+        "type": "SetVariable",
+        "dependsOn": [
+          { "activity": "act_set_token", "dependencyConditions": ["Succeeded"] }
+        ],
+        "typeProperties": {
+          "variableName": "v_ingestion_date",
+          "value": {
+            "value": "@formatDateTime(utcNow(), 'yyyy-MM-dd')",
+            "type": "Expression"
+          }
+        }
+      },
+
+      {
+        "name": "act_get_watermark",
+        "description": "Lookup — reads first row of bronze/audit/pipeline_audit.csv filtered by entity_name to get the last successful watermark for THIS entity.",
+        "type": "Lookup",
+        "dependsOn": [
+          { "activity": "act_set_ingestion_date", "dependencyConditions": ["Succeeded"] }
+        ],
+        "typeProperties": {
+          "source": {
+            "type": "DelimitedTextSource",
+            "storeSettings": {
+              "type": "AzureBlobFSReadSettings",
+              "recursive": false,
+              "enablePartitionDiscovery": false
+            },
+            "formatSettings": {
+              "type": "DelimitedTextReadSettings"
+            }
+          },
+          "dataset": {
+            "referenceName": "ds_pipeline_audit_csv",
+            "type": "DatasetReference"
+          },
+          "firstRowOnly": true
+        }
+      },
+
+      {
+        "name": "act_set_watermark",
+        "description": "Full load: epoch constant. Incremental: use watermark_value from the CSV Lookup result.",
+        "type": "SetVariable",
+        "dependsOn": [
+          { "activity": "act_get_watermark", "dependencyConditions": ["Succeeded"] }
+        ],
+        "typeProperties": {
+          "variableName": "v_watermark",
+          "value": {
+            "value": "@if(\n  equals(pipeline().parameters.p_load_type, 'full'),\n  '1900-01-01T00:00:00Z',\n  activity('act_get_watermark').output.firstRow.watermark_value\n)",
+            "type": "Expression"
+          }
+        }
+      },
+
+      {
+        "name": "act_get_total_pages",
+        "description": "Call page 1 of the parameterized entity API to read pagination.total_pages before the loop.",
+        "type": "WebActivity",
+        "dependsOn": [
+          { "activity": "act_set_watermark", "dependencyConditions": ["Succeeded"] }
+        ],
+        "typeProperties": {
+          "url": {
+            "value": "@concat('https://ev-project-navy-mu.vercel.app', pipeline().parameters.p_api_path, '?page=1&page_size=', string(pipeline().parameters.p_page_size), '&updated_after=', variables('v_watermark'))",
+            "type": "Expression"
+          },
+          "method": "GET",
+          "headers": {
+            "Authorization": {
+              "value": "@concat('Token ', variables('v_token'))",
+              "type": "Expression"
+            }
+          }
+        }
+      },
+
+      {
+        "name": "act_set_total_pages",
+        "type": "SetVariable",
+        "dependsOn": [
+          { "activity": "act_get_total_pages", "dependencyConditions": ["Succeeded"] }
+        ],
+        "typeProperties": {
+          "variableName": "v_total_pages",
+          "value": {
+            "value": "@activity('act_get_total_pages').output.pagination.total_pages",
+            "type": "Expression"
+          }
+        }
+      },
+
+      {
+        "name": "act_paginate",
+        "description": "Loop through all pages of this entity until v_current_page exceeds v_total_pages.",
+        "type": "Until",
+        "dependsOn": [
+          { "activity": "act_set_total_pages", "dependencyConditions": ["Succeeded"] }
+        ],
+        "typeProperties": {
+          "expression": {
+            "value": "@greater(variables('v_current_page'), variables('v_total_pages'))",
+            "type": "Expression"
+          },
+          "activities": [
+
+            {
+              "name": "act_copy_entity_page",
+              "description": "Copy one page of entity data from REST API to Bronze ADLS. Source and sink paths are fully parameterized.",
+              "type": "Copy",
+              "dependsOn": [],
+              "typeProperties": {
+                "source": {
+                  "type": "RestSource",
+                  "additionalHeaders": {
+                    "Authorization": {
+                      "value": "@concat('Token ', variables('v_token'))",
+                      "type": "Expression"
+                    }
+                  },
+                  "requestMethod": "GET"
+                },
+                "sink": {
+                  "type": "JsonSink",
+                  "storeSettings": { "type": "AzureBlobFSWriteSettings" },
+                  "formatSettings": {
+                    "type": "JsonWriteSettings",
+                    "filePattern": "setOfObjects"
+                  }
+                },
+                "enableStaging": false
+              },
+              "inputs": [
+                {
+                  "referenceName": "ds_voltgrid_api_src_v4",
+                  "type": "DatasetReference",
+                  "parameters": {
+                    "p_api_path":      { "value": "@pipeline().parameters.p_api_path",        "type": "Expression" },
+                    "p_page":          { "value": "@variables('v_current_page')",              "type": "Expression" },
+                    "p_page_size":     { "value": "@pipeline().parameters.p_page_size",        "type": "Expression" },
+                    "p_updated_after": { "value": "@variables('v_watermark')",                 "type": "Expression" }
+                  }
+                }
+              ],
+              "outputs": [
+                {
+                  "referenceName": "ds_bronze_api_sink_v4",
+                  "type": "DatasetReference",
+                  "parameters": {
+                    "p_entity_name":    { "value": "@pipeline().parameters.p_entity_name",    "type": "Expression" },
+                    "p_ingestion_date": { "value": "@variables('v_ingestion_date')",           "type": "Expression" },
+                    "p_page":           { "value": "@variables('v_current_page')",             "type": "Expression" }
+                  }
+                }
+              ]
+            },
+
+            {
+              "name": "act_set_temp_page",
+              "type": "SetVariable",
+              "dependsOn": [
+                { "activity": "act_copy_entity_page", "dependencyConditions": ["Succeeded"] }
+              ],
+              "typeProperties": {
+                "variableName": "v_temp_page",
+                "value": {
+                  "value": "@add(variables('v_current_page'), 1)",
+                  "type": "Expression"
+                }
+              }
+            },
+
+            {
+              "name": "act_increment_page",
+              "type": "SetVariable",
+              "dependsOn": [
+                { "activity": "act_set_temp_page", "dependencyConditions": ["Succeeded"] }
+              ],
+              "typeProperties": {
+                "variableName": "v_current_page",
+                "value": {
+                  "value": "@variables('v_temp_page')",
+                  "type": "Expression"
+                }
+              }
+            }
+
+          ],
+          "timeout": "0.12:00:00"
+        }
+      },
+
+      {
+        "name": "act_set_status_success",
+        "description": "Mark this entity run as succeeded after the Until loop completes normally.",
+        "type": "SetVariable",
+        "dependsOn": [
+          { "activity": "act_paginate", "dependencyConditions": ["Succeeded"] }
+        ],
+        "typeProperties": {
+          "variableName": "v_status",
+          "value": "succeeded"
+        }
+      },
+
+      {
+        "name": "act_set_status_failed",
+        "description": "Mark this entity run as failed if the Until loop or any upstream activity fails.",
+        "type": "SetVariable",
+        "dependsOn": [
+          { "activity": "act_paginate", "dependencyConditions": ["Failed"] }
+        ],
+        "typeProperties": {
+          "variableName": "v_status",
+          "value": "failed"
+        }
+      },
+
+      {
+        "name": "act_write_audit",
+        "description": "Append one audit row to pipeline_audit.csv. Always runs whether entity succeeded or failed. entity_name is written so the next incremental run can look up the correct watermark per entity.",
+        "type": "Copy",
+        "dependsOn": [
+          { "activity": "act_set_status_success", "dependencyConditions": ["Succeeded", "Skipped"] },
+          { "activity": "act_set_status_failed",  "dependencyConditions": ["Succeeded", "Skipped"] }
+        ],
+        "typeProperties": {
+          "source": {
+            "type": "DelimitedTextSource",
+            "additionalColumns": [
+              { "name": "pipeline_name",   "value": "pl_bronze_api_master_v4" },
+              { "name": "entity_name",     "value": { "value": "@pipeline().parameters.p_entity_name", "type": "Expression" } },
+              { "name": "load_type",       "value": { "value": "@pipeline().parameters.p_load_type",   "type": "Expression" } },
+              { "name": "watermark_value", "value": { "value": "@variables('v_watermark')",             "type": "Expression" } },
+              { "name": "ingestion_date",  "value": { "value": "@variables('v_ingestion_date')",        "type": "Expression" } },
+              { "name": "total_pages",     "value": { "value": "@string(variables('v_total_pages'))",   "type": "Expression" } },
+              { "name": "status",          "value": { "value": "@variables('v_status')",                "type": "Expression" } },
+              { "name": "pipeline_run_id", "value": { "value": "@pipeline().RunId",                     "type": "Expression" } },
+              { "name": "run_timestamp",   "value": { "value": "@utcNow()",                             "type": "Expression" } }
+            ],
+            "storeSettings": {
+              "type": "AzureBlobFSReadSettings",
+              "recursive": false,
+              "enablePartitionDiscovery": false
+            },
+            "formatSettings": {
+              "type": "DelimitedTextReadSettings"
+            }
+          },
+          "sink": {
+            "type": "DelimitedTextSink",
+            "storeSettings": { "type": "AzureBlobFSWriteSettings" },
+            "formatSettings": {
+              "type": "DelimitedTextWriteSettings",
+              "quoteAllText": false,
+              "fileExtension": ".csv"
+            }
+          },
+          "enableStaging": false
+        },
+        "inputs": [
+          {
+            "referenceName": "ds_pipeline_audit_csv_noheader",
+            "type": "DatasetReference"
+          }
+        ],
+        "outputs": [
+          {
+            "referenceName": "ds_pipeline_audit_csv",
+            "type": "DatasetReference"
+          }
+        ]
+      }
+
+    ]
+  }
+}

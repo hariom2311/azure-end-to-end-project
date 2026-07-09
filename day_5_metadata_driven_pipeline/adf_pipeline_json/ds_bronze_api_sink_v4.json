@@ -1,0 +1,30 @@
+{
+  "name": "ds_bronze_api_sink_v4",
+  "properties": {
+    "description": "Generic JSON sink dataset for all VoltGrid API entities. entity_name becomes the Bronze folder name. ingestion_date and page drive the partition path. One dataset replaces 18 entity-specific sink datasets.",
+    "linkedServiceName": {
+      "referenceName": "ls_adls_bronze",
+      "type": "LinkedServiceReference"
+    },
+    "parameters": {
+      "p_entity_name":   { "type": "string" },
+      "p_ingestion_date": { "type": "string" },
+      "p_page":          { "type": "int" }
+    },
+    "type": "Json",
+    "typeProperties": {
+      "location": {
+        "type": "AzureBlobFSLocation",
+        "fileSystem": "bronze",
+        "folderPath": {
+          "value": "@concat(dataset().p_entity_name, '/ingestion_date=', dataset().p_ingestion_date)",
+          "type": "Expression"
+        },
+        "fileName": {
+          "value": "@concat('page_', string(dataset().p_page), '.json')",
+          "type": "Expression"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "name": "ds_voltgrid_api_src_v4",
+  "properties": {
+    "description": "Generic REST source dataset for all VoltGrid API entities. Fully parameterized — api_path, page, page_size, and updated_after are all passed by the child pipeline pl_bronze_api_ingest_v4 at runtime. One dataset replaces 18 entity-specific datasets.",
+    "linkedServiceName": {
+      "referenceName": "ls_voltgrid_api",
+      "type": "LinkedServiceReference"
+    },
+    "parameters": {
+      "p_api_path":      { "type": "string" },
+      "p_page":          { "type": "int" },
+      "p_page_size":     { "type": "int" },
+      "p_updated_after": { "type": "string" }
+    },
+    "type": "RestResource",
+    "typeProperties": {
+      "relativeUrl": {
+        "value": "@concat(dataset().p_api_path, '?page=', string(dataset().p_page), '&page_size=', string(dataset().p_page_size), '&updated_after=', dataset().p_updated_after)",
+        "type": "Expression"
+      }
+    }
+  }
+}

@@ -1,0 +1,2 @@
+pipeline_name,entity_name,load_type,watermark_value,ingestion_date,total_pages,status,pipeline_run_id,run_timestamp
+pl_bronze_api_master_v4,payments,full,1900-01-01T00:00:00Z,2026-07-09,0,succeeded,run-20260709-init,2026-07-09T00:00:00Z

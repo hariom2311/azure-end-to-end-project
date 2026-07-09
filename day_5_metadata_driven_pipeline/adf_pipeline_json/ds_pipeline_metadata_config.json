@@ -1,0 +1,19 @@
+{
+  "name": "ds_pipeline_metadata_config",
+  "properties": {
+    "description": "JSON dataset pointing to pipeline_metadata_config.json in Bronze ADLS. Read by act_read_metadata Lookup Activity in pl_bronze_api_master_v4 to get the list of all enabled entities. Upload pipeline_metadata_config.json to abfss://bronze@evdatalakedev.dfs.core.windows.net/config/pipeline_metadata_config.json before first run.",
+    "linkedServiceName": {
+      "referenceName": "ls_adls_bronze",
+      "type": "LinkedServiceReference"
+    },
+    "type": "Json",
+    "typeProperties": {
+      "location": {
+        "type": "AzureBlobFSLocation",
+        "fileSystem": "bronze",
+        "folderPath": "config",
+        "fileName": "pipeline_metadata_config.json"
+      }
+    }
+  }
+}
