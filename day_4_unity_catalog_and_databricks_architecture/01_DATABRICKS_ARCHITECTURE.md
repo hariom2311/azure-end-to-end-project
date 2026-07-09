@@ -129,53 +129,110 @@ Delta Lake collapses the two systems into one by adding a transaction log (`_del
 
 ---
 
-## Architecture Diagram
+## Full Architecture Diagram (Control Plane + Unity Catalog + Data Plane)
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                        DATABRICKS CONTROL PLANE                             │
-│                    (Managed by Databricks Inc. — Azure West US)             │
-│                                                                             │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌────────────────┐  │
-│  │  Workspace   │  │  Jobs /      │  │   Unity      │  │  Databricks    │  │
-│  │  UI (Web)    │  │  Workflows   │  │   Catalog    │  │  REST API      │  │
-│  │              │  │  Scheduler   │  │   Metastore  │  │                │  │
-│  └──────────────┘  └──────────────┘  └──────────────┘  └────────────────┘  │
-│                                                                             │
-│  ┌──────────────────────────────────────────────────────────────────────┐   │
-│  │  Cluster Manager — provisions, autoscales, terminates clusters       │   │
-│  └──────────────────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────────────────┘
+╔═════════════════════════════════════════════════════════════════════════════╗
+║                       DATABRICKS CONTROL PLANE                             ║
+║                 (Managed by Databricks Inc. — Azure West US)               ║
+║                                                                             ║
+║  ┌──────────────┐  ┌──────────────┐  ┌────────────────────────────────┐   ║
+║  │  Workspace   │  │  Jobs /      │  │       Databricks REST API      │   ║
+║  │  UI (Web)    │  │  Workflows   │  └────────────────────────────────┘   ║
+║  │              │  │  Scheduler   │                                        ║
+║  └──────────────┘  └──────────────┘                                        ║
+║                                                                             ║
+║  ┌──────────────────────────────────────────────────────────────────────┐  ║
+║  │  Cluster Manager — provisions, autoscales, terminates clusters       │  ║
+║  └──────────────────────────────────────────────────────────────────────┘  ║
+║                                                                             ║
+║  ╔════════════════════════════════════════════════════════════════════╗     ║
+║  ║              UNITY CATALOG METASTORE                              ║     ║
+║  ║        (account-level — shared across all workspaces)             ║     ║
+║  ║                                                                   ║     ║
+║  ║  ┌──────────────────────────────────────────────────────────┐    ║     ║
+║  ║  │  CATALOG: dbw_ev_intelligence_dev                        │    ║     ║
+║  ║  │                                                          │    ║     ║
+║  ║  │  ┌───────────────────────────────────────────────────┐  │    ║     ║
+║  ║  │  │  SCHEMA: default                                  │  │    ║     ║
+║  ║  │  │                                                   │  │    ║     ║
+║  ║  │  │  ┌──────────────┐  ┌──────────────┐              │  │    ║     ║
+║  ║  │  │  │    TABLE     │  │    VOLUME    │              │  │    ║     ║
+║  ║  │  │  │pipeline_audit│  │bronze-volume │              │  │    ║     ║
+║  ║  │  │  │  (managed)   │  │  (external)  │              │  │    ║     ║
+║  ║  │  │  └──────────────┘  └──────┬───────┘              │  │    ║     ║
+║  ║  │  └─────────────────────────── │ ────────────────────┘  │    ║     ║
+║  ║  └───────────────────────────────│──────────────────────────┘    ║     ║
+║  ║                                  │ maps to                       ║     ║
+║  ║  ┌─────────────────────────────────────────────────────────┐     ║     ║
+║  ║  │  EXTERNAL LOCATIONS                                     │     ║     ║
+║  ║  │  evdatalakedev-bronze → abfss://bronze@evdatalakedev... │     ║     ║
+║  ║  │  evdatalakedev-silver → abfss://silver@evdatalakedev... │     ║     ║
+║  ║  │  evdatalakedev-gold   → abfss://gold@evdatalakedev...   │     ║     ║
+║  ║  └──────────────────────────────────┬──────────────────────┘     ║     ║
+║  ║                                     │ uses                        ║     ║
+║  ║  ┌──────────────────────────────────▼──────────────────────┐     ║     ║
+║  ║  │  STORAGE CREDENTIAL                                     │     ║     ║
+║  ║  │  cred-ev-intelligence-dev                               │     ║     ║
+║  ║  │  → wraps Managed Identity of ac-ev-intelligence-dev     │     ║     ║
+║  ║  └─────────────────────────────────────────────────────────┘     ║     ║
+║  ╚════════════════════════════════════════════════════════════════════╝     ║
+╚═════════════════════════════════════════════════════════════════════════════╝
                               │  secure channel (TLS)
+                              │  UC enforces permissions on every data access
                               ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         YOUR DATA PLANE                                     │
-│              (Runs inside YOUR Azure subscription — Central India)          │
-│                                                                             │
-│  ┌──────────────────────────────────────────────────────────────────────┐   │
-│  │                    Virtual Network (VNet)                            │   │
-│  │                                                                      │   │
-│  │   ┌─────────────────────────────────────────────────────────────┐   │   │
-│  │   │  Managed Resource Group (auto-created by Databricks)        │   │   │
-│  │   │                                                             │   │   │
-│  │   │  ┌─────────────────┐    ┌─────────────────┐                │   │   │
-│  │   │  │  Driver Node    │    │  Worker Node(s) │                │   │   │
-│  │   │  │  (Spark master) │◄──►│  (Spark workers)│                │   │   │
-│  │   │  │                 │    │                 │                │   │   │
-│  │   │  │  dev-cluster    │    │  (auto-scale    │                │   │   │
-│  │   │  │                 │    │   or fixed)     │                │   │   │
-│  │   │  └─────────────────┘    └─────────────────┘                │   │   │
-│  │   │                                                             │   │   │
-│  │   └─────────────────────────────────────────────────────────────┘   │   │
-│  └──────────────────────────────────────────────────────────────────────┘   │
-│                                                                             │
-│  ┌──────────────────┐   ┌──────────────────┐   ┌──────────────────────┐    │
-│  │  ADLS Gen2       │   │  Azure Key Vault  │   │  Azure Data Factory  │    │
-│  │  (evdatalakedev) │   │  (kv-ev-intel..)  │   │  (adf-ev-intel..)   │    │
-│  │  bronze/silver/  │   │                  │   │                      │    │
-│  │  gold containers │   │                  │   │                      │    │
-│  └──────────────────┘   └──────────────────┘   └──────────────────────┘    │
-└─────────────────────────────────────────────────────────────────────────────┘
+╔═════════════════════════════════════════════════════════════════════════════╗
+║                         YOUR DATA PLANE                                    ║
+║              (Runs inside YOUR Azure subscription — Central India)         ║
+║                                                                             ║
+║  ┌──────────────────────────────────────────────────────────────────────┐  ║
+║  │                    Virtual Network (VNet)                            │  ║
+║  │                                                                      │  ║
+║  │   ┌─────────────────────────────────────────────────────────────┐   │  ║
+║  │   │  Managed Resource Group (auto-created by Databricks)        │   │  ║
+║  │   │                                                             │   │  ║
+║  │   │  ┌──────────────────┐    ┌──────────────────┐              │   │  ║
+║  │   │  │   Driver Node    │    │  Worker Node(s)  │              │   │  ║
+║  │   │  │  (Spark master)  │◄──►│  (Spark workers) │              │   │  ║
+║  │   │  │   dev-cluster    │    │  (auto-scale)    │              │   │  ║
+║  │   │  └──────────────────┘    └──────────────────┘              │   │  ║
+║  │   └─────────────────────────────────────────────────────────────┘   │  ║
+║  └──────────────────────────────────────────────────────────────────────┘  ║
+║                                                                             ║
+║  ┌──────────────────────────────────────────────────────────────────────┐  ║
+║  │                    ADLS Gen2 — evdatalakedev                        │  ║
+║  │                                                                      │  ║
+║  │   bronze/  ── audit/pipeline_audit.csv                              │  ║
+║  │           ── realtime/charging_sessions/YYYY/MM/DD/HH/*.csv         │  ║
+║  │           ── api/payments/raw/YYYY/MM/DD/*.json                     │  ║
+║  │                                                                      │  ║
+║  │   silver/  ── (Delta tables — Day 5+)                               │  ║
+║  │   gold/    ── (aggregated Delta tables — Day 6+)                    │  ║
+║  └──────────────────────────────────────────────────────────────────────┘  ║
+║                                                                             ║
+║  ┌────────────────────────┐   ┌──────────────────────────────────────────┐ ║
+║  │  Azure Key Vault       │   │  Access Connector (ac-ev-intelligence-dev)│ ║
+║  │  kv-ev-intelligence-dev│   │  Managed Identity → has Storage Blob     │ ║
+║  │  Secrets:              │   │  Data Contributor role on evdatalakedev  │ ║
+║  │  source-sas-token      │   │  Used by UC Storage Credential           │ ║
+║  │  source-storage-account│   └──────────────────────────────────────────┘ ║
+║  └────────────────────────┘                                                 ║
+║                                                                             ║
+║  ┌──────────────────────────────────────────────────────────────────────┐  ║
+║  │  Azure Data Factory — adf-ev-intelligence-dev                        │  ║
+║  │  Pipelines: pl_bronze_api_payments_v3                                │  ║
+║  │  Linked Services: ls_adls_bronze, ls_payments_api                    │  ║
+║  └──────────────────────────────────────────────────────────────────────┘  ║
+╚═════════════════════════════════════════════════════════════════════════════╝
+
+Request flow example — notebook reads from Bronze Volume:
+  1. Notebook: dbutils.fs.ls("/Volumes/dbw_ev_intelligence_dev/default/bronze-volume/")
+  2. Cluster → UC checks: does this user have READ VOLUME on bronze-volume?
+  3. UC resolves External Location → evdatalakedev-bronze → abfss://bronze@evdatalakedev...
+  4. UC uses Storage Credential → ac-ev-intelligence-dev Managed Identity
+  5. Azure IAM confirms: identity has Storage Blob Data Contributor on evdatalakedev
+  6. ADLS returns file list → notebook receives results
+  (Your storage key is NEVER in the notebook or visible in any log)
 ```
 
 ---
