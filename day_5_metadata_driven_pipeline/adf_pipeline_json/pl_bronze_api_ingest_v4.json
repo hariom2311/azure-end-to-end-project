@@ -348,7 +348,7 @@
             "storeSettings": { "type": "AzureBlobFSWriteSettings" },
             "formatSettings": {
               "type": "DelimitedTextWriteSettings",
-              "quoteAllText": false,
+              "quoteAllText": true,
               "fileExtension": ".csv"
             }
           },
@@ -356,7 +356,7 @@
         },
         "inputs": [
           {
-            "referenceName": "ds_pipeline_audit_csv_noheader",
+            "referenceName": "ds_audit_template_csv",
             "type": "DatasetReference"
           }
         ],
@@ -400,7 +400,7 @@
             },
             "formatSettings": {
               "type": "DelimitedTextWriteSettings",
-              "quoteAllText": false,
+              "quoteAllText": true,
               "fileExtension": ".csv"
             }
           },
@@ -408,7 +408,7 @@
         },
         "inputs": [
           {
-            "referenceName": "ds_pipeline_audit_csv_noheader",
+            "referenceName": "ds_audit_template_csv",
             "type": "DatasetReference"
           }
         ],

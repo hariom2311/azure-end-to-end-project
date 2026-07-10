@@ -1,0 +1,24 @@
+{
+  "name": "ds_audit_template_csv",
+  "properties": {
+    "description": "Single-newline file with no columns and no header. Used as source in act_write_audit and act_write_watermark. firstRowAsHeader false, file contains only a newline so ADF reads exactly one empty row. All output columns come entirely from additionalColumns — no Prop_N clash.",
+    "linkedServiceName": {
+      "referenceName": "ls_adls_bronze",
+      "type": "LinkedServiceReference"
+    },
+    "type": "DelimitedText",
+    "typeProperties": {
+      "location": {
+        "type": "AzureBlobFSLocation",
+        "fileSystem": "bronze",
+        "folderPath": "audit",
+        "fileName": "audit_template.csv"
+      },
+      "columnDelimiter": ",",
+      "rowDelimiter": "\n",
+      "firstRowAsHeader": false,
+      "quoteChar": "\"",
+      "escapeChar": "\\"
+    }
+  }
+}

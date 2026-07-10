@@ -5,8 +5,9 @@
 
 ## What it does
 
-Fetches all pages from 14 VoltGrid API entities in parallel and uploads them
+Fetches all pages from 17 VoltGrid API entities in parallel and uploads them
 to Azure ADLS Gen2 Bronze container in the same structure ADF v4 produces.
+Also creates per-entity watermark seed files so ADF incremental runs work correctly.
 
 ```
 bronze/
@@ -16,11 +17,17 @@ bronze/
     ├── sessions/ingestion_date=2026-07-10/page_1.json
     ├── customers/...
     └── (one folder per entity)
+
+bronze/audit/
+    ├── pipeline_audit.csv              ← history log (one row per entity)
+    ├── watermark_payments.csv          ← per-entity watermark for ADF incremental
+    ├── watermark_sessions.csv
+    └── watermark_<entity>.csv × 17
 ```
 
 After this script finishes, switch ADF `pl_bronze_api_master_v4` to
-`p_load_type = incremental` — it will pick up watermarks from the audit CSV
-automatically and only fetch new/changed records going forward.
+`p_load_type = incremental` — it reads the correct per-entity watermark
+from `watermark_<entity>.csv` and only fetches new/changed records.
 
 ---
 
@@ -34,13 +41,9 @@ automatically and only fetch new/changed records going forward.
 
 ## Step 1 — Install dependencies
 
-Open a terminal in the project root and run:
-
 ```bash
 pip install -r day_5_metadata_driven_pipeline/requirements.txt
 ```
-
-Packages installed:
 
 | Package | Purpose |
 |---|---|
@@ -62,8 +65,6 @@ The script reads these values from `.env` in the project root:
 | `AZURE_TENANT_ID` | Azure AD tenant ID |
 | `AZURE_PROJECT_CLIENT_ID` | Service Principal client ID |
 | `AZURE_PROJECT_CLIENT_SECRET` | Service Principal client secret |
-
-All of these are already set in your `.env`. Do not change them.
 
 ---
 
@@ -87,26 +88,26 @@ python day_5_metadata_driven_pipeline/full_load_bronze.py
 ```
 ============================================================
   VoltGrid Full Load — 2026-07-10
-  Entities : 14
+  Entities : 17
   Max pages: 1000 per entity
   Workers  : 4 parallel entities
 ============================================================
 [auth] Token obtained successfully
-[payments]   641 pages | ~320035 records — starting upload
-[sessions]   401 pages | ~200003 records — starting upload
-[customers]  400 pages | ~200000 records — starting upload
-[fleet]       80 pages | ~40000  records — starting upload
-[payments]   page 1/641 uploaded (500 records)
-[sessions]   page 1/401 uploaded (500 records)
-[payments]   page 2/641 uploaded (500 records)
+[payments]          641 pages | ~320035 records — starting upload
+[sessions]          401 pages | ~200003 records — starting upload
+[customers]         400 pages | ~200000 records — starting upload
+[fleet]              80 pages | ~40000  records — starting upload
+[payments]          page 1/641 uploaded (500 records)
+[sessions]          page 1/401 uploaded (500 records)
+[payments]          page 2/641 uploaded (500 records)
 ...
 [done] payments                   — succeeded (641 pages)
 [done] sessions                   — succeeded (401 pages)
 ...
-[audit] pipeline_audit.csv updated with 14 rows
+[audit] pipeline_audit.csv updated with 17 rows
 
 ============================================================
-  Succeeded: 14/14
+  Succeeded: 17/17
 ============================================================
 
 Full load complete. Switch ADF pl_bronze_api_master_v4 to incremental mode now.
@@ -128,26 +129,57 @@ Full load complete. Switch ADF pl_bronze_api_master_v4 to incremental mode now.
 | vehicles | `/api/db/vehicles/` |
 | stations | `/api/db/stations/` |
 | complaints | `/api/db/complaints/` |
+| maintenance_events | `/api/db/maintenance-events/` |
+| energy_prices | `/api/db/energy-prices/` |
 | tariffs | `/api/db/tariffs/` |
+| charge_cards | `/api/db/charge-cards/` |
 | employees | `/api/db/employees/` |
 | partners | `/api/db/partners/` |
 | cities | `/api/db/cities/` |
 | states | `/api/db/states/` |
 | weather | `/api/db/weather/` |
 
+> Note: 3 entities use hyphens in their API path (`maintenance-events`,
+> `energy-prices`, `charge-cards`) but underscores in their folder name.
+> This is intentional — folder name matches `entity_name` in config,
+> API path matches the actual Django URL route.
+
 ---
 
 ## After the script finishes
 
 ### 1. Verify data in ADLS
-Go to **Azure Portal → evdatalakedev → bronze → api** and confirm one folder per entity exists with JSON files inside.
+Go to **Azure Portal → evdatalakedev → bronze → api** — confirm one folder per
+entity with JSON files partitioned by date.
 
 ### 2. Check the audit CSV
-Go to **bronze → audit → pipeline_audit.csv** — you should see 14 new rows, one per entity, all with `status = succeeded`.
+Go to **bronze → audit → pipeline_audit.csv** — 17 new rows, one per entity,
+all with `status = succeeded`.
 
-### 3. Switch ADF to incremental
+### 3. Check the watermark files
+Go to **bronze → audit** — you should see 17 `watermark_<entity>.csv` files.
+Each contains one row with `watermark_value = 2026-07-10T00:00:00Z` (the run date).
+
+These are what ADF reads on the next incremental run to know where to start.
+
+### 4. Switch ADF to incremental
 Run `pl_bronze_api_master_v4` with `p_load_type = incremental`.
-The pipeline reads `watermark_value` from the audit CSV per entity and fetches only records updated after that timestamp.
+Each entity child pipeline reads its own `watermark_<entity>.csv` and fetches
+only records updated after that timestamp — incremental runs should take
+minutes not hours.
+
+---
+
+## Why per-entity watermark files matter
+
+The old approach used a single `pipeline_audit.csv` with `firstRowOnly: true`
+in the ADF Lookup. That always returned **row 1** (the seed row for payments
+with `watermark = 1900-01-01`). So every entity on every "incremental" run
+was actually fetching all pages — making every run a 4-hour full load.
+
+This script writes one `watermark_<entity>.csv` per entity. ADF reads the
+correct file per entity so each gets its own watermark, and incremental runs
+only fetch genuinely new data.
 
 ---
 
@@ -155,18 +187,18 @@ The pipeline reads `watermark_value` from the audit CSV per entity and fetches o
 
 | Error | Cause | Fix |
 |---|---|---|
-| `VOLTGRID_USERNAME not set` | `.env` not found or wrong directory | Run the script from `day_5_metadata_driven_pipeline/` or project root |
-| `ClientAuthenticationError` | Wrong Service Principal credentials | Check `AZURE_PROJECT_CLIENT_ID` and `AZURE_PROJECT_CLIENT_SECRET` in `.env` |
-| `ResourceNotFoundError` on bronze container | Container does not exist | Create `bronze` container in `evdatalakedev` storage account |
+| `VOLTGRID_USERNAME not set` | `.env` not found | Run from `day_5_metadata_driven_pipeline/` or project root |
+| `ClientAuthenticationError` | Wrong SP credentials | Check `AZURE_PROJECT_CLIENT_ID` and `AZURE_PROJECT_CLIENT_SECRET` |
+| `ResourceNotFoundError` on bronze | Container does not exist | Create `bronze` container in `evdatalakedev` |
 | `403 Forbidden` on upload | SP missing storage role | Grant SP `Storage Blob Data Contributor` on `evdatalakedev` |
 | `404` on an entity | API endpoint not live | That entity is skipped — others continue |
-| `ConnectionError` / timeout | Network issue or API down | Script retries 3 times automatically, then marks entity failed |
+| `ConnectionError` / timeout | Network or API issue | Script retries 3 times automatically, then marks entity failed |
 
 ---
 
 ## Key settings you can change
 
-Open `full_load_bronze.py` and adjust at the top of the file:
+Open `full_load_bronze.py` and adjust at the top:
 
 | Setting | Default | Change if... |
 |---|---|---|
