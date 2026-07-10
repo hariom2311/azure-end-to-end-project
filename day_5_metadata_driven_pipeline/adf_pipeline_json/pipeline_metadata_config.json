@@ -65,7 +65,7 @@
   },
   {
     "entity_name":   "maintenance_events",
-    "api_path":      "/api/db/maintenance_events/",
+    "api_path":      "/api/db/maintenance-events/",
     "natural_key":   "event_id",
     "cdc_field":     "updated_at",
     "page_size":     500,
@@ -73,7 +73,7 @@
   },
   {
     "entity_name":   "energy_prices",
-    "api_path":      "/api/db/energy_prices/",
+    "api_path":      "/api/db/energy-prices/",
     "natural_key":   "price_id",
     "cdc_field":     "updated_at",
     "page_size":     500,
@@ -89,7 +89,7 @@
   },
   {
     "entity_name":   "charge_cards",
-    "api_path":      "/api/db/charge_cards/",
+    "api_path":      "/api/db/charge-cards/",
     "natural_key":   "card_id",
     "cdc_field":     "updated_at",
     "page_size":     500,

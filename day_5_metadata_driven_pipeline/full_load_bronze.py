@@ -44,22 +44,24 @@ TENANT_ID     = os.getenv("AZURE_TENANT_ID")
 CLIENT_ID     = os.getenv("AZURE_PROJECT_CLIENT_ID")
 CLIENT_SECRET = os.getenv("AZURE_PROJECT_CLIENT_SECRET")
 
-# 3 endpoints removed — returned 404 on the live API (maintenance_events, energy_prices, charge_cards)
 ENTITIES = [
-    {"entity_name": "payments",   "api_path": "/api/db/payments/"},
-    {"entity_name": "sessions",   "api_path": "/api/db/sessions/"},
-    {"entity_name": "customers",  "api_path": "/api/db/customers/"},
-    {"entity_name": "fleet",      "api_path": "/api/db/fleet/"},
-    {"entity_name": "chargers",   "api_path": "/api/db/chargers/"},
-    {"entity_name": "vehicles",   "api_path": "/api/db/vehicles/"},
-    {"entity_name": "stations",   "api_path": "/api/db/stations/"},
-    {"entity_name": "complaints", "api_path": "/api/db/complaints/"},
-    {"entity_name": "tariffs",    "api_path": "/api/db/tariffs/"},
-    {"entity_name": "employees",  "api_path": "/api/db/employees/"},
-    {"entity_name": "partners",   "api_path": "/api/db/partners/"},
-    {"entity_name": "cities",     "api_path": "/api/db/cities/"},
-    {"entity_name": "states",     "api_path": "/api/db/states/"},
-    {"entity_name": "weather",    "api_path": "/api/db/weather/"},
+    {"entity_name": "payments",           "api_path": "/api/db/payments/"},
+    {"entity_name": "sessions",           "api_path": "/api/db/sessions/"},
+    {"entity_name": "customers",          "api_path": "/api/db/customers/"},
+    {"entity_name": "fleet",              "api_path": "/api/db/fleet/"},
+    {"entity_name": "chargers",           "api_path": "/api/db/chargers/"},
+    {"entity_name": "vehicles",           "api_path": "/api/db/vehicles/"},
+    {"entity_name": "stations",           "api_path": "/api/db/stations/"},
+    {"entity_name": "complaints",         "api_path": "/api/db/complaints/"},
+    {"entity_name": "maintenance_events", "api_path": "/api/db/maintenance-events/"},
+    {"entity_name": "energy_prices",      "api_path": "/api/db/energy-prices/"},
+    {"entity_name": "tariffs",            "api_path": "/api/db/tariffs/"},
+    {"entity_name": "charge_cards",       "api_path": "/api/db/charge-cards/"},
+    {"entity_name": "employees",          "api_path": "/api/db/employees/"},
+    {"entity_name": "partners",           "api_path": "/api/db/partners/"},
+    {"entity_name": "cities",             "api_path": "/api/db/cities/"},
+    {"entity_name": "states",             "api_path": "/api/db/states/"},
+    {"entity_name": "weather",            "api_path": "/api/db/weather/"},
 ]
 
 INGESTION_DATE = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
@@ -142,7 +144,7 @@ def load_entity(entity, token, adls_client):
 
     try:
         upload_page(adls_client, name, 1, first)
-        print(f"[{name}] page 1/{total_pages} uploaded ({len(first.get('results', []))} records)")
+        print(f"[{name}] page 1/{total_pages} uploaded ({len(first.get('data', first.get('results', [])))} records)")
     except Exception as e:
         print(f"[{name}] FAILED to upload page 1: {e}")
         return {"entity": name, "status": "failed", "pages_done": 0, "error": str(e)}
