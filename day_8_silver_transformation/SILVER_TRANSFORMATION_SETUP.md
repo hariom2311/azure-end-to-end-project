@@ -1,11 +1,79 @@
 # Day 8 — Silver Layer: API Data Transformation
-**Notebook:** `01_silver_api_transformation.ipynb`
 **Source:** Bronze Volume JSON (`/Volumes/dbw_ev_intelligence_dev/default/bronze-volume/api/`)
 **Sink:** Silver Volume Delta (`/Volumes/dbw_ev_intelligence_dev/default/silver-volume/api/`)
 
+## Three Notebooks — Learning Progression
+
+| Notebook | Scope | Purpose |
+|---|---|---|
+| `01_silver_payments_simple_v1.ipynb` | Payments only | Every step written out explicitly — no functions, no loops. Learn what each transformation does. |
+| `02_silver_all_entities_forloop_v2.ipynb` | All 17 entities | Same logic as v1, wrapped in a `for` loop over an entity config list. Full overwrite only. |
+| `03_silver_all_entities_optimised_v3.ipynb` | All 17 entities | Production version — widget parameters, helper functions, full + incremental load, Delta MERGE upsert, run summary. |
+
+**Teach in order: v1 -> v2 -> v3.**
+- v1: understand the transformations one step at a time
+- v2: see how to scale to many entities with a loop
+- v3: see how to make it production-ready with load modes, error handling, and Delta merge
+
 ---
 
-## What This Notebook Does
+## Where Does This Notebook Fit in ADF?
+
+Silver transformation runs **after** Bronze ingestion completes. Two options:
+
+### Option A — Separate Silver Pipeline (Recommended)
+
+```
+ADF Pipeline 1: pl_bronze_api_ingest_v4
+  └── runs every 2 hours
+  └── calls Databricks notebook: 01_bronze_api_ingest_databricks
+  └── writes JSON to Bronze Volume
+
+ADF Pipeline 2: pl_silver_api_transformation  <-- NEW
+  └── triggered by Pipeline 1 completing (Execute Pipeline activity)
+  └── calls Databricks notebook: 03_silver_all_entities_optimised_v3
+  └── reads Bronze JSON, writes Silver Delta
+```
+
+**How to chain them in ADF:**
+1. Open `pl_bronze_api_ingest_v4` in ADF
+2. Add an **Execute Pipeline** activity after the last Bronze activity
+3. Set **Invoked pipeline:** `pl_silver_api_transformation`
+4. Set **Wait on completion:** `true`
+5. The Silver pipeline only runs if Bronze succeeds
+
+**Why separate pipelines:**
+- Bronze and Silver can fail independently — easier to rerun just Silver if it fails
+- Silver can be triggered on its own for a backfill without re-running Bronze
+- Cleaner monitoring — each pipeline has its own run history
+
+### Option B — Same Pipeline, Second Notebook Activity
+
+```
+ADF Pipeline: pl_bronze_api_ingest_v4
+  └── act_bronze_ingest  (Databricks Notebook — Bronze)
+        └── on success
+              └── act_silver_transform  (Databricks Notebook — Silver)
+```
+
+**How to add it:**
+1. Open your existing pipeline in ADF
+2. Drag a second **Notebook** activity onto the canvas
+3. Connect with a **Success** dependency arrow from the Bronze activity
+4. Configure: same Linked Service, path = `/Shared/silver_transformation/03_silver_all_entities_optimised_v3`
+5. Base parameter: `load_type = incremental`
+
+**Why you might choose this:**
+- Simpler — one pipeline to trigger and monitor
+- Fewer ADF objects to manage
+
+**Recommended: Option A** — separate pipelines give better control and rerunability.
+
+---
+
+---
+
+## What v3 Does (Production Notebook)
 
 Reads all 17 entities from Bronze, applies PySpark transformations, and writes clean Delta tables to Silver.
 
