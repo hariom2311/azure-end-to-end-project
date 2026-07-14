@@ -1,19 +1,19 @@
 {
-  "name": "pl_bronze_api_master_v4_with_silver",
+  "name": "pl_bronze_api_master_v4",
   "properties": {
-    "description": "Extended master pipeline. Steps: 1) Lookup metadata config, 2) ForEach entity in parallel -> Bronze ingestion (child pipeline), 3) After ALL entities finish -> Silver transformation Databricks notebook. Bronze and Silver run in sequence — Silver only starts if all Bronze succeeds.",
+    "description": "Master metadata-driven pipeline. Reads pipeline_metadata_config.json, runs ForEach Bronze ingestion for all 17 entities in parallel, then invokes pl_silver_api_transform_v4 (Silver child pipeline) after all Bronze entities complete successfully.",
     "parameters": {
       "p_load_type": {
         "type": "string",
         "defaultValue": "incremental",
-        "description": "full or incremental — passed to Bronze child pipelines AND Silver notebook"
+        "description": "full or incremental — passed to Bronze child pipelines AND Silver pipeline"
       }
     },
     "activities": [
 
       {
         "name": "act_read_metadata",
-        "description": "Lookup — reads pipeline_metadata_config.json from Bronze ADLS. Returns all entity configs.",
+        "description": "Lookup Activity — reads pipeline_metadata_config.json from Bronze ADLS. Returns the full JSON array of entity configs. firstRowOnly is false so all rows are returned in output.value array.",
         "type": "Lookup",
         "dependsOn": [],
         "typeProperties": {
@@ -38,7 +38,7 @@
 
       {
         "name": "act_foreach_entity",
-        "description": "Iterate over all enabled entities in parallel. Each calls pl_bronze_api_ingest_v4 for Bronze ingestion. Silver transformation only starts AFTER this ForEach completes successfully.",
+        "description": "Iterate over every enabled entity in the metadata config. isSequential is false — all entities run in parallel (max 20 concurrent). Each iteration calls pl_bronze_api_ingest_v4 with entity-specific parameters.",
         "type": "ForEach",
         "dependsOn": [
           { "activity": "act_read_metadata", "dependencyConditions": ["Succeeded"] }
@@ -54,7 +54,7 @@
 
             {
               "name": "act_ingest_entity",
-              "description": "Bronze ingestion for one entity — calls child pipeline pl_bronze_api_ingest_v4.",
+              "description": "Execute Bronze child pipeline for this entity. Passes entity_name, api_path, page_size, and load_type from metadata config and master pipeline parameter.",
               "type": "ExecutePipeline",
               "dependsOn": [],
               "typeProperties": {
@@ -77,28 +77,28 @@
       },
 
       {
-        "name": "act_silver_transform",
-        "description": "Silver transformation — runs Databricks notebook 04_silver_all_entities_job_params_v4 AFTER all Bronze entities have been ingested. Reads Bronze JSON from Volume, applies data quality pipeline, writes Silver Delta tables. Passes load_type and today's ingestion_date as job parameters. Only runs if ForEach succeeded.",
-        "type": "DatabricksNotebook",
+        "name": "act_invoke_silver_pipeline",
+        "description": "Execute Silver transformation pipeline after all Bronze entities finish. Invokes pl_silver_api_transform_v4 which calls the Databricks notebook v4. Passes load_type and today's ingestion_date. Only runs if ForEach succeeded — if any Bronze entity fails, Silver is automatically skipped.",
+        "type": "ExecutePipeline",
         "dependsOn": [
           { "activity": "act_foreach_entity", "dependencyConditions": ["Succeeded"] }
         ],
         "typeProperties": {
-          "notebookPath": "/Shared/silver_transformation/04_silver_all_entities_job_params_v4",
-          "baseParameters": {
-            "load_type": {
+          "pipeline": {
+            "referenceName": "pl_silver_api_transform_v4",
+            "type": "PipelineReference"
+          },
+          "waitOnCompletion": true,
+          "parameters": {
+            "p_load_type": {
               "value": "@pipeline().parameters.p_load_type",
               "type": "Expression"
             },
-            "ingestion_date": {
+            "p_ingestion_date": {
               "value": "@formatDateTime(utcNow(), 'yyyy-MM-dd')",
               "type": "Expression"
             }
           }
-        },
-        "linkedServiceName": {
-          "referenceName": "ls_databricks_dev",
-          "type": "LinkedServiceReference"
         }
       }
 
