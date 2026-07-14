@@ -1,0 +1,44 @@
+{
+  "name": "pl_silver_api_transform_v4",
+  "properties": {
+    "description": "Silver transformation pipeline. Calls Databricks notebook 04_silver_all_entities_job_params_v4 with load_type and ingestion_date. Reads all 17 entity Bronze JSON files from the Volume, applies data quality rules, and writes cleaned Delta tables to Silver Volume. Triggered by pl_bronze_api_master_v4 after ForEach completes.",
+    "parameters": {
+      "p_load_type": {
+        "type": "string",
+        "defaultValue": "incremental",
+        "description": "full or incremental — passed to the notebook as load_type widget"
+      },
+      "p_ingestion_date": {
+        "type": "string",
+        "description": "yyyy-MM-dd — the Bronze partition date to transform. Passed as ingestion_date widget."
+      }
+    },
+    "activities": [
+
+      {
+        "name": "act_silver_transform",
+        "description": "Run Databricks notebook 04_silver_all_entities_job_params_v4. Reads Bronze JSON for all 17 entities, applies PySpark data quality pipeline (null PK, null CDC, corrupt cast, negative values, dedup), writes Silver Delta tables. Parameters are injected via baseParameters — the notebook raises ValueError if either is missing.",
+        "type": "DatabricksNotebook",
+        "dependsOn": [],
+        "typeProperties": {
+          "notebookPath": "/Shared/silver_transformation/04_silver_all_entities_job_params_v4",
+          "baseParameters": {
+            "load_type": {
+              "value": "@pipeline().parameters.p_load_type",
+              "type": "Expression"
+            },
+            "ingestion_date": {
+              "value": "@pipeline().parameters.p_ingestion_date",
+              "type": "Expression"
+            }
+          }
+        },
+        "linkedServiceName": {
+          "referenceName": "ls_databricks_dev",
+          "type": "LinkedServiceReference"
+        }
+      }
+
+    ]
+  }
+}
