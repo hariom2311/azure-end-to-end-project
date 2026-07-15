@@ -1,0 +1,47 @@
+{
+  "name": "job_silver_blob_realtime_v3",
+  "description": "Silver transformation for blob realtime data (charging_sessions + maintenance_events). Runs 10 minutes after job_bronze_realtime_hourly so Bronze has finished writing before Silver starts reading.",
+
+  "schedule": {
+    "quartz_cron_expression": "0 10 * * * ?",
+    "timezone_id": "UTC",
+    "pause_status": "UNPAUSED"
+  },
+
+  "tasks": [
+    {
+      "task_key": "silver_blob_transform",
+      "description": "Run Silver transformation notebook for blob realtime entities. Reads Bronze CSV from Volume, applies data quality pipeline, writes Silver Delta tables.",
+      "notebook_task": {
+        "notebook_path": "/Shared/silver_transformation/03_silver_blob_all_entities_job_params_v3",
+        "base_parameters": {
+          "load_type"      : "incremental",
+          "ingestion_year" : "{{job.start_time.iso_date | date_format: 'yyyy'}}",
+          "ingestion_month": "{{job.start_time.iso_date | date_format: 'MM'}}",
+          "ingestion_day"  : "{{job.start_time.iso_date | date_format: 'dd'}}",
+          "ingestion_hour" : "{{job.start_time.iso_date | date_format: 'HH'}}"
+        },
+        "source": "WORKSPACE"
+      },
+      "existing_cluster_id": "<your-dev-cluster-id>",
+      "timeout_seconds": 3600,
+      "max_retries": 1,
+      "min_retry_interval_millis": 300000
+    }
+  ],
+
+  "job_clusters": [],
+
+  "email_notifications": {
+    "on_failure": ["<your-email@domain.com>"],
+    "no_alert_for_skipped_runs": true
+  },
+
+  "max_concurrent_runs": 1,
+
+  "tags": {
+    "layer"  : "silver",
+    "source" : "blob",
+    "day"    : "9"
+  }
+}
