@@ -1,0 +1,44 @@
+{
+  "name": "pl_gold_api_transform_v4",
+  "properties": {
+    "description": "Gold transformation pipeline. Calls Databricks notebook 04_gold_full_incremental_v3 with load_type. Builds all Gold dim and fact tables from Silver Delta tables. Triggered by pl_bronze_api_master_v4 after Silver completes.",
+    "parameters": {
+      "p_load_type": {
+        "type": "string",
+        "defaultValue": "incremental"
+      }
+    },
+    "activities": [
+      {
+        "name": "act_gold_transform",
+        "description": "Run Databricks notebook 04_gold_full_incremental_v3. Reads all Silver Delta tables, builds 11 dims (SCD1/SCD2) and 5 facts with full or incremental merge logic. Parameters injected via baseParameters.",
+        "type": "DatabricksNotebook",
+        "dependsOn": [],
+        "policy": {
+          "timeout": "0.12:00:00",
+          "retry": 0,
+          "retryIntervalInSeconds": 30,
+          "secureOutput": false,
+          "secureInput": false
+        },
+        "userProperties": [],
+        "typeProperties": {
+          "notebookPath": "/Users/hariomsuryawanshi68258@gmail.com/end-to-end-18-days-project-notebooks/gold-ingestion-notebooks/api-response-gold-layer-notebooks/04_gold_full_incremental_v3",
+          "baseParameters": {
+            "load_type": {
+              "value": "@pipeline().parameters.p_load_type",
+              "type": "Expression"
+            }
+          }
+        },
+        "linkedServiceName": {
+          "referenceName": "ls_databricks_cluster",
+          "type": "LinkedServiceReference"
+        }
+      }
+    ],
+    "annotations": [],
+    "lastPublishTime": "2026-07-19T00:00:00Z"
+  },
+  "type": "Microsoft.DataFactory/factories/pipelines"
+}
