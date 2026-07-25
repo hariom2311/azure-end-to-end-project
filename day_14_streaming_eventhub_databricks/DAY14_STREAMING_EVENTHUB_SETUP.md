@@ -15,7 +15,7 @@
 | **Throughput Unit (TU)** | A unit of capacity for an Event Hub namespace. 1 TU = 1 MB/s ingest or 2 MB/s egress. Basic tier minimum is 1 TU — more than enough for this project. |
 | **Event Hub Topic (Entity)** | A named channel inside an Event Hub namespace. Producers send to a specific topic; consumers read from it. Each topic is independent. Today's topic: `vehicle-battery-live`. |
 | **Partition** | Each topic is split into N partitions. Events are distributed across partitions (by partition key or round-robin). More partitions = more parallel consumer readers. Each partition is an ordered, immutable log. |
-| **Consumer Group** | A named "view" of a topic. Multiple consumer groups can each read all events from the same topic independently — they don't affect each other. `$Default` always exists. We create a dedicated `databricks-consumer` group so Databricks doesn't compete with other readers. |
+| **Consumer Group** | A named "view" of a topic. Multiple consumer groups can each read all events from the same topic independently — they don't affect each other. `$Default` always exists. Basic tier only supports `$Default` — additional consumer groups require Standard tier. |
 | **Shared Access Policy (SAS)** | A named credential (key) on an Event Hub that grants specific permissions: Send, Listen, or Manage. Producers need Send only. Consumers need Listen only. Never give both to the same key. |
 | **Connection String** | The credential string built from a SAS policy. Format: `Endpoint=sb://<namespace>.servicebus.windows.net/;SharedAccessKeyName=<policy>;SharedAccessKey=<key>;EntityPath=<topic>`. |
 | **Maven Library (Spark Connector)** | A JAR file that Databricks downloads from Maven Central and installs on a cluster. The Event Hubs Spark connector (`azure-eventhubs-spark`) adds `format("eventhubs")` to Structured Streaming. Without it, the notebook fails immediately. |
@@ -203,20 +203,18 @@ On the namespace overview page you should see:
 
 Topic `vehicle-battery-live` now appears in the list.
 
-### 2.2 Create a dedicated consumer group for Databricks
+### 2.2 Consumer group — Basic tier note
 
-A consumer group lets Databricks track its own read position independently of any other reader.
+> **Basic tier limitation:** The "+ Consumer group" button on the topic page is disabled on Basic tier. Basic only supports the built-in `$Default` consumer group — you cannot create additional ones.
+>
+> **This is fine for our setup.** Databricks is the only consumer reading `vehicle-battery-live`, so `$Default` works perfectly. The notebook is already configured to use `$Default`.
+>
+> If you ever need multiple independent consumers (e.g., Stream Analytics + Databricks reading the same topic simultaneously), you would need to upgrade to Standard tier (~₹830/month). For this project, Basic + `$Default` is sufficient.
 
+To verify `$Default` exists:
 1. Click on `vehicle-battery-live` topic
 2. Left menu → **Consumer groups** (under Entities)
-3. You will see `$Default` already exists — do NOT delete it
-4. Click **+ Consumer group**
-5. Name: `databricks-consumer`
-6. Click **Create**
-
-You now have two consumer groups:
-- `$Default` — reserved / general use
-- `databricks-consumer` — used exclusively by the Databricks streaming notebook
+3. You will see `$Default` listed — this is what the Databricks notebook uses
 
 ---
 
@@ -581,7 +579,7 @@ Press **Ctrl+C** in the terminal where `send_vehicle_battery_events.py` is runni
 | Event Hub namespace tier | Basic |
 | Throughput Units | 1 |
 | Event Hub partitions | 4 |
-| Consumer group for Databricks | `databricks-consumer` |
+| Consumer group for Databricks | `$Default` (Basic tier only supports this) |
 | Maven library coordinate | `com.microsoft.azure:azure-eventhubs-spark_2.12:2.3.22` |
 | Events per second (producer) | 10 (1 per vehicle × 10 vehicles) |
 | Micro-batch interval | 30 seconds |
