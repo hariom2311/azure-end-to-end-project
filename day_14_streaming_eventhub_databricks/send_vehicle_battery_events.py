@@ -24,7 +24,7 @@ from azure.eventhub import EventHubProducerClient, EventData
 # ---------------------------------------------------------------------------
 # CONFIG — read from environment variable (never hardcode in production)
 # ---------------------------------------------------------------------------
-CONN_STR   = os.environ.get("EH_CONN_STR", "")   # Full Event Hub connection string
+CONN_STR   = os.environ.get("EH_CONN_STR", "")   # Full Event Hub connection string — set EH_CONN_STR env var
 EVENTHUB_NAME = "vehicle-battery-live"             # Entity path / topic name
 
 if not CONN_STR:
