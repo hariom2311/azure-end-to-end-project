@@ -189,3 +189,211 @@ Payments matched: 47
 Dead-letter records: 2
 Watermark saved: order_id = 1050
 ```
+
+---
+
+## Exercise 6: Schema Evolution — Spot the Break
+
+**Concept:** Data Schemas & Schema Evolution
+
+**Scenario:**  
+Your `orders_silver` table was created with this schema:
+
+```sql
+CREATE TABLE orders_silver (
+    order_id     INTEGER NOT NULL,
+    customer_id  VARCHAR(10),
+    order_date   DATE,
+    order_amount INTEGER,
+    status       VARCHAR(20),
+    currency     VARCHAR(3)
+);
+```
+
+The source team sends the following changelog for next Monday's deployment:
+
+```
+Change A: Add column `discount_code VARCHAR(50)` — nullable, default NULL
+Change B: Remove column `currency` — it will be derived from customer's account
+Change C: Rename `customer_id` to `cust_id`
+Change D: Change `order_amount` from INTEGER to FLOAT (to support cents)
+Change E: Add column `product_category VARCHAR(50)` — NOT NULL, no default
+```
+
+**Tasks:**
+
+1. Classify each change (A–E) as **backward compatible**, **forward compatible**, **fully compatible**, or **breaking**. Explain each.
+
+2. Which changes can you apply to `orders_silver` safely without modifying any downstream pipeline? Which ones require downstream pipelines to be updated first?
+
+3. Write the SQL `ALTER TABLE` statements for the safe changes only.
+
+4. For Change B (remove `currency`): design a migration plan that allows the source to remove the column without breaking downstream consumers on the same day. What is the minimum number of deployment steps?
+
+5. Your pipeline uses `SELECT * FROM orders_raw` to load into silver. Which of the five changes would silently break the pipeline without throwing an error? Why is `SELECT *` dangerous in pipelines?
+
+**Sample data:** `data/orders.csv` — note the `currency` and `product_category` columns already present.
+
+---
+
+## Exercise 7: Batch vs. Streaming — Pick the Right Model
+
+**Concept:** Batch vs. Micro-batch vs. Streaming
+
+**Scenario:**  
+For each use case below, decide whether to use **batch**, **micro-batch**, or **streaming**. Justify your choice with latency requirement, complexity, and cost reasoning.
+
+| # | Use Case |
+|---|---|
+| A | Daily sales report emailed to executives every morning at 7 AM |
+| B | Fraud detection: flag a transaction as suspicious within 500ms of it occurring |
+| C | A recommendation engine that refreshes product suggestions every 15 minutes |
+| D | End-of-month invoice generation for 2 million customers |
+| E | Real-time dashboard showing orders placed in the last 60 seconds |
+| F | Weekly ML model retraining on the last 90 days of clickstream data |
+
+**Tasks:**
+
+1. For each use case (A–F), state your choice (batch / micro-batch / streaming) and a one-sentence justification.
+
+2. For use case C (15-minute recommendations), a colleague suggests using true streaming (event-by-event). What are the trade-offs of streaming vs. micro-batch for this specific case? Which would you recommend?
+
+3. Use case E requires a "last 60 seconds" window. Sketch the approach:
+   - What is the window type (tumbling, sliding, session)?
+   - What happens to an order event that arrives 90 seconds late due to a network delay?
+   - How would you handle this late arrival?
+
+4. Use case B (fraud detection) must process 10,000 transactions per second with sub-500ms latency. What processing model is the only viable option? What makes this hard to implement compared to batch?
+
+---
+
+## Exercise 8: Partitioning — Fix a Slow Query
+
+**Concept:** Data Partitioning & Bucketing
+
+**Scenario:**  
+A `orders` table in your data lake holds 3 years of data (≈ 500 million rows, ≈ 2 TB). It is stored as Parquet files in a single flat directory with no partitioning:
+
+```
+s3://datalake/orders/
+├── part-0001.parquet   (all 500M rows spread across ~2000 files)
+├── part-0002.parquet
+└── ...
+```
+
+The three most common queries run by analysts are:
+
+```sql
+-- Query 1: Daily orders report
+SELECT order_date, COUNT(*), SUM(order_amount)
+FROM orders
+WHERE order_date = '2024-01-15';
+
+-- Query 2: Regional breakdown for a date range
+SELECT region, SUM(order_amount)
+FROM orders
+WHERE order_date BETWEEN '2024-01-01' AND '2024-01-31'
+  AND region = 'APAC';
+
+-- Query 3: Customer lifetime value (joins orders with customers)
+SELECT o.customer_id, SUM(o.order_amount)
+FROM orders o
+JOIN customers c ON o.customer_id = c.customer_id
+GROUP BY o.customer_id;
+```
+
+**Tasks:**
+
+1. With no partitioning, how much data does Query 1 scan? Why is this expensive?
+
+2. Propose a partitioning strategy that optimises Queries 1 and 2. Write the folder structure that results from your strategy using the sample data dates (Jan 15–19, 2024).
+
+3. Would you add a second partition column for `region`? What is the risk if there are 50 distinct regions and data is evenly distributed?
+
+4. For Query 3 (the customer join), partitioning by `order_date` does not help — the query scans all partitions. Propose a **bucketing** strategy that makes this join faster. How many buckets would you choose for a 500M row table?
+
+5. Using `data/orders.csv` (50 rows), simulate partitioning by writing a Python script that reads the CSV and writes separate files per `order_date` into a `partitioned_output/order_date=YYYY-MM-DD/` folder structure.
+
+---
+
+## Exercise 9: Add Observability to a Pipeline
+
+**Concept:** Pipeline Observability & Monitoring
+
+**Scenario:**  
+You have inherited a pipeline that runs nightly to load `orders_silver`. It has no monitoring. The only way you find out it failed is when an analyst emails you the next morning. Your job is to add observability.
+
+The pipeline currently looks like this:
+
+```python
+import pandas as pd
+import sqlite3
+
+def run_pipeline():
+    conn = sqlite3.connect("warehouse.db")
+    df = pd.read_csv("data/orders.csv")
+    df["order_date"] = pd.to_datetime(df["order_date"])
+    df["status"] = df["status"].str.lower()
+    df.to_sql("orders_silver", conn, if_exists="replace", index=False)
+    conn.close()
+
+run_pipeline()
+```
+
+**Tasks:**
+
+1. Identify **four observability gaps** in this pipeline (what can go wrong silently without any signal).
+
+2. Add the following checks to the pipeline. The pipeline should **raise an error and stop** if any check fails:
+   - Row count is greater than 0
+   - `order_id` has no null values
+   - `order_amount` has no negative values
+   - `status` only contains values from the set: `{completed, pending, cancelled}`
+
+3. Add **freshness monitoring**: after loading, check that the maximum `order_date` in `orders_silver` is no more than 2 days behind today's date. If it is stale, print a warning (do not fail — stale data is better than no data).
+
+4. Add a **pipeline run log**: after every run (success or failure), insert a row into a `pipeline_runs` table with columns: `run_id`, `pipeline_name`, `run_date`, `rows_loaded`, `status` (`success`/`failed`), `error_message`, `duration_seconds`.
+
+5. Using `data/orders.csv`, run your instrumented pipeline and print the final run log entry.
+
+---
+
+## Exercise 10: Design an Orchestrated Pipeline
+
+**Concept:** Orchestration & Dependency Management
+
+**Scenario:**  
+You need to orchestrate a daily pipeline that builds the `gold.revenue_summary` table. The full dependency chain is:
+
+```
+raw.orders       (loaded by Pipeline A, runs at 01:00)
+raw.returns      (loaded by Pipeline B, runs at 01:30)
+raw.customers    (loaded by Pipeline C, runs at 00:30)
+        |
+silver.orders       (depends on raw.orders)
+silver.returns      (depends on raw.returns)
+silver.customers    (depends on raw.customers)
+        |
+gold.order_metrics  (depends on silver.orders + silver.returns)
+gold.customer_dim   (depends on silver.customers)
+        |
+gold.revenue_summary (depends on gold.order_metrics + gold.customer_dim)
+        |
+[Email report sent to executives] (depends on gold.revenue_summary)
+                                   SLA: must arrive before 07:00
+```
+
+**Tasks:**
+
+1. Draw the full DAG (text diagram is fine). Mark which tasks can run in **parallel** and which must be **sequential**.
+
+2. Identify the **critical path** — the longest chain of sequential dependencies that determines the minimum possible end-to-end runtime. If each task takes 20 minutes, what is the earliest the email can be sent?
+
+3. Pipeline A (raw.orders) is late — it finishes at 02:30 instead of 01:30. Using your DAG, determine:
+   - Which tasks are blocked?
+   - Which tasks are unaffected and can still run on schedule?
+   - Will the 07:00 email SLA be met? Show your working.
+
+4. Write pseudocode for this DAG using an Airflow-like syntax. Define tasks, set dependencies with `>>` operators, and add an SLA of 30 minutes on the `gold.revenue_summary` task.
+
+5. The team wants to **backfill** this pipeline for the last 7 days (the pipeline was broken for a week). List two requirements the pipeline must satisfy for backfill to work correctly. Which concept from earlier in Day 1 is essential here?

@@ -2,7 +2,7 @@
 
 ## Overview
 
-A data pipeline is the backbone of every data-driven system. Before touching any tool or cloud service, a data engineer needs a solid mental model of how data moves, why pipelines fail, and what makes a pipeline production-grade. This day covers five core concepts that appear in every real-world pipeline and every data engineering interview.
+A data pipeline is the backbone of every data-driven system. Before touching any tool or cloud service, a data engineer needs a solid mental model of how data moves, why pipelines fail, and what makes a pipeline production-grade. This day covers ten core concepts that appear in every real-world pipeline and every data engineering interview.
 
 ---
 
@@ -290,6 +290,398 @@ This ensures the production table is never in a half-written state.
 | Idempotency & Loads | Re-runnable pipelines; incremental uses watermarks to process only new data |
 | Data Lineage | Tracing data origin and impact; essential for debugging, compliance, governance |
 | Failure Modes & Retries | At-least-once + idempotent writes; backoff, DLQ, checkpointing, atomic writes |
+| Data Schemas & Schema Evolution | Contracts between producer and consumer; backward/forward compatibility strategies |
+| Batch vs. Micro-batch vs. Streaming | Processing frequency trade-offs; latency vs. throughput vs. complexity |
+| Data Partitioning & Bucketing | Physical data layout strategies that determine query and load performance |
+| Pipeline Observability & Monitoring | SLAs, freshness checks, row count assertions, and alerting patterns |
+| Orchestration & Dependency Management | How pipelines are scheduled, sequenced, and recovered at scale |
+
+---
+
+## Concept 6: Data Schemas & Schema Evolution
+
+### What is a schema?
+
+A **schema** is the agreed contract between the system that produces data and the system that consumes it. It defines:
+- Which columns exist
+- The data type of each column (`STRING`, `INTEGER`, `TIMESTAMP`, etc.)
+- Whether columns are nullable or required
+- Any constraints (primary keys, unique keys)
+
+Every pipeline implicitly or explicitly relies on a schema. When the schema changes without coordination, pipelines break.
+
+### Schema-on-write vs. schema-on-read
+
+| | Schema-on-write | Schema-on-read |
+|---|---|---|
+| When schema is enforced | At write time (reject bad data) | At read time (interpret raw bytes) |
+| Where it is used | Relational databases, Avro, Protobuf | Data lakes (raw CSV/JSON), Hive |
+| Bad data handling | Rejected at ingest | Silently null or parse error at query time |
+| Flexibility | Low (schema must exist before writing) | High (can write anything, figure it out later) |
+
+Data lakes often start as schema-on-read (flexible) and evolve toward schema-on-write (governed) as they mature.
+
+### Schema evolution: four types of change
+
+| Change type | Example | Breaking? |
+|---|---|---|
+| Add a nullable column | Add `discount_code VARCHAR` | Non-breaking (old readers ignore it) |
+| Remove a column | Delete `legacy_id` | Breaking (consumers expecting it will fail) |
+| Rename a column | `cust_id` → `customer_id` | Breaking |
+| Change a type | `order_amount INT` → `order_amount FLOAT` | Maybe breaking (depends on direction) |
+
+### Backward and forward compatibility
+
+**Backward compatible:** New schema can read data written with the old schema.
+- Example: Add a nullable `discount_code` column with a default of `NULL`. Old data files have no `discount_code` — the new reader fills in `NULL`. Safe.
+
+**Forward compatible:** Old schema can read data written with the new schema.
+- Example: Producer adds a new field. Old consumer ignores unknown fields. Safe if consumer is written defensively.
+
+**Fully compatible:** Both backward and forward. This is what you aim for in long-lived schemas.
+
+### Practical schema management
+
+**Schema registry:** A centralised service (e.g., Confluent Schema Registry for Kafka, AWS Glue Data Catalog) that stores versioned schemas. Before a producer writes, it registers its schema. Before a consumer reads, it fetches the schema for that version. Incompatible changes are rejected.
+
+**Schema contracts in practice:**
+```sql
+-- Safe evolution: add nullable column (backward compatible)
+ALTER TABLE orders_silver ADD COLUMN discount_code STRING;
+
+-- Dangerous: changing type without migration
+ALTER TABLE orders_silver ALTER COLUMN order_amount TYPE FLOAT;
+-- Risk: existing FLOAT values read by old INT-expecting consumers will break
+```
+
+**Defensive reading pattern:**
+```python
+# Read only the columns you need, not SELECT *
+# SELECT * breaks when columns are added/removed
+df = spark.sql("SELECT order_id, customer_id, amount FROM orders_silver")
+```
+
+`SELECT *` is the most common source of schema evolution breakage in pipelines.
+
+---
+
+## Concept 7: Batch vs. Micro-batch vs. Streaming
+
+Every pipeline must answer: *how often does data move?* The answer determines latency, throughput, cost, and complexity.
+
+### The three processing models
+
+**Batch processing**
+- Data is collected over a period (hour, day, month) and processed all at once at the end of that period
+- Highest throughput, highest latency, lowest complexity
+- Examples: nightly ETL jobs, monthly billing runs, weekly ML model retraining
+
+```
+[Source accumulates data] ──> [Trigger at midnight] ──> [Process full day] ──> [Write to DW]
+```
+
+**Micro-batch processing**
+- Data is collected in small time windows (seconds to minutes) and processed as mini-batches
+- Middle ground: lower latency than batch, lower complexity than true streaming
+- Examples: Spark Structured Streaming in trigger mode, AWS Glue Streaming
+
+```
+[Source] ──> [Collect 30 seconds of data] ──> [Process] ──> [Write] ──> [Repeat]
+```
+
+**Streaming (event-by-event)**
+- Each record is processed as soon as it arrives, with no deliberate accumulation window
+- Lowest latency (milliseconds), highest complexity, hardest to make exactly-once
+- Examples: Kafka Streams, Apache Flink, real-time fraud detection
+
+```
+[Event arrives] ──> [Process immediately] ──> [Write result]
+```
+
+### Choosing the right model
+
+| Question | Batch | Micro-batch | Streaming |
+|---|---|---|---|
+| How fresh must data be? | Hours/days OK | Minutes OK | Seconds required |
+| How complex is the logic? | Any complexity | Moderate | Keep simple |
+| Do you need windowed aggregations? | Easy | Easy | Harder (watermarks) |
+| What is the budget? | Low | Medium | High |
+| Team streaming expertise? | Not needed | Some | Required |
+
+### Latency vs. throughput trade-off
+
+- **Batch:** processes 1 million records in one go — high throughput, but the last record waits for the whole batch
+- **Streaming:** processes each record immediately — low latency, but more overhead per record
+
+**Lambda architecture** (historical): Run batch for correctness + streaming for speed, merge results. Complex to maintain — two codebases for one logical pipeline.
+
+**Kappa architecture** (modern): Use streaming for everything; replay historical data through the stream when reprocessing is needed. Simpler — one codebase.
+
+### Late-arriving data
+
+In streaming, events arrive out of order (network delays, mobile apps that buffer offline). If you are computing a 5-minute window sum, an event arriving 3 minutes late will miss the window it belongs to.
+
+**Watermark:** A point in event time before which the system assumes no more late events will arrive. Events older than the watermark are either:
+- **Dropped** (simplest, some data loss)
+- **Sent to a side output** (late event store for separate handling)
+- **Trigger a window recomputation** (most correct, most complex)
+
+---
+
+## Concept 8: Data Partitioning & Bucketing
+
+### Why physical layout matters
+
+A 10 TB table queried with `WHERE order_date = '2024-01-15'` should not scan all 10 TB. The physical layout of data on disk — how it is split into files and folders — determines whether a query reads 10 GB or 10 TB.
+
+### Partitioning
+
+**Partitioning** splits a table into separate physical directories (in a lake) or storage segments (in a warehouse) based on the value of one or more columns.
+
+```
+orders/
+├── order_date=2024-01-15/
+│   ├── part-0001.parquet    # only Jan 15 data
+│   └── part-0002.parquet
+├── order_date=2024-01-16/
+│   └── part-0001.parquet
+└── order_date=2024-01-17/
+    └── part-0001.parquet
+```
+
+When you query `WHERE order_date = '2024-01-15'`, the engine reads only the `order_date=2024-01-15/` directory — **partition pruning** eliminates 99%+ of the data scan.
+
+**Good partition columns:**
+- High query selectivity: `date`, `region`, `status`
+- Low cardinality: not `order_id` (one file per order = millions of tiny files)
+- Evenly distributed: not `status` if 95% of rows are `completed`
+
+**The small files problem:** Too many partitions with too few rows each creates millions of tiny files. File open/close overhead dominates query time. Target files of 128 MB–1 GB each.
+
+**Over-partitioning example (bad):**
+```
+-- Partitioning by both date AND hour AND customer_id
+-- Creates millions of tiny directories
+partitioned by (order_date, order_hour, customer_id)
+```
+
+### Bucketing (Hash partitioning)
+
+**Bucketing** distributes rows across a fixed number of buckets based on the hash of a column. Unlike partitioning, all buckets always exist — the number does not grow with data volume.
+
+```
+Hash(customer_id) % 64 = bucket number (0–63)
+```
+
+**When bucketing helps:**
+- Joins between two large tables bucketed on the same column — the join engine knows which bucket from table A matches which bucket from table B, eliminating a full shuffle
+- Aggregations by the bucketed column — all rows for a given `customer_id` are in the same bucket
+
+**Partitioning vs. Bucketing:**
+
+| | Partitioning | Bucketing |
+|---|---|---|
+| Splits by | Column value (discrete) | Column hash (numeric range) |
+| Number of splits | Grows with distinct values | Fixed at table creation |
+| Best for | Date/time range queries | Join optimisation, high-cardinality columns |
+| Partition pruning | Yes | No (scans all buckets) |
+
+### Choosing a partition strategy
+
+1. **Start with date** — almost every analytical query has a date filter
+2. **Add a second dimension** only if cardinality is low and queries consistently filter by it (e.g., `region`)
+3. **Never partition on high-cardinality columns** (user_id, order_id, UUID)
+4. **Monitor file sizes** — aim for 128 MB–1 GB per file after partitioning
+
+---
+
+## Concept 9: Pipeline Observability & Monitoring
+
+### What is pipeline observability?
+
+**Observability** is the ability to understand the internal state of your pipeline from its external outputs (logs, metrics, alerts) — without having to manually inspect the data or re-run the code.
+
+A pipeline can run without errors and still be wrong: it processed fewer rows than expected, a column has unexpected nulls, or data is stale because an upstream source stopped sending. These failures are invisible without observability.
+
+### The four pillars of pipeline observability
+
+**1. Freshness** — Is data up to date?
+```sql
+-- Alert if the max event timestamp in silver is more than 2 hours behind wall clock
+SELECT MAX(event_timestamp) FROM silver.orders
+-- If now() - MAX(event_timestamp) > 2 hours → alert
+```
+
+**2. Volume** — Did the expected amount of data arrive?
+```python
+# Compare today's row count to the 7-day average
+today_count = get_row_count("silver.orders", date="2024-01-15")
+avg_7d = get_avg_row_count("silver.orders", lookback_days=7)
+if today_count < avg_7d * 0.7:  # 30% drop
+    alert("Row count anomaly: orders_silver")
+```
+
+**3. Quality** — Are the values correct?
+```sql
+-- Null check
+SELECT COUNT(*) FROM silver.orders WHERE order_id IS NULL;
+-- Should be 0
+
+-- Range check
+SELECT COUNT(*) FROM silver.orders WHERE order_amount < 0;
+-- Should be 0
+
+-- Referential integrity
+SELECT COUNT(*) FROM silver.orders o
+LEFT JOIN silver.customers c ON o.customer_id = c.customer_id
+WHERE c.customer_id IS NULL;
+-- Should be 0
+```
+
+**4. Pipeline health** — Did the job succeed?
+- Run duration (alert if 3× the normal duration)
+- Last successful run time
+- Error rate in dead-letter queue
+- Resource utilisation (memory, CPU, shuffle spill)
+
+### SLAs and SLOs
+
+- **SLA (Service Level Agreement):** External commitment — "The dashboard will show data no older than 4 hours."
+- **SLO (Service Level Objective):** Internal target — "The silver layer pipeline completes within 90 minutes, 99% of the time."
+- **SLI (Service Level Indicator):** The actual measurement — "Today's pipeline finished in 87 minutes."
+
+Design your alerts to fire before the SLA is breached, not after. If the SLA is 4 hours of freshness and the pipeline normally takes 90 minutes, alert if the pipeline has not started within 3 hours.
+
+### Common alert patterns
+
+| Alert | Trigger condition | Severity |
+|---|---|---|
+| Pipeline not started | Expected start time + 30 min elapsed, no run | High |
+| Pipeline running too long | Duration > 2× p95 historical | Medium |
+| Row count anomaly | Count < 70% or > 150% of 7-day average | High |
+| Null rate spike | Null % in key column > 1% (was 0%) | High |
+| Dead-letter queue growing | DLQ size > 100 records | Medium |
+| Freshness breach | Max event time > SLA lag threshold | Critical |
+
+### Write-time data quality checks (assertions)
+
+Run quality checks as part of the pipeline — fail the pipeline before bad data reaches production:
+
+```python
+def run_quality_checks(df, table_name):
+    checks = {
+        "no_null_order_id": df.filter(col("order_id").isNull()).count() == 0,
+        "positive_amounts":  df.filter(col("amount") <= 0).count() == 0,
+        "row_count_nonzero": df.count() > 0,
+    }
+    failures = [name for name, passed in checks.items() if not passed]
+    if failures:
+        raise DataQualityError(f"{table_name} failed checks: {failures}")
+```
+
+---
+
+## Concept 10: Orchestration & Dependency Management
+
+### What is orchestration?
+
+**Orchestration** is the scheduling, sequencing, and monitoring of pipeline tasks. An orchestrator answers:
+- When should each task run?
+- Which tasks must complete before others can start?
+- What happens when a task fails?
+- How do I see the status of every pipeline at a glance?
+
+Without an orchestrator, engineers use cron — which provides scheduling but no dependency management, no retry logic, no UI, and no cross-pipeline coordination.
+
+### Core orchestration concepts
+
+**Task:** The smallest unit of work — one Python function, one SQL query, one Spark job.
+
+**DAG (Directed Acyclic Graph):** The full set of tasks and their dependencies for one pipeline. The orchestrator topologically sorts the DAG to determine execution order.
+
+**Run / DAG run:** One execution of the DAG, tied to a specific logical date (called `execution_date` in Airflow).
+
+**Trigger:** What causes a DAG run to start:
+- **Schedule-based:** Cron expression (`0 2 * * *` = daily at 2 AM)
+- **Event-based:** A sensor detects a new file in S3, a Kafka message, a REST call
+- **Manual:** An engineer triggers it via UI or CLI
+- **Dependency-based:** Another DAG's successful completion
+
+### Task dependency patterns
+
+**Linear chain** — task B runs after task A:
+```
+extract ──> transform ──> load
+```
+
+**Fan-out** — multiple tasks run in parallel after one completes:
+```
+extract ──> transform_orders ──>
+         ──> transform_customers ──> load_gold
+         ──> transform_products ──>
+```
+
+**Fan-in** — one task waits for multiple upstream tasks:
+```
+load_orders ──┐
+              ├──> build_gold_summary
+load_returns ─┘
+```
+
+**Sensor** — a task that polls until a condition is met before proceeding:
+```
+[wait for file in S3] ──> extract ──> transform ──> load
+```
+
+### Backfilling
+
+When you deploy a new pipeline (or fix a broken one), you need to process historical data as if the pipeline had been running all along. This is called **backfilling**.
+
+Good orchestrators (Airflow, Prefect) support backfill natively:
+```bash
+# Airflow: backfill orders pipeline for all days in January
+airflow dags backfill orders_pipeline --start-date 2024-01-01 --end-date 2024-01-31
+```
+
+For backfills to work correctly, pipelines must be **idempotent** (Concept 3) — re-running for a past date must produce the same result as if it had run on that date originally.
+
+### Cross-DAG dependencies
+
+Large platforms have hundreds of DAGs. Some Gold tables depend on multiple Silver tables built by different DAGs. Cross-DAG dependencies require:
+
+- **Dataset/asset triggers** (Airflow 2.4+): DAG B declares it depends on the `orders_silver` dataset. When DAG A writes to `orders_silver`, DAG B is automatically triggered.
+- **ExternalTaskSensor**: DAG B polls for the successful completion of a specific task in DAG A before proceeding.
+
+### SLA miss handling
+
+Orchestrators can define SLAs per task. If a task does not complete within its SLA window, the orchestrator fires a callback (email, Slack, PagerDuty) before the downstream consumer's deadline is breached.
+
+```python
+# Airflow example
+transform_task = PythonOperator(
+    task_id="transform_orders",
+    python_callable=transform_orders,
+    sla=timedelta(hours=1),  # alert if this task takes > 1 hour
+    on_sla_miss=notify_oncall,
+)
+```
+
+---
+
+## Summary
+
+| Concept | One-line summary |
+|---|---|
+| Data Pipeline | A sequence of extract → transform → load steps represented as a DAG |
+| ETL vs. ELT | Order determines where compute happens; ELT is the modern default |
+| Idempotency & Loads | Re-runnable pipelines; incremental uses watermarks to process only new data |
+| Data Lineage | Tracing data origin and impact; essential for debugging, compliance, governance |
+| Failure Modes & Retries | At-least-once + idempotent writes; backoff, DLQ, checkpointing, atomic writes |
+| Schema & Schema Evolution | Contracts between producers and consumers; backward/forward compatibility |
+| Batch vs. Micro-batch vs. Streaming | Processing frequency trade-offs; latency vs. throughput vs. complexity |
+| Partitioning & Bucketing | Physical layout that determines scan cost and join efficiency |
+| Observability & Monitoring | Freshness, volume, quality checks, and SLA-aligned alerting |
+| Orchestration & Dependencies | Scheduling, sequencing, backfill, and cross-pipeline coordination |
 
 ---
 

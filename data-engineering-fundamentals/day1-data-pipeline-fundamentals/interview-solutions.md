@@ -651,7 +651,7 @@ For most destinations (Snowflake, BigQuery, Postgres): VARCHAR size is not enfor
 
 ---
 
-**Q30 — When to intentionally choose a non-idempotent pipeline**
+**Q30 — When to intentionally choose a non-idempotent pipeline**  
 
 **Legitimate scenario: Append-only audit/event logs**
 
@@ -665,3 +665,537 @@ If you are building an audit trail where every pipeline run must produce a new r
 For very high-throughput, low-latency streams where occasional data loss is acceptable (e.g., metrics telemetry, non-critical event counters), at-most-once delivery avoids the overhead of idempotency tracking. You accept that some events may be lost in exchange for lower latency and simpler infrastructure.
 
 **Key point:** Non-idempotency is a conscious trade-off, not an accident. Document it, test it, and ensure the downstream consumers understand the behaviour.
+
+---
+
+## Concept 6: Data Schemas & Schema Evolution
+
+**Q31 — Schema-on-write vs. schema-on-read**
+
+**Schema-on-write:** The schema is enforced at the time data is written. If the data does not conform, it is rejected.
+- Example: Writing to a PostgreSQL table. The table has `order_amount INTEGER NOT NULL`. If a producer sends `NULL`, the database rejects the row immediately.
+
+**Schema-on-read:** Data is written in any format without validation. The schema is applied when data is read — the reader interprets raw bytes.
+- Example: Dropping a JSON file into S3. Any JSON is accepted at write time. When an analyst queries it via Athena, missing fields become `NULL` and type mismatches become parse errors.
+
+**Which is better:** Neither — they serve different stages of maturity. Raw/Bronze zones use schema-on-read for flexibility (you do not always know the schema upfront). Silver/Gold zones enforce schema-on-write for correctness. A mature platform enforces schema-on-write everywhere except the raw landing zone.
+
+---
+
+**Q32 — Backward compatible vs. breaking schema change**
+
+Given table: `(user_id INT, email VARCHAR, created_at TIMESTAMP)`
+
+**Backward compatible (non-breaking):**
+```sql
+ALTER TABLE users ADD COLUMN phone_number VARCHAR DEFAULT NULL;
+```
+Old pipelines that read this table and do not reference `phone_number` continue to work. The new column is invisible to them.
+
+**Breaking change:**
+```sql
+ALTER TABLE users DROP COLUMN email;
+-- OR
+ALTER TABLE users RENAME COLUMN email TO email_address;
+```
+Any pipeline that references `email` by name now throws a column-not-found error. All consumers must be updated before or simultaneously with this change.
+
+**Rule of thumb:** Adding nullable columns is safe. Removing, renaming, or changing the type of existing columns is breaking unless all consumers are updated first.
+
+---
+
+**Q33 — Source team renames cust_id to customer_id next Tuesday**
+
+**Do not wait for Tuesday morning to find out your pipeline broke.**
+
+**Immediate response:**
+1. Ask the source team to implement this as a **two-phase migration**: add `customer_id` as a new column (alias/copy) first, keep `cust_id` for 2–4 weeks, then remove `cust_id` after all consumers are migrated.
+2. If they refuse, negotiate a **maintenance window** where both your pipeline and theirs are taken down simultaneously, your pipeline is updated, and both come back up together.
+
+**Action plan:**
+1. Identify every query, pipeline, and transformation that references `cust_id` (grep/lineage graph)
+2. Update each reference to use `customer_id`
+3. Deploy and test in a staging environment against the new schema
+4. Coordinate go-live with the source team
+
+**What NOT to do:** Simply update your pipeline the night before and hope nothing else references `cust_id`. Always search the full lineage.
+
+---
+
+**Q34 — Why `SELECT *` is dangerous in pipelines**
+
+**Failure mode 1 — Column added upstream:**
+```sql
+-- Your pipeline does:
+SELECT * FROM raw.orders  -- was 6 columns, now 7 after source adds discount_code
+
+-- Your Silver table was created with 6 columns
+INSERT INTO silver.orders SELECT * FROM raw.orders
+-- Error: INSERT has more columns than target table expects
+```
+The pipeline crashes. If you had named columns explicitly, the new column would simply be ignored.
+
+**Failure mode 2 — Column removed upstream:**
+```sql
+-- Source removes currency column
+SELECT * FROM raw.orders  -- now returns 5 columns instead of 6
+
+-- Downstream transformation references column by position (not name)
+df.columns[5]  -- was currency, now points to wrong column (or throws IndexError)
+```
+No error is raised at read time — wrong data silently flows downstream. This is worse than a crash because you may not notice for days.
+
+**Best practice:**
+```sql
+-- Always name the columns you need
+SELECT order_id, customer_id, order_date, order_amount, status
+FROM raw.orders
+```
+This way, schema changes in columns you do not use are invisible, and changes to columns you do use produce an explicit error immediately.
+
+---
+
+**Q35 — Schema management for 50 producers, 20 consumers on Kafka**
+
+**Tool: Schema Registry** (Confluent Schema Registry is the standard; AWS Glue Schema Registry is the managed alternative).
+
+**How it works:**
+1. Each producer registers its schema (Avro, Protobuf, or JSON Schema) with the registry before publishing
+2. The registry assigns a schema ID and version
+3. Each message includes the schema ID in its header (not the full schema — just 4 bytes)
+4. Each consumer fetches the schema from the registry using the ID and deserializes accordingly
+
+**Compatibility rules configured in the registry:**
+- `BACKWARD`: new schema can read data written with old schema (add nullable fields only)
+- `FORWARD`: old schema can read data written with new schema (remove fields only)
+- `FULL`: both backward and forward (add nullable OR remove with defaults)
+- `NONE`: no compatibility enforced (dangerous in production)
+
+**Enforcement:**
+- The registry **rejects** schema registrations that violate the configured compatibility rule
+- This prevents producers from accidentally publishing incompatible schemas
+- Consumers can always deserialise older messages using the version stored in the registry
+
+**Additional practice:** Run schema compatibility checks in CI/CD before deployment. If a producer's new code registers an incompatible schema, the CI pipeline fails.
+
+---
+
+## Concept 7: Batch vs. Micro-batch vs. Streaming
+
+**Q36 — Three processing models with use cases**
+
+| Model | Characteristics | Real-world use case |
+|---|---|---|
+| Batch | Processes accumulated data at scheduled intervals; highest throughput, highest latency | Nightly invoice generation, weekly ML model retraining, monthly billing |
+| Micro-batch | Processes small windows (seconds to minutes) on a rolling schedule | Spark Structured Streaming refreshing a dashboard every 30 seconds, near-real-time anomaly detection |
+| Streaming (event-by-event) | Processes each event as it arrives; lowest latency, highest complexity | Real-time fraud detection (must decide in <500ms), live sports score feeds, stock price tickers |
+
+---
+
+**Q37 — Lambda vs. Kappa architecture**
+
+**Lambda architecture:**
+- Runs two parallel pipelines: a **batch layer** (correct, high-latency) and a **speed layer** (approximate, low-latency)
+- Results are merged at query time: recent data from the speed layer, historical data from the batch layer
+- Problem: two codebases implementing the same business logic. When logic changes, both must be updated. They frequently drift.
+
+**Kappa architecture:**
+- One pipeline: everything is streaming
+- Historical reprocessing is done by replaying the event log (Kafka with long retention) through the same streaming pipeline
+- Simpler: one codebase, one set of business logic
+
+**Which is preferred today:** Kappa, for most use cases. Managed stream processing (Flink, Spark Structured Streaming) has matured enough that the "streaming is too complex" argument no longer holds for most teams. Lambda is still appropriate when batch and streaming truly have different correctness requirements (e.g., ML training needs batch semantics that streaming cannot replicate easily).
+
+---
+
+**Q38 — Real-time dashboard + daily summary: one pipeline or two?**
+
+**Two separate pipelines.**
+
+**Real-time dashboard (last 5 minutes, updated every 10 seconds):**
+- Processing model: **micro-batch** (every 10 seconds)
+- Why not true streaming: 10-second updates do not require event-by-event processing; micro-batch is far simpler and cheaper
+- Implementation: Spark Structured Streaming with a 10-second trigger, writing to a fast-read store (Redis, ClickHouse, or a materialized view)
+
+**Daily finance summary:**
+- Processing model: **batch** (runs once per day)
+- Why not streaming: finance needs a complete, consistent snapshot of the day. Batch gives exactly that. Streaming would add unnecessary complexity.
+- Implementation: Airflow-scheduled Spark or dbt job running at midnight
+
+**Why not one pipeline:** Mixing real-time and daily requirements in one pipeline forces the daily batch to run every 10 seconds (wasteful) or forces the real-time dashboard to wait until midnight (defeats the purpose). Separate pipelines let each be optimised independently.
+
+---
+
+**Q39 — What is a watermark in streaming?**
+
+In streaming, events carry an **event time** (when the event actually happened) which differs from **processing time** (when the system receives it). Events arrive out of order due to network delays, retries, or mobile devices buffering offline.
+
+A **watermark** is a system's declaration: *"I believe all events with event time before T have now arrived. I will not wait for any more events older than T."*
+
+```
+Watermark = max(event_time seen so far) - allowed_lateness
+```
+
+**Why it is needed:** Without a watermark, a windowed aggregation (e.g., "sum of orders in the 14:00–14:05 window") would wait forever for late arrivals. The watermark tells the engine when it is safe to close and emit the window result.
+
+**What happens to events arriving after the watermark:**
+- **Drop**: simplest — late events are ignored. Some data loss is accepted.
+- **Side output**: late events are routed to a separate stream for separate handling (backfill, alerting, manual review)
+- **Window recomputation**: the window is updated and a corrected result is emitted. Most correct but most complex — requires downstream consumers to handle result corrections.
+
+---
+
+**Q40 — Micro-batch vs. true event-by-event streaming**
+
+The claim is **partially accurate but oversimplified**. Key differences:
+
+| | Micro-batch (Spark) | True Streaming (Flink) |
+|---|---|---|
+| Processing unit | Mini-batches (fixed time interval) | Individual events |
+| Latency floor | Batch interval (minimum ~100ms) | Sub-millisecond possible |
+| State management | State is snapshotted per batch | Continuous stateful operators |
+| Exactly-once | Achievable via batch transactions | Achievable via distributed snapshots (Chandy-Lamport) |
+| Late data handling | Watermark per batch boundary | Continuous watermark, fine-grained |
+| Complexity | Lower — batch semantics familiar to engineers | Higher — event-time reasoning, async operators |
+
+**Key conceptual difference:** In micro-batch, the engine collects events for a fixed interval then processes the whole mini-batch as one atomic unit. In true streaming, each event triggers computation immediately and stateful operators maintain running results continuously. They look similar at a high level but their internal execution models are fundamentally different.
+
+---
+
+## Concept 8: Data Partitioning & Bucketing
+
+**Q41 — What is partitioning and partition pruning?**
+
+**Partitioning** organises table data into separate physical directories or storage segments based on the value of one or more columns. Instead of one large directory of files, data is split into subdirectories per partition value:
+
+```
+orders/order_date=2024-01-15/part-001.parquet
+orders/order_date=2024-01-16/part-001.parquet
+```
+
+**Partition pruning** is the query engine's ability to skip entire partitions that do not match the query's filter:
+```sql
+SELECT * FROM orders WHERE order_date = '2024-01-15'
+-- Engine reads ONLY the order_date=2024-01-15/ directory
+-- Skips all other dates entirely
+```
+
+Without partitioning, `WHERE order_date = '2024-01-15'` on a 2 TB table still reads all 2 TB and filters in memory. With daily partitioning over 3 years, the same query reads ~1.8 GB (one day's data).
+
+---
+
+**Q42 — The small files problem**
+
+**How it arises from partitioning:**
+Over-partitioning creates too many small directories, each with too few rows. For example, partitioning a 10 GB table by `user_id` with 1 million distinct users creates 1 million directories, each with ~10 KB of data. Each Parquet file has fixed metadata overhead (~8 KB). At 10 KB of data, you are spending nearly half your read time on metadata.
+
+**Consequences:**
+- **Slow queries:** Each file requires a filesystem call to open, read metadata, and close. Opening 1 million files takes longer than reading 1 large file of the same total size.
+- **Slow writes:** Spark must open a writer for each partition simultaneously — too many partitions causes driver OOM.
+- **High cloud storage costs:** Object stores (S3, GCS) charge per API call. Listing millions of small files is expensive.
+- **Slow metastore operations:** Tools like Hive Metastore or the Glue Catalog must track every partition — millions of partitions degrades catalog query performance.
+
+**Fix:** Compact small files periodically (OPTIMIZE in Delta Lake, compaction jobs in Spark). Target 128 MB–1 GB per file.
+
+---
+
+**Q43 — Partitioning strategy for 5 TB events table**
+
+**Query pattern:** Almost exclusively filtered by `event_date` and `country`.
+
+**Strategy: Partition by `event_date`, optionally sub-partition by `country`**
+
+**Step 1 — Always partition by date first:**
+```
+events/event_date=2024-01-15/
+events/event_date=2024-01-16/
+```
+This alone reduces most queries from 5 TB to one day's data.
+
+**Step 2 — Should you add `country`?**
+- If there are ~50 countries, adding `country` as a second partition creates 50 × 365 = 18,250 directories per year
+- If data is evenly distributed, each directory holds 5 TB / 18,250 ≈ 274 MB — fine
+- If data is skewed (e.g., 80% of events from US), the US partition files will be huge and others tiny (small files problem)
+- Only add `country` if queries **always** filter by both `event_date` AND `country`. If queries sometimes filter only by date, the second partition adds directory overhead without pruning benefit
+
+**File size target:** 128 MB–1 GB per Parquet file per partition. If daily data is 14 GB, aim for 14–112 files per day partition.
+
+---
+
+**Q44 — Partitioning by user_id with 10 million distinct values**
+
+**What goes wrong:**
+
+The table is split into 10 million directories, each containing a tiny slice of data. For a 500 GB table, each partition averages 50 KB — far below the optimal 128 MB file size. This is the small files problem at its worst.
+
+Query performance degrades because:
+- Opening 10 million files has more overhead than reading 500 GB sequentially
+- Metastore operations (listing partitions, updating stats) become extremely slow
+- Writing new data requires opening a file handle per user — Spark drivers run out of memory managing millions of concurrent writers
+
+**How to fix:**
+
+Option 1 — **Do not partition by user_id.** Use bucketing instead:
+```sql
+CLUSTER BY (user_id) INTO 128 BUCKETS
+```
+128 buckets from 10 million users = ~78,000 users per bucket. Manageable file sizes, efficient hash-based joins.
+
+Option 2 — **Partition by a lower-cardinality derived column.** If queries filter by date AND user, partition by date only:
+```
+events/event_date=2024-01-15/
+```
+Then within a date partition, use bucketing on `user_id` for join efficiency.
+
+---
+
+**Q45 — Partitioning vs. bucketing**
+
+| | Partitioning | Bucketing |
+|---|---|---|
+| Mechanism | Physical directories per distinct value | Hash of column value → fixed N buckets |
+| Number of divisions | Grows with distinct values | Fixed at table creation |
+| Query benefit | Partition pruning (skip directories) | Efficient joins (no full shuffle) |
+| Best column type | Low-cardinality, query filter columns (date, region) | High-cardinality join/group-by columns (user_id, order_id) |
+| Small files risk | High if column has many distinct values | None (always N buckets regardless of data volume) |
+
+**Scenario where bucketing outperforms partitioning:**
+Two 100 GB tables joined on `customer_id`. Without bucketing, Spark must shuffle all 200 GB across the network to co-locate matching `customer_id` values. With both tables bucketed on `customer_id` into the same number of buckets, Spark knows that bucket 42 from table A matches bucket 42 from table B — no shuffle needed (sort-merge join).
+
+**Can you use both?** Yes. A common pattern:
+```sql
+-- Partition by date (for time-range pruning), bucket by customer_id (for join efficiency)
+PARTITIONED BY (order_date)
+CLUSTERED BY (customer_id) INTO 64 BUCKETS
+```
+This gives pruning on date-filtered queries and shuffle-free joins on customer_id.
+
+---
+
+## Concept 9: Pipeline Observability & Monitoring
+
+**Q46 — Four pillars of pipeline observability**
+
+| Pillar | What it measures | Concrete check |
+|---|---|---|
+| **Freshness** | How up-to-date is the data? | `MAX(event_time) < NOW() - 2 hours` → alert |
+| **Volume** | Did the expected amount of data arrive? | Today's row count < 70% of 7-day average → alert |
+| **Quality** | Are column values correct and valid? | `COUNT(*) WHERE order_id IS NULL > 0` → fail pipeline |
+| **Pipeline health** | Did the job run and complete on time? | Pipeline did not start within 30 min of scheduled time → alert |
+
+---
+
+**Q47 — SLA, SLO, SLI for a nightly ETL job**
+
+**SLA (external commitment to a stakeholder):**
+"The daily sales dashboard will reflect data from the previous day no later than 07:00 AM."
+
+**SLO (internal engineering target):**
+"The nightly ETL pipeline completes within 90 minutes of its 02:00 AM start time, 99% of days."
+
+**SLI (the measurement):**
+"Today's pipeline started at 02:00 AM and completed at 03:23 AM — duration 83 minutes. Max event timestamp in Silver = 01:58 AM."
+
+**How they relate:**
+The SLO (complete by 03:30) provides headroom before the SLA (dashboard ready by 07:00). If the SLO is regularly missed, the SLA is at risk. Engineers act on SLO breaches; stakeholders are only impacted by SLA breaches.
+
+---
+
+**Q48 — Pipeline "succeeded" but dashboard numbers are wrong**
+
+Four possibilities where a pipeline exits 0 but data is wrong:
+
+1. **Silent schema mismatch:** The source added a column and the pipeline uses `SELECT *` — data landed in the wrong columns without any error (Failure mode 2 from Q34).
+
+2. **Filter condition is too broad or too narrow:** The incremental watermark was wrong — the pipeline reprocessed old records (duplicates) or skipped new ones (missing data). No exception is thrown.
+
+3. **Join fanout / data explosion:** A many-to-one join was accidentally written as many-to-many — rows were multiplied. Row count looks high but not obviously wrong without a baseline.
+
+4. **Timezone offset bug:** `order_date` was cast using the server timezone instead of UTC. Orders placed near midnight are attributed to the wrong day. The pipeline ran fine; the date partition is just shifted.
+
+**How observability catches each:**
+1. Column-level schema check at ingest compares column names/types against expected schema
+2. Row count anomaly check (vs. 7-day average) catches duplicates and gaps
+3. Sum-of-amount check against a known-good aggregate catches fanout
+4. Freshness check on event timestamps (not just run completion) catches timezone drift
+
+---
+
+**Q49 — Data quality framework for 50-column Silver table**
+
+**Prioritisation — not all columns are equal:**
+
+| Priority | Column type | Checks to run |
+|---|---|---|
+| Critical | Primary keys, join keys, foreign keys | Non-null, unique, referential integrity |
+| High | Business metrics (amount, quantity, dates) | Non-null, range bounds, no negative values where impossible |
+| Medium | Categorical fields (status, type, region) | Allowed value set, unexpected new categories |
+| Low | Optional enrichment fields (description, notes) | Spot-check null rate trend only |
+
+**Failure handling — three tiers:**
+
+| Severity | Condition | Action |
+|---|---|---|
+| Block | Primary key has nulls or duplicates | Fail pipeline, do not write to production, alert immediately |
+| Warn | Null rate in `discount_code` rose from 2% to 15% | Write to production with warning, alert for investigation |
+| Quarantine | Row-level: `order_amount < 0` | Move bad rows to `orders_silver_quarantine`, write clean rows to production |
+
+**Implementation pattern:**
+```python
+CHECKS = [
+    # (name, severity, sql_assertion_returns_zero_on_pass)
+    ("pk_not_null",      "block",      "SELECT COUNT(*) FROM t WHERE order_id IS NULL"),
+    ("pk_unique",        "block",      "SELECT COUNT(*) - COUNT(DISTINCT order_id) FROM t"),
+    ("amount_positive",  "quarantine", "SELECT COUNT(*) FROM t WHERE order_amount < 0"),
+    ("status_valid",     "warn",       "SELECT COUNT(*) FROM t WHERE status NOT IN ('completed','pending','cancelled')"),
+]
+```
+Run block checks first. Only proceed to warn/quarantine checks if block checks pass.
+
+---
+
+**Q50 — What three standard checks do NOT catch**
+
+Standard checks: row count, null check, range check.
+
+**What they miss:**
+
+1. **Semantic / business logic errors:** Row count is 50,000 (normal). Null rate is 0%. All amounts are positive. But the pipeline joined on the wrong key — every customer's orders are attributed to the wrong region. All checks pass; every number is wrong.
+
+2. **Stale-but-valid data (frozen metrics):** The pipeline ran and loaded 50,000 rows with no nulls and valid ranges — but these are the same 50,000 rows from yesterday because the source API returned a cached response. Freshness check (max event time) would catch this, but row count / null / range checks would not.
+
+**The gap:** These three checks verify *shape* (right number of rows, right column presence, valid value ranges). They do not verify *content correctness* (are these the right rows? Do the values reflect reality?). Catching content errors requires business-logic assertions: expected aggregates, cross-table consistency checks, and freshness monitoring.
+
+---
+
+## Concept 10: Orchestration & Dependency Management
+
+**Q51 — What is a pipeline orchestrator and what does it solve over cron?**
+
+A **pipeline orchestrator** is a system that schedules, sequences, monitors, and recovers pipeline tasks based on declared dependencies and schedules.
+
+**What cron cannot do that an orchestrator solves:**
+
+| Problem | Cron | Orchestrator |
+|---|---|---|
+| Task B must wait for Task A | You must manually offset the schedule and hope A finishes in time | Explicit dependency: `B.set_upstream(A)`; B only runs when A succeeds |
+| Retry on failure | Cron does not retry | Configurable retry with backoff per task |
+| Visibility | No UI; check syslog | Web UI with run history, duration, failure logs per task |
+| Backfill | Manual re-run of scripts | `dags backfill --start-date X --end-date Y` |
+| Cross-pipeline dependencies | Impossible without custom hacks | ExternalTaskSensor, dataset-aware triggers |
+| SLA alerting | Not built in | SLA callbacks per task |
+| Parallelism | One job at a time unless you write parallel shell scripts | Parallel task execution with configurable concurrency |
+
+---
+
+**Q52 — What is backfilling and what pipeline property does it require?**
+
+**Backfilling** is the process of running a pipeline for past dates — either because the pipeline was newly deployed, was broken for a period, or the business logic changed and historical data needs to be reprocessed.
+
+```bash
+# Airflow: process all days from Jan 1 to Jan 31 for the orders pipeline
+airflow dags backfill orders_pipeline --start-date 2024-01-01 --end-date 2024-01-31
+```
+
+This triggers one DAG run per day, each with its own `execution_date`. The orchestrator runs them in parallel (up to the configured concurrency limit).
+
+**Required property: Idempotency** (Concept 3).
+
+Each run must produce the same result regardless of when it executes. A backfill run for `2024-01-15` executed on `2024-03-01` must produce the same output as if it had run on `2024-01-15` originally.
+
+If a pipeline is not idempotent, backfilling creates duplicates — the historical data already in the table is doubled by the backfill run.
+
+---
+
+**Q53 — Gold table depends on Silver tables ready at different times**
+
+**Problem:** `revenue_summary` is scheduled at 03:30. `orders_silver` is ready by 03:00 (fine). `returns_silver` is ready by 04:30 (not fine — 1 hour late). The job fails 50% of the time because it runs before `returns_silver` is ready.
+
+**Fix: Use a sensor instead of a time-based schedule.**
+
+Replace the fixed 03:30 schedule with a **data-availability sensor** that waits until both Silver tables signal completion:
+
+```python
+# Airflow example
+wait_for_orders_silver = ExternalTaskSensor(
+    task_id="wait_for_orders_silver",
+    external_dag_id="orders_silver_pipeline",
+    external_task_id="load_orders_silver",
+    timeout=3600,  # give up after 1 hour
+)
+
+wait_for_returns_silver = ExternalTaskSensor(
+    task_id="wait_for_returns_silver",
+    external_dag_id="returns_silver_pipeline",
+    external_task_id="load_returns_silver",
+    timeout=3600,
+)
+
+build_revenue_summary = PythonOperator(...)
+
+[wait_for_orders_silver, wait_for_returns_silver] >> build_revenue_summary
+```
+
+Now `build_revenue_summary` starts automatically as soon as **both** sensors succeed — whether that is 03:30 or 04:35. No arbitrary time delay, no race condition.
+
+**Alternative (Airflow 2.4+ Dataset triggers):** Declare `revenue_summary` as depending on the `orders_silver` and `returns_silver` datasets. The DAG triggers automatically when both datasets are updated — no sensor polling needed.
+
+---
+
+**Q54 — Schedule-based vs. event-based/data-aware triggers**
+
+**Schedule-based trigger:**
+- DAG runs at a fixed cron expression: `0 2 * * *` (daily at 2 AM)
+- Simple, predictable, easy to reason about
+- Problem: if upstream data is late, the DAG runs on stale data. If upstream finishes early, the DAG waits unnecessarily.
+
+**Event-based / data-aware trigger:**
+- DAG runs when a condition is met: a file lands in S3, an upstream DAG completes, a Kafka message arrives, a dataset is marked as updated
+- Decouples timing from clock time — runs as soon as data is ready
+- Problem: harder to debug ("why hasn't it triggered?"), requires sensors or event infrastructure
+
+**When to prefer schedule-based:**
+- Upstream sources are very reliable and deliver on a consistent clock schedule
+- Simplicity matters more than a few minutes of latency
+- External consumers (reports, emails) expect delivery at a fixed time
+
+**When to prefer event-based:**
+- Upstream delivery time varies significantly (15 min on normal days, 2 hours on month-end)
+- Cascading dependencies across many DAGs — a schedule offset of 30 min per stage accumulates across 5 stages into 2.5 hours of unnecessary waiting
+- Processing must start as soon as data arrives (streaming or near-real-time requirements)
+
+---
+
+**Q55 — 200 DAGs, raw.orders fails: blast radius and recovery**
+
+**How the orchestrator helps assess blast radius:**
+
+Using lineage metadata or the orchestrator's dependency graph, query all DAGs that have `raw.orders` as an upstream dependency (directly or transitively). In a well-configured platform, this is a single query:
+
+```sql
+-- Find all DAGs that depend on raw.orders (direct or transitive)
+SELECT dag_id FROM dag_dependencies WHERE upstream_dataset = 'raw.orders'
+```
+
+This returns the 40 affected DAGs immediately.
+
+**Pattern to automatically pause downstream DAGs:**
+
+**Option 1 — ExternalTaskSensor timeout:**
+Each downstream DAG has a sensor that waits for `raw.orders` to complete. Configure the sensor with a `timeout` and `on_failure_callback`:
+```python
+wait_for_raw_orders = ExternalTaskSensor(
+    task_id="wait_for_raw_orders",
+    external_dag_id="raw_orders_loader",
+    timeout=7200,  # 2 hours
+    on_failure_callback=lambda ctx: pause_dag(ctx["dag"].dag_id),
+    mode="reschedule",  # poll, do not block a worker slot
+)
+```
+If `raw.orders` does not complete within 2 hours, each downstream DAG pauses itself and sends an alert.
+
+**Option 2 — Dataset-aware scheduling (Airflow 2.4+):**
+All 40 DAGs declare they depend on the `raw_orders` dataset. If the `raw_orders` producer DAG fails, it never marks the dataset as updated — the 40 consumers simply never trigger. They queue until the next successful producer run.
+
+**Recovery:**
+Once `raw.orders` is healthy and runs successfully, the dataset is marked updated, and all 40 downstream DAGs trigger automatically in dependency order. No manual intervention needed.

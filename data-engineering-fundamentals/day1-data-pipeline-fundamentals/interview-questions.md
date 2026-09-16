@@ -182,3 +182,138 @@ Your pipeline runs in 20 minutes on a typical day, but on the last day of the mo
 
 **Q30**  
 Describe a time (real or hypothetical) when you would intentionally choose a non-idempotent pipeline design. What trade-offs are you accepting?
+
+---
+
+## Concept 6: Data Schemas & Schema Evolution
+
+**Q31 (Warm-up)**  
+What is the difference between schema-on-write and schema-on-read? Give a real-world example of each.
+
+---
+
+**Q32 (Conceptual)**  
+What does "backward compatible schema change" mean? Give one example of a backward compatible change and one example of a breaking change to a table with columns `(user_id INT, email VARCHAR, created_at TIMESTAMP)`.
+
+---
+
+**Q33 (Scenario)**  
+A source team tells you: "We're renaming `cust_id` to `customer_id` in the orders table next Tuesday at 9 AM — it's just a rename, no data changes." Your pipeline reads this table. What is your response and action plan?
+
+---
+
+**Q34 (Tricky)**  
+Why is `SELECT *` dangerous in a production data pipeline? Describe two specific failure modes it causes when upstream schemas change.
+
+---
+
+**Q35 (System design)**  
+Your company has 50 producers writing to a shared Kafka topic and 20 consumers reading from it. Schema changes happen frequently. Design a schema management strategy that prevents consumers from breaking when producers evolve their schemas. What tool or pattern would you use?
+
+---
+
+## Concept 7: Batch vs. Micro-batch vs. Streaming
+
+**Q36 (Warm-up)**  
+What are the three data processing models? For each, give a real-world use case where it is the right choice.
+
+---
+
+**Q37 (Conceptual)**  
+What is the difference between the Lambda architecture and the Kappa architecture? Which is preferred today and why?
+
+---
+
+**Q38 (Scenario)**  
+A product manager asks you to build a "real-time dashboard" showing the number of orders placed in the last 5 minutes, updated every 10 seconds. She also wants a daily summary of orders for the finance team. Should these be one pipeline or two? What processing model would you use for each?
+
+---
+
+**Q39 (Deep dive)**  
+What is a watermark in the context of streaming? Why is it needed? What happens to events that arrive after the watermark has passed?
+
+---
+
+**Q40 (Tricky)**  
+A colleague says "micro-batch is just streaming with a small batch interval." Is this accurate? What are the fundamental differences between micro-batch (e.g., Spark Structured Streaming) and true event-by-event streaming (e.g., Apache Flink)?
+
+---
+
+## Concept 8: Data Partitioning & Bucketing
+
+**Q41 (Warm-up)**  
+What is data partitioning and why does it improve query performance? What is partition pruning?
+
+---
+
+**Q42 (Conceptual)**  
+What is the "small files problem" in a data lake? How does it arise from partitioning and what are its consequences?
+
+---
+
+**Q43 (Scenario)**  
+You have a 5 TB `events` table queried almost exclusively with filters on `event_date` and `country`. Design a partitioning strategy. How many partition columns would you use and why? What file size should you target per partition?
+
+---
+
+**Q44 (Tricky)**  
+A data engineer partitions a table by `user_id` because "every query filters by user_id." The table has 10 million distinct users. What goes wrong? How would you fix it?
+
+---
+
+**Q45 (Deep dive)**  
+Explain the difference between partitioning and bucketing. In what scenario does bucketing outperform partitioning? Can you use both on the same table?
+
+---
+
+## Concept 9: Pipeline Observability & Monitoring
+
+**Q46 (Warm-up)**  
+What are the four pillars of pipeline observability? Give one concrete metric or check for each.
+
+---
+
+**Q47 (Conceptual)**  
+What is the difference between an SLA, an SLO, and an SLI in the context of data pipelines? Give an example of each for a nightly ETL job.
+
+---
+
+**Q48 (Scenario)**  
+Your `orders_silver` pipeline ran successfully last night (exit code 0, no errors logged), but an analyst reports that revenue numbers are wrong. The pipeline "succeeded" — so what could have gone wrong? List at least four possibilities and how observability would catch each.
+
+---
+
+**Q49 (System design)**  
+Design a data quality monitoring framework for a Silver layer table with 50 columns. You cannot afford to check every column every run. How do you decide which checks to implement, how do you prioritise them, and how do you handle failures (stop pipeline vs. warn vs. quarantine)?
+
+---
+
+**Q50 (Tricky)**  
+A pipeline passes all its data quality checks (row count, null check, range check) but the downstream dashboard still shows wrong numbers. What class of data quality issues are NOT caught by these three checks? Give two concrete examples.
+
+---
+
+## Concept 10: Orchestration & Dependency Management
+
+**Q51 (Warm-up)**  
+What is a pipeline orchestrator and what problems does it solve that a plain cron job cannot?
+
+---
+
+**Q52 (Conceptual)**  
+What is backfilling in pipeline orchestration? What property must a pipeline have for backfilling to work correctly?
+
+---
+
+**Q53 (Scenario)**  
+Your Gold table `revenue_summary` depends on two Silver tables: `orders_silver` (ready by 03:00) and `returns_silver` (ready by 04:30). The `revenue_summary` job is currently scheduled at 03:30 and fails half the time because `returns_silver` is not ready yet. How do you fix this without simply delaying the schedule by 2 hours?
+
+---
+
+**Q54 (Deep dive)**  
+What is the difference between a schedule-based trigger and a data-aware/event-based trigger for a DAG? When would you prefer one over the other?
+
+---
+
+**Q55 (System design)**  
+You manage 200 DAGs across a data platform. A critical upstream table `raw.orders` is shared by 40 downstream DAGs. Today it failed to load. How does an orchestrator help you understand the blast radius? What pattern would you use to automatically pause all 40 downstream DAGs until `raw.orders` is healthy again?
