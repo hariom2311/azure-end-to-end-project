@@ -167,6 +167,354 @@ Debezium handles this automatically in **snapshot mode** before switching to str
 
 ---
 
+### Hands-on Demo: Mimicking Snowflake-style CDC in PostgreSQL
+
+Snowflake's Streams feature tracks every row-level change (INSERT / UPDATE / DELETE) on a table and exposes them as a query-able change log. You can replicate the same pattern in PostgreSQL using **logical replication + a shadow changelog table**, with no external tools required.
+
+This demo runs entirely in plain PostgreSQL (v10+). It is a great way to understand what Debezium and Snowflake Streams are doing under the hood.
+
+---
+
+#### Step 0 — Prerequisites
+
+```bash
+# Install PostgreSQL (if not already installed)
+# macOS
+brew install postgresql@15
+brew services start postgresql@15
+
+# Ubuntu / Debian
+sudo apt install postgresql postgresql-contrib
+sudo systemctl start postgresql
+
+# Windows — download installer from postgresql.org
+# or use Docker (works on all platforms):
+docker run --name pg-cdc-demo \
+  -e POSTGRES_PASSWORD=postgres \
+  -p 5432:5432 \
+  -d postgres:15
+```
+
+Connect to your instance:
+```bash
+psql -U postgres -h localhost
+# Docker users:
+docker exec -it pg-cdc-demo psql -U postgres
+```
+
+---
+
+#### Step 1 — Enable logical replication
+
+PostgreSQL's WAL must be set to `logical` level to expose full row images for CDC.
+
+```sql
+-- Check the current WAL level
+SHOW wal_level;
+-- Expected output: logical
+-- If it shows 'replica' or 'minimal', change it:
+
+ALTER SYSTEM SET wal_level = 'logical';
+-- Then restart PostgreSQL for the setting to take effect.
+-- (If using Docker: docker restart pg-cdc-demo)
+```
+
+Verify after restart:
+```sql
+SHOW wal_level;
+-- Should now return: logical
+```
+
+---
+
+#### Step 2 — Create the source table
+
+This is your "production" orders table — the source of truth that your application writes to.
+
+```sql
+CREATE TABLE orders (
+    order_id     SERIAL PRIMARY KEY,
+    customer_id  TEXT        NOT NULL,
+    amount       NUMERIC(10,2) NOT NULL,
+    status       TEXT        NOT NULL DEFAULT 'pending',
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Seed some initial data
+INSERT INTO orders (customer_id, amount, status) VALUES
+  ('C001', 120.50, 'pending'),
+  ('C002',  45.00, 'pending'),
+  ('C003', 310.00, 'pending'),
+  ('C004',  88.00, 'completed'),
+  ('C005', 200.00, 'pending');
+
+SELECT * FROM orders;
+```
+
+---
+
+#### Step 3 — Create the CDC changelog table
+
+This is your **Snowflake Stream equivalent** — a table that records every change event with full before/after images.
+
+```sql
+CREATE TABLE orders_cdc_stream (
+    stream_id    BIGSERIAL   PRIMARY KEY,
+    captured_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    operation    TEXT        NOT NULL,       -- INSERT / UPDATE / DELETE
+    order_id     INT,
+    -- BEFORE image (old values — NULL for INSERTs)
+    before_customer_id  TEXT,
+    before_amount       NUMERIC(10,2),
+    before_status       TEXT,
+    before_updated_at   TIMESTAMPTZ,
+    -- AFTER image (new values — NULL for DELETEs)
+    after_customer_id   TEXT,
+    after_amount        NUMERIC(10,2),
+    after_status        TEXT,
+    after_updated_at    TIMESTAMPTZ
+);
+```
+
+---
+
+#### Step 4 — Create the trigger function
+
+This function runs automatically after every INSERT, UPDATE, or DELETE on `orders` and writes a change record to the CDC stream table.
+
+```sql
+CREATE OR REPLACE FUNCTION capture_orders_cdc()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    IF (TG_OP = 'INSERT') THEN
+        INSERT INTO orders_cdc_stream (
+            operation, order_id,
+            after_customer_id, after_amount, after_status, after_updated_at
+        ) VALUES (
+            'INSERT', NEW.order_id,
+            NEW.customer_id, NEW.amount, NEW.status, NEW.updated_at
+        );
+        RETURN NEW;
+
+    ELSIF (TG_OP = 'UPDATE') THEN
+        INSERT INTO orders_cdc_stream (
+            operation, order_id,
+            before_customer_id, before_amount, before_status, before_updated_at,
+            after_customer_id,  after_amount,  after_status,  after_updated_at
+        ) VALUES (
+            'UPDATE', NEW.order_id,
+            OLD.customer_id, OLD.amount, OLD.status, OLD.updated_at,
+            NEW.customer_id, NEW.amount, NEW.status, NEW.updated_at
+        );
+        RETURN NEW;
+
+    ELSIF (TG_OP = 'DELETE') THEN
+        INSERT INTO orders_cdc_stream (
+            operation, order_id,
+            before_customer_id, before_amount, before_status, before_updated_at
+        ) VALUES (
+            'DELETE', OLD.order_id,
+            OLD.customer_id, OLD.amount, OLD.status, OLD.updated_at
+        );
+        RETURN OLD;
+    END IF;
+END;
+$$;
+```
+
+---
+
+#### Step 5 — Attach the trigger to the orders table
+
+```sql
+CREATE TRIGGER orders_cdc_trigger
+AFTER INSERT OR UPDATE OR DELETE ON orders
+FOR EACH ROW EXECUTE FUNCTION capture_orders_cdc();
+```
+
+The trigger fires once per changed row, after the change is committed — exactly like a WAL-based CDC tool.
+
+---
+
+#### Step 6 — Generate changes and watch the stream
+
+```sql
+-- 1. INSERT: a new order arrives
+INSERT INTO orders (customer_id, amount, status)
+VALUES ('C006', 155.00, 'pending');
+
+-- 2. UPDATE: C001's order is fulfilled
+UPDATE orders
+SET status = 'completed', updated_at = NOW()
+WHERE customer_id = 'C001';
+
+-- 3. UPDATE: C003 requests a refund — amount changes
+UPDATE orders
+SET amount = 0, status = 'refunded', updated_at = NOW()
+WHERE customer_id = 'C003';
+
+-- 4. DELETE: C002 cancelled before processing (hard delete)
+DELETE FROM orders WHERE customer_id = 'C002';
+
+-- Now query the CDC stream — the Snowflake Stream equivalent
+SELECT
+    stream_id,
+    captured_at,
+    operation,
+    order_id,
+    before_status,
+    after_status,
+    before_amount,
+    after_amount
+FROM orders_cdc_stream
+ORDER BY stream_id;
+```
+
+**Expected output:**
+```
+ stream_id | operation | order_id | before_status | after_status | before_amount | after_amount
+-----------+-----------+----------+---------------+--------------+---------------+--------------
+         1 | INSERT    |        6 | NULL          | pending      | NULL          |       155.00
+         2 | UPDATE    |        1 | pending       | completed    |        120.50 |       120.50
+         3 | UPDATE    |        3 | pending       | refunded     |        310.00 |          0.00
+         4 | DELETE    |        2 | pending       | NULL         |         45.00 | NULL
+```
+
+The DELETE row (stream_id=4) has no `after_` values — the row is gone from `orders` but the before image is preserved in the stream. **This is exactly what Snowflake Streams and Debezium capture.**
+
+---
+
+#### Step 7 — Build a Silver table using MERGE
+
+Now consume the CDC stream to maintain a Silver copy of `orders` — identical to what a downstream data warehouse would do.
+
+```sql
+-- Create the Silver target table
+CREATE TABLE silver_orders (
+    order_id    INT  PRIMARY KEY,
+    customer_id TEXT,
+    amount      NUMERIC(10,2),
+    status      TEXT,
+    updated_at  TIMESTAMPTZ,
+    _cdc_op     TEXT,           -- last operation that touched this row
+    _cdc_at     TIMESTAMPTZ     -- when the CDC event was captured
+);
+
+-- Apply all pending CDC events via MERGE (idempotent)
+WITH pending_events AS (
+    SELECT DISTINCT ON (order_id)
+        stream_id, operation, order_id,
+        after_customer_id, after_amount, after_status, after_updated_at,
+        captured_at
+    FROM orders_cdc_stream
+    ORDER BY order_id, stream_id DESC  -- latest event per order wins
+)
+MERGE INTO silver_orders AS target
+USING pending_events AS source
+ON target.order_id = source.order_id
+WHEN MATCHED AND source.operation = 'DELETE' THEN
+    DELETE
+WHEN MATCHED AND source.operation IN ('UPDATE', 'INSERT') THEN
+    UPDATE SET
+        customer_id = source.after_customer_id,
+        amount      = source.after_amount,
+        status      = source.after_status,
+        updated_at  = source.after_updated_at,
+        _cdc_op     = source.operation,
+        _cdc_at     = source.captured_at
+WHEN NOT MATCHED AND source.operation != 'DELETE' THEN
+    INSERT (order_id, customer_id, amount, status, updated_at, _cdc_op, _cdc_at)
+    VALUES (
+        source.order_id,
+        source.after_customer_id,
+        source.after_amount,
+        source.after_status,
+        source.after_updated_at,
+        source.operation,
+        source.captured_at
+    );
+
+-- Verify Silver matches current source state (minus deleted rows)
+SELECT * FROM silver_orders ORDER BY order_id;
+SELECT * FROM orders ORDER BY order_id;
+-- These should be identical (C002 absent from both — hard deleted)
+```
+
+> **Note:** `MERGE` syntax requires PostgreSQL 15+. For PostgreSQL 10–14, use the `INSERT ... ON CONFLICT DO UPDATE` + separate DELETE pattern instead.
+
+---
+
+#### Step 8 — Implement a consumption offset (process-once pattern)
+
+In production you track which stream events have been consumed so you do not re-process them.
+
+```sql
+-- Tracking table: records the last stream_id processed into Silver
+CREATE TABLE cdc_offsets (
+    target_table TEXT PRIMARY KEY,
+    last_stream_id BIGINT NOT NULL DEFAULT 0,
+    processed_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+INSERT INTO cdc_offsets (target_table, last_stream_id)
+VALUES ('silver_orders', 0);
+
+-- "Consume only new events" query — runs on each pipeline cycle
+WITH last_offset AS (
+    SELECT last_stream_id FROM cdc_offsets WHERE target_table = 'silver_orders'
+),
+new_events AS (
+    SELECT * FROM orders_cdc_stream
+    WHERE stream_id > (SELECT last_stream_id FROM last_offset)
+    ORDER BY stream_id
+),
+applied AS (
+    -- (same MERGE as Step 7 but using new_events instead of pending_events)
+    SELECT MAX(stream_id) AS max_applied FROM new_events
+)
+UPDATE cdc_offsets
+SET last_stream_id = (SELECT max_applied FROM applied),
+    processed_at   = NOW()
+WHERE target_table = 'silver_orders';
+
+-- Check offset progress
+SELECT * FROM cdc_offsets;
+```
+
+This is equivalent to a **Kafka consumer group offset** — the offset table tells you exactly where consumption stopped so restarts are safe.
+
+---
+
+#### Step 9 — Snowflake comparison
+
+| Snowflake feature | PostgreSQL equivalent in this demo |
+|---|---|
+| `CREATE STREAM ON TABLE orders` | `orders_cdc_stream` table + trigger |
+| `METADATA$ACTION` column (INSERT/UPDATE/DELETE) | `operation` column |
+| `METADATA$ISUPDATE` flag | `operation = 'UPDATE'` |
+| `METADATA$ROW_ID` (stable row identifier) | `order_id` (primary key) |
+| `CONSUME_STREAM` (auto-advance offset after MERGE) | `cdc_offsets` update in Step 8 |
+| Stream auto-expiry (14-day retention) | Manual: `DELETE FROM orders_cdc_stream WHERE stream_id <= :last_offset` |
+| Before/after column access | `before_*` and `after_*` columns |
+
+**Key insight:** Snowflake Streams and Debezium both build on the same concept — every change is recorded with a before image, an after image, and an operation type. The difference is implementation: Snowflake does it transparently inside a managed warehouse; Debezium reads it from the WAL; this demo simulates it with triggers.
+
+---
+
+#### Cleanup
+
+```sql
+-- Remove everything created in this demo
+DROP TRIGGER IF EXISTS orders_cdc_trigger ON orders;
+DROP FUNCTION IF EXISTS capture_orders_cdc();
+DROP TABLE IF EXISTS cdc_offsets;
+DROP TABLE IF EXISTS silver_orders;
+DROP TABLE IF EXISTS orders_cdc_stream;
+DROP TABLE IF EXISTS orders;
+```
+
+---
+
 ## Concept 3: Data Warehouses vs. Data Lakes vs. Lakehouses
 
 The architecture of the storage tier has evolved significantly over 30 years. Understanding why each generation emerged explains every architectural decision in modern data platforms.
