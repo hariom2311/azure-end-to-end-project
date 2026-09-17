@@ -1,0 +1,151 @@
+product_id,product_name,category,price,cost,stock_quantity,supplier_id,is_active,rating,review_count,weight_kg,country_of_origin,last_restocked
+P001,Wireless Bluetooth Headphones,Electronics,149.99,62.00,234,SUP-01,true,4.5,1823,0.35,China,2024-01-10
+P002,USB-C Fast Charger 65W,Electronics,34.99,12.50,891,SUP-01,true,4.3,4201,0.15,China,2024-01-12
+P003,Running Shoes - Men Size 10,Footwear,89.99,38.00,156,SUP-02,true,4.1,743,0.82,Vietnam,2024-01-08
+P004,Stainless Steel Water Bottle 1L,Kitchen,24.99,8.00,1205,SUP-03,true,4.7,6321,0.48,Germany,2024-01-15
+P005,4K HDMI Cable 2m,Electronics,12.99,3.50,2341,SUP-01,true,4.2,9823,0.18,China,2024-01-11
+P006,Yoga Mat Premium Non-Slip,Sports,45.99,18.00,423,SUP-04,true,4.6,2145,1.20,India,2024-01-09
+P007,Mechanical Keyboard RGB,Electronics,129.99,54.00,178,SUP-01,true,4.4,3421,0.95,China,2024-01-13
+P008,Ceramic Coffee Mug Set 4pc,Kitchen,39.99,14.00,567,SUP-05,true,4.3,1876,1.45,Portugal,2024-01-14
+P009,Leather Laptop Bag 15in,Accessories,79.99,32.00,89,SUP-06,true,4.0,654,0.92,Italy,2024-01-07
+P010,Portable Power Bank 20000mAh,Electronics,49.99,20.00,1023,SUP-01,true,4.5,7231,0.45,China,2024-01-12
+P011,Cotton T-Shirt Unisex M,Clothing,19.99,6.50,2567,SUP-07,true,4.1,3201,0.22,Bangladesh,2024-01-10
+P012,Wireless Mouse Ergonomic,Electronics,39.99,15.50,456,SUP-01,true,4.3,2891,0.12,China,2024-01-11
+P013,Plant-Based Protein Powder 1kg,Nutrition,54.99,22.00,312,SUP-08,true,4.2,1432,1.00,USA,2024-01-09
+P014,Smart LED Bulb E27 WiFi,Electronics,18.99,7.00,1789,SUP-01,true,4.0,4523,0.08,China,2024-01-13
+P015,Bamboo Cutting Board Large,Kitchen,34.99,12.00,678,SUP-09,true,4.6,2341,0.85,China,2024-01-08
+P016,Noise Cancelling Earbuds,Electronics,199.99,85.00,267,SUP-01,true,4.6,5123,0.06,China,2024-01-14
+P017,Hiking Backpack 40L,Outdoors,119.99,48.00,134,SUP-10,true,4.4,1021,1.35,China,2024-01-07
+P018,Resistance Bands Set 5pc,Sports,22.99,8.00,2134,SUP-04,true,4.5,4521,0.45,China,2024-01-12
+P019,Stainless Steel Pan 28cm,Kitchen,64.99,26.00,345,SUP-05,true,4.3,1987,1.12,France,2024-01-11
+P020,Wireless Keyboard Slim,Electronics,59.99,24.00,523,SUP-01,true,4.1,2134,0.55,China,2024-01-10
+P021,Denim Jeans Slim Fit W32,Clothing,69.99,28.00,456,SUP-07,true,4.0,1203,0.72,Bangladesh,2024-01-09
+P022,Foam Roller Deep Tissue,Sports,29.99,10.00,892,SUP-04,true,4.4,3421,0.58,China,2024-01-13
+P023,4-Port USB Hub 3.0,Electronics,24.99,9.00,1678,SUP-01,true,4.2,6789,0.12,China,2024-01-12
+P024,Glass Meal Prep Containers 10pc,Kitchen,44.99,16.00,789,SUP-09,true,4.5,2891,2.10,China,2024-01-08
+P025,Running Leggings Women M,Clothing,49.99,20.00,678,SUP-07,true,4.3,2341,0.35,Vietnam,2024-01-11
+P026,Mechanical Gaming Mouse,Electronics,79.99,32.00,312,SUP-01,true,4.5,3421,0.18,China,2024-01-14
+P027,Whey Protein Chocolate 2kg,Nutrition,74.99,30.00,234,SUP-08,true,4.4,4521,2.00,Ireland,2024-01-09
+P028,Electric Toothbrush Sonic,Health,89.99,36.00,456,SUP-11,true,4.6,2134,0.22,Germany,2024-01-10
+P029,Canvas Sneakers Unisex,Footwear,54.99,22.00,567,SUP-02,true,4.1,1234,0.68,China,2024-01-07
+P030,Laptop Stand Adjustable,Electronics,49.99,18.00,1023,SUP-01,true,4.4,3891,0.55,China,2024-01-12
+P031,Essential Oil Diffuser,Home,35.99,13.00,678,SUP-12,true,4.3,2145,0.62,China,2024-01-11
+P032,Cold Brew Coffee Maker,Kitchen,59.99,24.00,234,SUP-05,true,4.5,1678,0.88,Japan,2024-01-13
+P033,Compression Running Socks 3pk,Clothing,24.99,8.50,1567,SUP-07,true,4.2,2891,0.15,South Korea,2024-01-08
+P034,27-inch Monitor IPS 4K,Electronics,549.99,230.00,78,SUP-01,true,4.6,891,3.80,South Korea,2024-01-05
+P035,Yoga Block Set 2pc,Sports,19.99,7.00,1234,SUP-04,true,4.5,3421,0.68,China,2024-01-14
+P036,Silicon Baking Mat Set 3pc,Kitchen,22.99,8.00,2341,SUP-09,true,4.4,4521,0.35,China,2024-01-09
+P037,Portable Bluetooth Speaker,Electronics,79.99,32.00,456,SUP-01,true,4.3,5678,0.62,China,2024-01-12
+P038,Multi-Vitamin Daily 365ct,Nutrition,29.99,11.00,891,SUP-08,true,4.1,7234,0.45,USA,2024-01-10
+P039,Hiking Boots Waterproof M10,Footwear,149.99,62.00,123,SUP-02,true,4.5,1023,1.45,Italy,2024-01-07
+P040,Air Purifier HEPA H13,Home,149.99,62.00,234,SUP-12,true,4.4,2341,3.20,South Korea,2024-01-11
+P041,Reusable Grocery Bags 5pk,Home,14.99,4.50,3456,SUP-13,true,4.3,6789,0.35,China,2024-01-13
+P042,Jump Rope Speed Cable,Sports,19.99,7.00,1678,SUP-04,true,4.2,4521,0.22,China,2024-01-09
+P043,Dress Shirt Formal White L,Clothing,59.99,24.00,345,SUP-07,true,4.0,891,0.38,India,2024-01-08
+P044,Cast Iron Skillet 12in,Kitchen,49.99,20.00,567,SUP-05,true,4.7,3421,2.95,USA,2024-01-14
+P045,Drawing Tablet Digital,Electronics,199.99,85.00,156,SUP-01,true,4.5,2134,0.72,China,2024-01-10
+P046,Vitamin C Serum 30ml,Health,34.99,12.00,1234,SUP-11,true,4.4,5678,0.08,South Korea,2024-01-12
+P047,Trekking Poles Collapsible,Outdoors,64.99,26.00,234,SUP-10,true,4.3,1345,0.55,China,2024-01-07
+P048,French Press Coffee 1L,Kitchen,39.99,14.00,678,SUP-05,true,4.5,2891,0.75,Germany,2024-01-11
+P049,Wireless Earphones Sport,Electronics,59.99,24.00,789,SUP-01,true,4.2,4521,0.05,China,2024-01-13
+P050,Memory Foam Pillow,Home,44.99,18.00,456,SUP-12,true,4.4,3421,0.85,China,2024-01-09
+P051,Gaming Chair Ergonomic,Furniture,299.99,125.00,67,SUP-14,true,4.3,1023,18.50,China,2024-01-05
+P052,Resistance Band Heavy 100lb,Sports,14.99,5.00,2341,SUP-04,true,4.1,2891,0.28,China,2024-01-12
+P053,Smart Watch Fitness GPS,Electronics,249.99,105.00,345,SUP-01,true,4.5,6789,0.05,China,2024-01-10
+P054,Linen Bedsheet Set Queen,Home,89.99,36.00,234,SUP-13,true,4.3,1678,1.25,Portugal,2024-01-08
+P055,Protein Shaker Bottle 700ml,Nutrition,14.99,5.00,3456,SUP-08,true,4.2,7234,0.25,China,2024-01-14
+P056,Running Cap UV Protection,Clothing,19.99,7.00,1567,SUP-07,true,4.0,2145,0.08,Vietnam,2024-01-11
+P057,Tripod Flexible Gorilla,Electronics,29.99,11.00,1023,SUP-01,true,4.1,3421,0.45,China,2024-01-09
+P058,Stainless Steel Lunchbox,Kitchen,24.99,9.00,2891,SUP-09,true,4.5,4521,0.55,India,2024-01-13
+P059,Foam Bath Mat Anti-Slip,Home,19.99,7.00,1789,SUP-13,true,4.3,2341,0.42,China,2024-01-10
+P060,Leather Wallet Bifold,Accessories,39.99,15.00,678,SUP-06,true,4.2,1678,0.08,Italy,2024-01-12
+P061,Pull-Up Bar Doorframe,Sports,34.99,13.00,456,SUP-04,true,4.4,3891,1.25,China,2024-01-07
+P062,Sous Vide Precision Cooker,Kitchen,149.99,62.00,134,SUP-05,true,4.6,2134,1.15,USA,2024-01-11
+P063,Wool Beanie Winter,Clothing,24.99,8.50,2567,SUP-07,true,4.1,1234,0.12,Scotland,2024-01-08
+P064,Ring Light 18in LED,Electronics,89.99,36.00,234,SUP-01,true,4.3,2891,1.85,China,2024-01-13
+P065,Collagen Peptides Powder 500g,Nutrition,39.99,16.00,567,SUP-08,true,4.2,4521,0.50,USA,2024-01-09
+P066,Safety Razor Double Edge,Health,29.99,11.00,1234,SUP-11,true,4.5,3421,0.12,Germany,2024-01-14
+P067,Trail Running Shoes W8,Footwear,129.99,54.00,189,SUP-02,true,4.4,1023,0.75,Vietnam,2024-01-07
+P068,Scented Candle Set 3pc,Home,34.99,12.00,1567,SUP-12,true,4.3,2145,0.65,France,2024-01-10
+P069,Desk Lamp LED Adjustable,Electronics,44.99,18.00,678,SUP-01,true,4.4,3421,0.55,China,2024-01-12
+P070,Wooden Spoon Set 5pc,Kitchen,15.99,5.50,3456,SUP-09,true,4.5,6789,0.28,Romania,2024-01-11
+P071,Crossbody Bag Canvas,Accessories,49.99,20.00,345,SUP-06,true,4.1,1567,0.45,China,2024-01-09
+P072,Knee Sleeve Compression,Sports,22.99,8.00,2341,SUP-04,true,4.3,4521,0.15,China,2024-01-13
+P073,Mechanical Pencil Set 6pc,Stationery,19.99,7.00,1789,SUP-15,true,4.4,2891,0.22,Japan,2024-01-08
+P074,Webcam 1080p HD,Electronics,69.99,28.00,456,SUP-01,true,4.2,5678,0.18,China,2024-01-14
+P075,Espresso Coffee Beans 1kg,Nutrition,24.99,9.00,891,SUP-08,true,4.6,3421,1.00,Colombia,2024-01-10
+P076,Wool Socks Merino 3pk,Clothing,34.99,13.00,1234,SUP-07,true,4.4,2145,0.25,New Zealand,2024-01-07
+P077,Smart Plug WiFi 4pk,Electronics,39.99,15.00,1023,SUP-01,true,4.3,6789,0.22,China,2024-01-12
+P078,Salad Spinner Large,Kitchen,29.99,11.00,789,SUP-09,true,4.4,2891,0.72,Italy,2024-01-11
+P079,Sunscreen SPF50 200ml,Health,18.99,6.50,2567,SUP-11,true,4.2,4521,0.22,Australia,2024-01-13
+P080,Inflatable Camping Pillow,Outdoors,19.99,7.00,1678,SUP-10,true,4.1,1567,0.12,China,2024-01-09
+P081,Posture Corrector Brace,Health,35.99,13.00,456,SUP-11,true,4.0,2341,0.25,China,2024-01-10
+P082,Bamboo Toothbrush 4pk,Health,12.99,4.00,4567,SUP-13,true,4.5,8901,0.08,China,2024-01-14
+P083,Monitor Stand Riser,Electronics,44.99,18.00,678,SUP-01,true,4.4,3421,1.25,China,2024-01-11
+P084,Kombucha Starter Kit,Nutrition,44.99,18.00,234,SUP-08,true,4.3,1234,0.85,USA,2024-01-08
+P085,Swim Goggles Anti-Fog,Sports,19.99,7.00,1234,SUP-04,true,4.2,2891,0.08,China,2024-01-12
+P086,Packing Cubes Set 6pc,Accessories,34.99,13.00,1567,SUP-06,true,4.5,4521,0.35,China,2024-01-09
+P087,Desk Organiser Bamboo,Stationery,29.99,11.00,789,SUP-15,true,4.3,2145,0.58,China,2024-01-13
+P088,Resistance Loop Bands 5pk,Sports,16.99,6.00,2891,SUP-04,true,4.4,6789,0.22,China,2024-01-10
+P089,Pour Over Coffee Dripper,Kitchen,24.99,9.00,1023,SUP-05,true,4.5,3421,0.32,Japan,2024-01-07
+P090,Phone Stand Adjustable,Electronics,15.99,5.50,3456,SUP-01,true,4.1,5678,0.18,China,2024-01-14
+P091,Fleece Jacket Outdoor M,Clothing,79.99,32.00,345,SUP-07,true,4.3,1678,0.52,China,2024-01-08
+P092,Digital Kitchen Scale,Kitchen,22.99,8.00,1789,SUP-09,true,4.4,4521,0.35,China,2024-01-11
+P093,Knee High Compression Socks,Health,19.99,7.00,2567,SUP-11,true,4.2,3421,0.18,South Korea,2024-01-09
+P094,Paracord Survival Bracelet,Outdoors,12.99,4.00,4567,SUP-10,true,4.0,2891,0.05,China,2024-01-12
+P095,Notebook Hardcover A5,Stationery,14.99,5.00,3456,SUP-15,true,4.5,6789,0.25,Japan,2024-01-10
+P096,Bedside Lamp Touch Dimmer,Home,49.99,20.00,456,SUP-12,true,4.4,2345,0.65,China,2024-01-13
+P097,Natural Deodorant Stick,Health,14.99,5.00,2891,SUP-11,true,4.1,3421,0.08,UK,2024-01-07
+P098,Travel Adapter Universal,Electronics,29.99,11.00,1678,SUP-01,true,4.3,7234,0.12,China,2024-01-11
+P099,Barbell Pad Squat,Sports,24.99,9.00,789,SUP-04,true,4.2,1567,0.45,China,2024-01-08
+P100,Beeswax Wraps 3pk,Kitchen,16.99,6.00,2341,SUP-13,true,4.6,4521,0.12,UK,2024-01-14
+P101,Gaming Headset 7.1 Surround,Electronics,99.99,42.00,234,SUP-01,true,4.4,4532,0.38,China,2024-01-10
+P102,Trail Mix Energy 500g,Nutrition,12.99,4.50,1890,SUP-08,true,4.3,5678,0.50,USA,2024-01-12
+P103,Folding Camp Chair,Outdoors,49.99,20.00,312,SUP-10,true,4.2,1234,2.10,China,2024-01-07
+P104,Cable Management Box,Electronics,22.99,8.00,1567,SUP-01,true,4.3,3421,0.55,China,2024-01-11
+P105,Magnetic Spice Jars 12pk,Kitchen,34.99,13.00,567,SUP-09,true,4.5,2891,1.20,China,2024-01-13
+P106,Swim Training Fins,Sports,39.99,16.00,456,SUP-04,true,4.1,891,0.75,China,2024-01-09
+P107,Silk Sleep Mask,Home,19.99,7.00,2341,SUP-13,true,4.4,4521,0.05,China,2024-01-14
+P108,Portable Blender 300ml,Kitchen,34.99,13.00,789,SUP-05,true,4.3,3421,0.45,China,2024-01-10
+P109,Clip-On Webcam Privacy Cover,Electronics,9.99,3.00,5678,SUP-01,true,4.2,6789,0.02,China,2024-01-12
+P110,Insulated Lunch Bag,Accessories,24.99,9.00,1234,SUP-06,true,4.5,2891,0.38,China,2024-01-08
+P111,Foam Ear Plugs 50pk,Health,8.99,2.50,4567,SUP-11,true,4.1,5678,0.12,Germany,2024-01-11
+P112,Reusable Coffee Filter,Kitchen,12.99,4.00,3456,SUP-09,true,4.4,7234,0.08,Germany,2024-01-09
+P113,Wrist Weights 2x1kg,Sports,19.99,7.00,1789,SUP-04,true,4.3,2341,2.00,China,2024-01-13
+P114,Overhead Projector Mini,Electronics,129.99,54.00,156,SUP-01,true,4.2,1234,0.75,China,2024-01-07
+P115,Zero Waste Kit 7pc,Home,39.99,15.00,678,SUP-13,true,4.5,3421,0.65,UK,2024-01-10
+P116,Creatine Monohydrate 500g,Nutrition,24.99,9.00,1023,SUP-08,true,4.4,4521,0.50,Germany,2024-01-12
+P117,Waterproof Dry Bag 20L,Outdoors,29.99,11.00,567,SUP-10,true,4.3,2145,0.32,China,2024-01-14
+P118,Stencil Set Letters Numbers,Stationery,14.99,5.00,2891,SUP-15,true,4.1,1567,0.15,China,2024-01-08
+P119,Smart Scale Body Fat WiFi,Health,79.99,32.00,456,SUP-11,true,4.5,5678,1.25,China,2024-01-11
+P120,Compostable Trash Bags 50pk,Home,19.99,7.00,3456,SUP-13,true,4.2,4521,0.55,USA,2024-01-09
+P121,Pro Cycling Helmet,Sports,199.99,85.00,134,SUP-04,true,4.6,891,0.28,Taiwan,2024-01-07
+P122,LED Strip Lights 5m,Home,29.99,11.00,1234,SUP-12,true,4.3,6789,0.35,China,2024-01-13
+P123,Spiralizer Vegetable 5-Blade,Kitchen,29.99,11.00,678,SUP-09,true,4.4,2891,0.62,China,2024-01-10
+P124,Electric Foot Massager,Health,89.99,36.00,234,SUP-11,true,4.3,1678,1.85,China,2024-01-12
+P125,Carbon Fibre Bike Pump,Outdoors,39.99,16.00,456,SUP-10,true,4.2,1234,0.35,Taiwan,2024-01-08
+P126,Modular Bookshelf System,Furniture,249.99,105.00,89,SUP-14,true,4.4,567,8.50,Poland,2024-01-05
+P127,Planner Undated Weekly,Stationery,22.99,8.00,2341,SUP-15,true,4.5,4521,0.38,Japan,2024-01-11
+P128,Protein Bar Variety 24pk,Nutrition,39.99,16.00,567,SUP-08,true,4.2,3421,1.20,USA,2024-01-14
+P129,Foldable Water Bottle 600ml,Outdoors,17.99,6.00,2891,SUP-10,true,4.3,5678,0.12,China,2024-01-09
+P130,Night Vision Binoculars,Outdoors,189.99,80.00,78,SUP-10,true,4.4,456,0.85,China,2024-01-06
+P131,Weighted Blanket 7kg,Home,89.99,36.00,234,SUP-13,true,4.5,2891,7.00,China,2024-01-10
+P132,Indoor Plant Grow Light,Home,49.99,20.00,456,SUP-12,true,4.3,1678,0.48,China,2024-01-13
+P133,Massage Gun Percussion,Health,149.99,62.00,189,SUP-11,true,4.5,3421,0.85,China,2024-01-07
+P134,Ergonomic Wrist Rest,Electronics,19.99,7.00,1789,SUP-01,true,4.2,4521,0.32,China,2024-01-12
+P135,Silicone Ice Cube Tray 2pk,Kitchen,12.99,4.00,4567,SUP-09,true,4.4,6789,0.22,China,2024-01-11
+P136,Ankle Weights 2x2kg,Sports,24.99,9.00,1234,SUP-04,true,4.3,2891,4.00,China,2024-01-09
+P137,Bamboo Charcoal Bags 200g 4pk,Home,18.99,6.50,2341,SUP-13,true,4.1,3421,0.80,China,2024-01-14
+P138,Clip-On Reading Light,Electronics,16.99,5.50,2567,SUP-01,true,4.2,5678,0.08,China,2024-01-08
+P139,Glass Water Bottle 750ml,Kitchen,22.99,8.00,1678,SUP-09,true,4.5,7234,0.45,Germany,2024-01-11
+P140,Sun Hat Wide Brim,Clothing,34.99,13.00,789,SUP-07,true,4.0,1234,0.18,China,2024-01-10
+P141,Under-Desk Footrest,Furniture,39.99,15.00,567,SUP-14,true,4.4,2891,1.25,China,2024-01-13
+P142,Omega-3 Fish Oil 180ct,Nutrition,22.99,8.00,1234,SUP-08,true,4.3,4521,0.35,Norway,2024-01-09
+P143,Rechargeable LED Headlamp,Outdoors,34.99,13.00,678,SUP-10,true,4.4,2341,0.15,China,2024-01-12
+P144,Adjustable Dumbbell 20kg,Sports,299.99,125.00,89,SUP-04,true,4.6,678,9.00,China,2024-01-05
+P145,Ceramic Plate Set 6pc,Kitchen,64.99,26.00,234,SUP-05,true,4.4,1678,3.20,Japan,2024-01-07
+P146,Travel Neck Pillow Memory Foam,Accessories,29.99,11.00,1567,SUP-06,true,4.3,5678,0.35,China,2024-01-11
+P147,Mini Projector Portable 4K,Electronics,399.99,170.00,56,SUP-01,true,4.5,1234,0.55,China,2024-01-06
+P148,Coloured Pencils Artist 72pc,Stationery,34.99,13.00,891,SUP-15,true,4.6,3421,0.65,Germany,2024-01-10
+P149,Insulated Coffee Thermos 500ml,Kitchen,34.99,13.00,1456,SUP-05,true,4.5,4521,0.42,Germany,2024-01-13
+P150,Electric Kettle Glass 1.7L,Kitchen,49.99,20.00,567,SUP-05,true,4.4,2891,1.15,Germany,2024-01-08

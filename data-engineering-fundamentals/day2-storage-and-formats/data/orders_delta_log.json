@@ -1,0 +1,90 @@
+{
+  "description": "Simplified Delta Lake transaction log for Exercise 3. Each commit records which data files were added or removed.",
+  "commits": [
+    {
+      "version": 0,
+      "timestamp": "2024-01-15T00:05:00Z",
+      "operation": "CREATE TABLE",
+      "added_files": ["part-A.parquet", "part-B.parquet", "part-C.parquet"],
+      "removed_files": [],
+      "stats": {
+        "part-A.parquet": {"rows": 40, "customer_ids": ["C001","C002","C003","C004","C005"]},
+        "part-B.parquet": {"rows": 35, "customer_ids": ["C006","C007","C008","C009"]},
+        "part-C.parquet": {"rows": 25, "customer_ids": ["C010","C011","C012","C999"]}
+      },
+      "schema": {
+        "fields": ["order_id","customer_id","order_date","amount","status"]
+      },
+      "notes": "Initial table creation. 100 rows total across 3 files."
+    },
+    {
+      "version": 1,
+      "timestamp": "2024-01-15T01:05:00Z",
+      "operation": "WRITE (append)",
+      "added_files": ["part-D.parquet", "part-E.parquet"],
+      "removed_files": [],
+      "stats": {
+        "part-D.parquet": {"rows": 20, "customer_ids": ["C013","C014","C015"]},
+        "part-E.parquet": {"rows": 15, "customer_ids": ["C016","C017","C018"]}
+      },
+      "notes": "Incremental load: 35 new orders from the nightly ingestion job."
+    },
+    {
+      "version": 2,
+      "timestamp": "2024-01-15T02:10:00Z",
+      "operation": "MERGE (upsert)",
+      "added_files": ["part-F.parquet"],
+      "removed_files": ["part-B.parquet"],
+      "stats": {
+        "part-F.parquet": {
+          "rows": 45,
+          "note": "Contains 30 updated rows from part-B + 10 net-new rows + 5 unchanged rows from part-B rewritten",
+          "customer_ids": ["C006","C007","C008","C009","C019","C020","C021"]
+        }
+      },
+      "notes": "MERGE operation: matched on order_id, updated status field. Bug discovered later: status was set to 'cancelled' for ALL rows in source batch, not just matching ones."
+    },
+    {
+      "version": 3,
+      "timestamp": "2024-01-16T00:00:00Z",
+      "operation": "DELETE",
+      "added_files": ["part-G.parquet"],
+      "removed_files": ["part-C.parquet"],
+      "stats": {
+        "part-G.parquet": {
+          "rows": 20,
+          "note": "part-C rewritten with 5 rows deleted (customer_id = C999 GDPR request)",
+          "customer_ids": ["C010","C011","C012"]
+        }
+      },
+      "notes": "GDPR deletion: removed 5 rows for customer_id = C999. part-C rewritten as part-G without those rows. part-C is now a tombstoned (removed) file — still on disk until VACUUM runs."
+    },
+    {
+      "version": 4,
+      "timestamp": "2024-01-16T01:05:00Z",
+      "operation": "WRITE (append)",
+      "added_files": ["part-H.parquet"],
+      "removed_files": [],
+      "stats": {
+        "part-H.parquet": {"rows": 25, "customer_ids": ["C022","C023","C024","C025"]}
+      },
+      "notes": "Incremental load: 25 new orders."
+    }
+  ],
+  "current_state": {
+    "active_version": 4,
+    "active_files": "See question 1 — determine from commit log above",
+    "total_rows_hint": "Count added rows minus removed rows across all commits"
+  },
+  "physical_files_on_disk": [
+    "part-A.parquet",
+    "part-B.parquet",
+    "part-C.parquet",
+    "part-D.parquet",
+    "part-E.parquet",
+    "part-F.parquet",
+    "part-G.parquet",
+    "part-H.parquet"
+  ],
+  "note": "All 8 files exist on disk (S3). Only the active ones are part of the current table. Removed files are tombstoned in the log but not yet physically deleted. VACUUM would delete files not referenced by any commit within the retention window."
+}
