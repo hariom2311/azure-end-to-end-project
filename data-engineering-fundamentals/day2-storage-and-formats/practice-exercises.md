@@ -38,38 +38,37 @@ You have `data/products.csv` — a dataset of 1,000 product records. Your task i
 
 ---
 
-## Exercise 2: Diagnose a Data Lake Problem
+## Exercise 2: CDC — Trace Changes Through a Transaction Log
 
-**Concept:** Data Warehouses vs. Data Lakes vs. Lakehouses
+**Concept:** Change Data Capture (CDC)
 
 **Scenario:**  
-A company has a data lake with the following layout:
+A source PostgreSQL database has an `orders` table. The following sequence of operations happens between 09:00 and 09:05:
 
 ```
-s3://company-lake/
-├── raw/orders/                      ← 2 million files, avg 4 KB each
-├── raw/customers/                   ← 500,000 files, avg 8 KB each
-├── silver/orders/                   ← No partitioning, 1 large 80 GB Parquet file
-├── silver/customers/                ← No partitioning, 1 large 12 GB Parquet file
-└── gold/revenue_summary/            ← 3 files, updated by two different Spark jobs simultaneously
+09:00:01 — INSERT order_id=1051, customer_id='C041', amount=95.00,  status='pending'
+09:01:14 — INSERT order_id=1052, customer_id='C042', amount=310.00, status='pending'
+09:02:30 — UPDATE order_id=1051 SET status='completed'
+09:03:45 — INSERT order_id=1053, customer_id='C043', amount=55.00,  status='pending'
+09:04:10 — DELETE order_id=1048  (cancelled and refunded)
+09:04:55 — UPDATE order_id=1052 SET amount=285.00  (price adjustment)
 ```
 
-The team reports three problems:
-- **Problem A:** Queries on `silver/orders/` that filter by `order_date` take 45 minutes
-- **Problem B:** `gold/revenue_summary/` occasionally has corrupted or duplicate rows after concurrent writes
-- **Problem C:** A Spark job that processes `raw/orders/` takes 3 hours just to list the files before it starts reading
+Your CDC tool (Debezium) captures these and publishes to Kafka with fields: `op`, `before`, `after`, `ts_ms`.
 
 **Tasks:**
 
-1. Diagnose the root cause of each problem (A, B, C) using the concepts from Day 2.
+1. Write the 6 Kafka CDC event payloads (JSON) for each operation. Use `op` values `c` (insert), `u` (update), `d` (delete). Populate `before` and `after` correctly — `before` is `null` for inserts, `after` is `null` for deletes.
 
-2. For Problem A: propose a fix. What partitioning strategy would you apply? Re-sketch the folder structure after your fix.
+2. Your Silver table `orders_silver` contains the rows from `data/orders.csv`. Write the SQL MERGE statement that applies all 6 CDC events to `orders_silver` in one pass, handling all three operation types.
 
-3. For Problem B: what lakehouse feature directly solves this? Name the specific mechanism (not just the tool).
+3. A timestamp-based incremental pipeline uses `WHERE created_at > last_run_timestamp`. Which of the 6 operations above would it miss and why?
 
-4. For Problem C: this is the small files problem. Propose two solutions — one immediate fix and one architectural change to prevent it recurring.
+4. **Replication lag:** Debezium reports a 45-second lag (events are delayed). Your Spark consumer runs every 60 seconds. What is the maximum staleness of `orders_silver`? Design a monitoring check that alerts if lag exceeds 2 minutes.
 
-5. The team is deciding between Delta Lake and Apache Iceberg for their new lakehouse. They use Spark for ETL, Trino for ad-hoc queries, and Flink for streaming. Which would you recommend and why?
+5. The team asks: "Why use Debezium when we could add a PostgreSQL trigger that writes changes to a side table, then poll it?" Give two concrete advantages of log-based CDC over trigger-based CDC.
+
+**Sample data:** `data/orders.csv`
 
 ---
 
@@ -103,35 +102,53 @@ The log shows 5 commits:
 
 ---
 
-## Exercise 4: Design Object Storage Layout
+## Exercise 4: Database Indexing — Diagnose Slow Queries
 
-**Concept:** Object Storage & Storage Tiers
+**Concept:** Database Indexing & Query Optimisation
 
 **Scenario:**  
-Design the S3 folder structure and lifecycle policy for a fintech company with these data assets:
+You are handed a PostgreSQL table `orders` with 50 million rows and the schema from `data/orders.csv`. The following queries are running in production. Use `EXPLAIN` output hints provided to diagnose and fix each one.
 
-| Dataset | Volume | Access pattern | Retention requirement |
-|---|---|---|---|
-| Raw transaction events (JSON) | 50 GB/day | Queried in first 7 days for debugging; rarely after | 7 years (regulatory) |
-| Silver transactions (Parquet) | 10 GB/day | Daily queries for last 90 days; monthly queries for last 2 years | 3 years |
-| Gold daily aggregates | 500 MB/day | Dashboard queries; last 1 year very active | 5 years |
-| ML feature store (Parquet) | 2 GB/day | Active for 6 months; archived after | 2 years |
-| Audit logs (CSV) | 100 MB/day | Compliance only; 30-day lookback normal; up to 7 years | 7 years |
+```sql
+-- Table: orders (50M rows)
+-- Existing indexes: PRIMARY KEY on order_id
+
+-- Query A — runs in 45 seconds
+SELECT * FROM orders WHERE customer_id = 'C001';
+-- EXPLAIN output: Seq Scan on orders (cost=0..1,250,000 rows=12 width=64)
+
+-- Query B — runs in 12 seconds
+SELECT order_date, SUM(order_amount) FROM orders
+WHERE order_date BETWEEN '2024-01-01' AND '2024-01-31'
+GROUP BY order_date;
+-- EXPLAIN output: Seq Scan on orders (cost=0..1,250,000 rows=1,500,000 width=16)
+
+-- Query C — runs in 30 seconds (called 10,000 times/day)
+SELECT customer_id, order_date, order_amount
+FROM orders
+WHERE customer_id = 'C001'
+ORDER BY order_date DESC;
+-- EXPLAIN output: Seq Scan → Sort (cost=1,250,000..1,252,000)
+
+-- Query D — runs in 2 seconds but needs to be faster
+SELECT COUNT(*) FROM orders WHERE status = 'pending';
+-- EXPLAIN output: Index Scan using idx_status (cost=0.56..8,200 rows=1,000,000)
+-- Note: 'pending' represents 2% of rows
+```
 
 **Tasks:**
 
-1. Design the full S3 bucket structure (folder hierarchy). Show at least 3 levels of nesting.
+1. For Query A: write the `CREATE INDEX` statement that fixes it. What type of scan will `EXPLAIN` show after the index is added?
 
-2. Write a lifecycle policy (in JSON or pseudocode) for each of the 5 data assets. For each, specify:
-   - Day 0: starting storage class
-   - Transition dates and target storage classes
-   - Whether to enable versioning (and why)
+2. For Query B: a B-tree index on `order_date` exists but `EXPLAIN` still shows a Seq Scan. Why might the planner ignore the index? Under what condition does the planner prefer a Seq Scan over an index scan even when an index exists?
 
-3. The raw transaction events are currently stored as individual JSON files (one file per event = 1,000,000 files/day). Calculate the monthly S3 API cost assuming GET requests cost $0.0004 per 1,000 and the data is queried 10 times/day (each query reads all 1M daily files for the last 7 days). What architectural change would dramatically reduce this cost?
+3. For Query C: this is called 10,000 times/day. Write a single **covering index** that makes this query an index-only scan. Explain what columns go in the index and in what order, and why no heap access is needed.
 
-4. The ML feature store needs to be shared with a partner data science team in a different AWS account. How do you grant them read-only access without copying the data?
+4. For Query D: `status` has only 5 distinct values and 'pending' is 2% of rows. The index exists but is it the right kind? Rewrite the index as a **partial index** that indexes only pending orders. Show the `CREATE INDEX` statement and explain why this is smaller and faster than a full index on `status`.
 
-5. Gold aggregates are queried by Athena. The team is getting billed for scanning the full table even though most queries only look at the last 30 days. What is the fix and how does it work?
+5. After adding all your indexes, the nightly bulk load of 500,000 new orders slows from 3 minutes to 25 minutes. Why? What is the standard practice to handle indexes during bulk loads?
+
+**Sample data:** `data/orders.csv`
 
 ---
 
@@ -272,47 +289,36 @@ GROUP BY order_date, currency;
 
 ---
 
-## Exercise 8: Avro Schema Evolution
+## Exercise 8: Replication Lag & Consistency — Diagnose Pipeline Anomalies
 
-**Concept:** Serialisation Formats — Avro & Protobuf
+**Concept:** Data Replication & Consistency Models
 
 **Scenario:**  
-A Kafka topic `orders-events` uses Avro with this schema (v1):
+Your pipeline reads from a PostgreSQL **read replica** (not the primary). The replica has an average replication lag of 8 seconds under normal load, spiking to 90 seconds during peak hours (18:00–20:00).
 
-```json
-{
-  "type": "record",
-  "name": "OrderEvent",
-  "fields": [
-    {"name": "order_id",    "type": "int"},
-    {"name": "customer_id", "type": "string"},
-    {"name": "amount",      "type": "double"},
-    {"name": "status",      "type": "string"}
-  ]
-}
-```
-
-The team wants to make these changes (v2):
-
-```
-Change 1: Add field "currency" (string, default "USD")
-Change 2: Add field "discount_code" (nullable string, default null)
-Change 3: Remove field "status" (they will put status in a separate topic)
-Change 4: Rename "amount" to "order_amount"
-Change 5: Change "customer_id" from string to int
+Your incremental pipeline runs every 15 minutes and uses this query:
+```sql
+SELECT * FROM orders
+WHERE created_at > :last_watermark
+  AND created_at <= NOW()
 ```
 
 **Tasks:**
 
-1. Classify each change (1–5) as **backward compatible**, **forward compatible**, **fully compatible**, or **breaking** in the context of Avro schema evolution. Explain each.
+1. An order is created on the primary at 17:59:55. The pipeline's watermark at its 18:00 run is `17:59:45`. During peak hours, replication lag is 90 seconds. Is this order captured in the 18:00 run? Show the timeline with exact timestamps.
 
-2. Which changes can be deployed without updating any consumers first?
+2. The pipeline ran at 18:00 and set its watermark to `18:00:00`. At 18:15, the next run starts. The replica's lag is now 90 seconds. What is the latest `created_at` visible on the replica at 18:15? Write the corrected watermark query that adds a lag buffer to avoid missing records.
 
-3. Write the v2 schema JSON for only the safe (non-breaking) changes. Ensure it is Avro-valid.
+3. **CAP theorem application:** Your read replica is in the same datacenter as the primary. A network partition occurs between primary and replica. The replica continues serving reads. Is this system CP or AP? What data freshness guarantee does an analyst querying the replica have during the partition?
 
-4. For the breaking changes (3, 4, 5): propose a migration strategy for each that avoids downtime. (Hint: you cannot modify existing messages in Kafka — only future messages.)
+4. Using `data/orders.csv`, write a Python function `check_replica_lag(primary_max_id, replica_max_id)` that:
+   - Takes the max `order_id` from both primary and replica
+   - Returns the number of orders the replica is behind
+   - Prints `CRITICAL` if behind by more than 100 orders, `WARNING` if more than 10, `OK` otherwise
 
-5. How does a Confluent Schema Registry prevent incompatible schema changes from being accidentally published? Describe the enforcement mechanism in 3 sentences.
+5. The team proposes switching to **eventual consistency** for the Gold layer: "Let the Gold table be 5 minutes stale — it's fine for dashboards." What scenarios make this acceptable and what scenarios make it dangerous? Give one example of each from an e-commerce context.
+
+**Sample data:** `data/orders.csv`
 
 ---
 

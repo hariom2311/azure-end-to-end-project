@@ -63,50 +63,107 @@ A single 100 GB Gzip-compressed CSV cannot be split — all 100 GB must be sent 
 
 ---
 
-## Concept 2: Data Compression Deep Dive
+## Concept 2: Change Data Capture (CDC)
 
-### Why compress?
+### What is CDC?
 
-- **Storage cost:** 1 TB of raw CSV at $0.023/GB/month = $23.55/month. At 5× compression: $4.71/month
-- **Query speed:** Less data to read from disk = faster queries (I/O is usually the bottleneck, not CPU)
-- **Network transfer:** Smaller files transfer faster between storage and compute
+**Change Data Capture (CDC)** is the practice of identifying and capturing every INSERT, UPDATE, and DELETE made to a source database, then delivering those changes to downstream systems in near-real time.
 
-### Lossless vs. lossy compression
+Without CDC, a pipeline must either:
+- **Full load:** Read the entire source table every run (expensive at scale)
+- **Timestamp-based incremental:** Read rows where `updated_at > last_watermark` (misses hard deletes, vulnerable to clock skew)
 
-Data engineering exclusively uses **lossless** compression — the original data is perfectly reconstructed. Lossy compression (JPEG, MP3) is for media and has no place in data pipelines.
+CDC solves both problems by tapping directly into the database's internal change log.
 
-### How compression works on columnar data
+### Why CDC matters
 
-Columnar storage exposes structure that compressors exploit:
+| Problem with alternatives | CDC solution |
+|---|---|
+| Full load is too slow at >10M rows | CDC captures only changed rows — minimal volume |
+| Timestamp watermarks miss hard DELETEs | CDC captures DELETE events explicitly |
+| Clock skew causes missed updates | CDC reads commit order from the DB log — authoritative |
+| Schema changes break extract queries | CDC captures structural changes too |
 
-**Run-length encoding (RLE):** For repeated values in a column:
+### How log-based CDC works
+
+Every production-grade relational database maintains a **write-ahead log (WAL)** — a sequential record of every change committed to the database, used for crash recovery and replication.
+
+CDC tools read this log instead of querying the database tables:
+
 ```
-status column: [completed, completed, completed, pending, pending]
-RLE encoded:   [(completed, 3), (pending, 2)]
+[Application writes to PostgreSQL]
+          ↓
+[PostgreSQL WAL (Write-Ahead Log)]  ← CDC reads here
+          ↓
+[CDC tool: Debezium / Fivetran / AWS DMS]
+          ↓
+[Kafka topic: orders-cdc-events]
+          ↓
+[Spark / Flink reads Kafka → MERGE into Silver table]
 ```
-A status column with 10 possible values in 1 billion rows compresses dramatically.
 
-**Dictionary encoding:** Replace repeated string values with integer codes:
-```
-status column raw:    [completed, pending, completed, cancelled, completed]
-dictionary:           {0: completed, 1: pending, 2: cancelled}
-encoded:              [0, 1, 0, 2, 0]
-```
-Integers compress far better than strings and compare faster.
+Each WAL event contains:
+- Operation type: `INSERT`, `UPDATE`, `DELETE`
+- Table name
+- Before image (old row values, for UPDATE and DELETE)
+- After image (new row values, for INSERT and UPDATE)
+- Commit timestamp and log sequence number (LSN)
 
-**Delta encoding:** For monotonically increasing values (timestamps, IDs):
-```
-order_id raw:    [1001, 1002, 1003, 1004, 1005]
-delta encoded:   [1001, +1, +1, +1, +1]
-```
-Deltas are small integers — highly compressible.
+### CDC event structure
 
-### Compression in practice
+```json
+{
+  "op": "u",
+  "ts_ms": 1705276800000,
+  "before": {"order_id": 1001, "status": "pending", "amount": 120.50},
+  "after":  {"order_id": 1001, "status": "completed", "amount": 120.50},
+  "source": {"table": "orders", "lsn": 123456789, "db": "prod"}
+}
+```
 
-- **Parquet + Snappy**: default for most data lake Silver/Gold tables — good balance
-- **Parquet + Zstd (level 3)**: modern best practice — better compression, similar read speed
-- **Parquet + Gzip**: archive/cold storage where query frequency is low
-- **Avro + Snappy**: streaming/Kafka pipelines where schema evolution is needed
+Operation codes: `c` = create (INSERT), `u` = update (UPDATE), `d` = delete (DELETE), `r` = read (snapshot).
+
+### Applying CDC events downstream: the MERGE pattern
+
+```sql
+-- For each CDC event arriving in the target:
+MERGE INTO silver.orders AS target
+USING cdc_staging AS source ON target.order_id = source.order_id
+WHEN MATCHED AND source.op = 'd' THEN DELETE
+WHEN MATCHED AND source.op = 'u' THEN UPDATE SET target.status = source.status, ...
+WHEN NOT MATCHED AND source.op = 'c' THEN INSERT VALUES (source.order_id, ...)
+```
+
+This keeps the Silver table as a current-state mirror of the source database — every row reflects the latest version.
+
+### CDC tools
+
+| Tool | Type | Source DBs | Target |
+|---|---|---|---|
+| Debezium | Open-source | PostgreSQL, MySQL, Oracle, MongoDB | Kafka |
+| Fivetran | Managed SaaS | 300+ sources | Warehouse / lake |
+| AWS DMS | Managed | Most relational DBs | S3, Redshift, RDS |
+| Airbyte | Open-source / Cloud | 300+ sources | S3, warehouse |
+| Qlik Replicate | Enterprise | Oracle, SAP, DB2 | Warehouse |
+
+### CDC vs. timestamp-based incremental
+
+| Dimension | Timestamp incremental | Log-based CDC |
+|---|---|---|
+| Hard DELETE visibility | No (row is gone) | Yes (DELETE event captured) |
+| Clock skew risk | Yes (late updates missed) | No (log sequence is authoritative) |
+| Source DB load | Queries the DB (read impact) | Reads the log (near-zero impact) |
+| Setup complexity | Low (just add WHERE clause) | Medium (requires log access, Debezium setup) |
+| Latency | Minutes (batch interval) | Sub-second |
+
+### The initial snapshot
+
+When CDC is first set up, you need to backfill all existing data before the log begins. This is the **initial snapshot** (or full-load phase):
+1. Take a consistent snapshot of the source table at log position N
+2. Load the snapshot to the target
+3. Begin consuming CDC events from position N onwards
+
+Debezium handles this automatically in **snapshot mode** before switching to streaming.
 
 ---
 
@@ -274,61 +331,130 @@ Created at Uber. Optimised for streaming upserts at high frequency.
 
 ---
 
-## Concept 5: Object Storage & Storage Tiers
+## Concept 5: Database Indexing & Query Optimisation
 
-### What is object storage?
+### What is an index?
 
-**Object storage** (S3, GCS, ADLS Gen2, Azure Blob) stores data as flat objects with a unique key (path), rather than a hierarchical file system. It has no concept of directories — what looks like `s3://bucket/orders/2024/01/15/file.parquet` is just a string key.
+An **index** is a separate data structure maintained alongside a table that allows the database to locate rows matching a condition without scanning the entire table.
 
-**Properties:**
-- **Infinite scale:** No capacity limits; storage grows automatically
-- **Cheap:** ~$0.023/GB/month (S3 Standard) vs. $0.115+/GB for SSD-backed databases
-- **High durability:** 99.999999999% (11 nines) — data replicated across multiple availability zones
-- **Eventual consistency (historically):** S3 became strongly consistent in December 2020 — reads now always reflect the latest write
-- **Immutable objects:** You cannot edit a file in-place; you must write a new object (this is why table formats maintain a transaction log)
+Without an index: find all orders for `customer_id = 'C001'` in a 50M-row table → full table scan → 50M rows read.  
+With an index on `customer_id`: → B-tree lookup → 3–4 node reads → directly to matching rows.
 
-### The object storage cost model
+Indexes are the single most impactful performance tool in relational databases and appear in almost every senior data engineering interview.
 
-Unlike databases, object storage charges for:
-- **Storage:** per GB stored per month
-- **API requests:** per PUT, GET, LIST operation (small per-call, but adds up with millions of files)
-- **Data transfer (egress):** data leaving the cloud region
+### B-Tree index — the default
 
-This cost model is why the **small files problem** matters even beyond query performance — millions of LIST and GET calls to read millions of tiny files cost money.
+Most database indexes are **B-trees** (Balanced Trees). A B-tree maintains sorted keys in a tree structure where every leaf is at the same depth.
 
-### Storage tiers
-
-Cloud providers offer multiple storage classes with different cost/latency trade-offs:
-
-| Tier | Access latency | Cost (S3) | Minimum storage duration | Use case |
-|---|---|---|---|---|
-| Standard | Milliseconds | $0.023/GB | None | Active data queried frequently |
-| Standard-IA (Infrequent Access) | Milliseconds | $0.0125/GB | 30 days | Data queried monthly (compliance, old Silver) |
-| Glacier Instant Retrieval | Milliseconds | $0.004/GB | 90 days | Archive data still needing occasional fast access |
-| Glacier Flexible Retrieval | Minutes–hours | $0.0036/GB | 90 days | Long-term archive, batch retrieval acceptable |
-| Glacier Deep Archive | Hours | $0.00099/GB | 180 days | Regulatory 7-year retention — almost never queried |
-
-**Lifecycle policies** automatically move data between tiers:
 ```
-Raw/Bronze: Standard → Standard-IA after 30 days → Glacier after 90 days
-Silver: Standard → Standard-IA after 90 days
-Gold: Standard (always active)
+                    [1000 | 2000]
+                   /      |      \
+            [500|750]  [1200|1500]  [2200|2500]
+           /    |    \
+    [300..499][500..749][750..999]   ← leaf pages (actual row pointers)
 ```
 
-### Object storage vs. HDFS
+**Queries a B-tree accelerates:**
+- Equality: `WHERE customer_id = 'C001'` → O(log n)
+- Range: `WHERE amount BETWEEN 100 AND 500` → traverse from 100, scan to 500
+- Sort: `ORDER BY customer_id` → already sorted in the B-tree
 
-Before cloud object storage, Hadoop HDFS (Hadoop Distributed File System) was the standard storage layer for big data. Key differences:
+**Queries a B-tree does NOT help with:**
+- Prefix-unanchored wildcard: `WHERE name LIKE '%smith'` → full scan (no leading anchor)
+- Inequality on non-indexed column: `WHERE amount > 100` if `amount` is not indexed
 
-| | HDFS | Object Storage (S3/GCS/ADLS) |
+### Composite indexes and column order
+
+A composite index covers multiple columns. **Column order is critical** — the index is useful only for queries that provide a leading prefix of the index columns.
+
+```sql
+-- Index: (order_date, customer_id, status)
+
+-- Uses index fully:
+WHERE order_date = '2024-01-15' AND customer_id = 'C001' AND status = 'completed'
+
+-- Uses index partially (leading prefix):
+WHERE order_date = '2024-01-15'
+WHERE order_date = '2024-01-15' AND customer_id = 'C001'
+
+-- Does NOT use index (missing leading column):
+WHERE customer_id = 'C001'
+WHERE status = 'completed'
+```
+
+**Rule:** Order composite index columns by selectivity (most selective first) and by query pattern (most common filter first).
+
+### Covering index
+
+A **covering index** includes all columns a query needs — the database engine never touches the actual table rows.
+
+```sql
+-- Query:
+SELECT customer_id, order_date, amount FROM orders WHERE customer_id = 'C001';
+
+-- Regular index on customer_id:
+-- 1. B-tree lookup → row pointers for C001 → 2. fetch each row from heap → 3. return 3 columns
+-- Two I/O operations per row
+
+-- Covering index on (customer_id, order_date, amount):
+-- 1. B-tree lookup → return all 3 columns directly from the index
+-- One I/O operation total — heap never touched
+```
+
+Covering indexes are extremely effective for high-frequency read queries (reporting, dashboards).
+
+### Index types beyond B-Tree
+
+| Index type | Best for | Example |
 |---|---|---|
-| Deployment | Self-managed cluster | Fully managed cloud service |
-| Cost | High (servers + ops) | Low (pay per GB) |
-| Scalability | Manual (add nodes) | Automatic |
-| Compute/storage coupling | Tightly coupled (data on compute nodes) | Fully decoupled |
-| Durability | 3× replication | 11 nines |
-| Consistency | Strong | Strong (S3 since Dec 2020) |
+| B-Tree | Equality, range, sort | `WHERE order_date BETWEEN x AND y` |
+| Hash | Equality only — faster than B-tree for `=` | `WHERE session_id = 'abc123'` |
+| GIN (Generalized Inverted Index) | Full-text search, JSONB, arrays | `WHERE tags @> ARRAY['electronics']` |
+| BRIN (Block Range Index) | Very large, naturally ordered tables (timestamps, IDs) | `WHERE created_at > '2024-01-01'` on an append-only log table |
+| Partial index | Subset of rows | `WHERE status = 'pending'` — index only pending orders |
 
-HDFS is still used in on-premise Hadoop clusters, but new cloud-native architectures exclusively use object storage.
+**Partial index example:**
+```sql
+-- Only 2% of orders are 'pending' — index just those
+CREATE INDEX idx_orders_pending ON orders (created_at)
+WHERE status = 'pending';
+-- Tiny index, fast lookups for pending-order queries
+```
+
+### Query execution plans
+
+The **query planner** (EXPLAIN / EXPLAIN ANALYZE in PostgreSQL) chooses between index scan, index-only scan, and sequential scan based on statistics (row count estimates, column cardinality).
+
+```sql
+EXPLAIN ANALYZE
+SELECT * FROM orders WHERE customer_id = 'C001';
+
+-- Output:
+-- Index Scan using idx_orders_customer_id on orders
+--   (cost=0.43..8.45 rows=12 width=64) (actual time=0.032..0.051 rows=12 loops=1)
+--   Index Cond: (customer_id = 'C001')
+-- Planning Time: 0.2 ms
+-- Execution Time: 0.1 ms
+```
+
+A **Seq Scan** (sequential scan) on a large table is almost always a sign of a missing or unused index.
+
+### When indexes hurt
+
+- **Write-heavy tables:** Every INSERT/UPDATE/DELETE must also update all indexes → indexes slow down writes
+- **Bulk loads:** Disable indexes before bulk insert, rebuild after (much faster than per-row updates)
+- **Too many indexes:** Each index uses disk space and write overhead; a table with 15 indexes loads data 15× slower than a table with 1
+- **Low selectivity columns:** An index on a `boolean` column (`is_active`: 95% true, 5% false) is useless — the planner prefers a seq scan because most rows match anyway
+
+### Statistics and the query planner
+
+The query planner uses **statistics** (collected by `ANALYZE` in PostgreSQL, `DBMS_STATS` in Oracle) to estimate row counts and choose the best plan:
+- Table row count
+- Column cardinality (number of distinct values)
+- Column histogram (value distribution)
+- Null fraction
+
+Stale statistics → bad estimates → wrong query plan → slow queries. Run `ANALYZE` after bulk loads or major data changes.
 
 ---
 
@@ -510,73 +636,95 @@ This is why operational databases (OLTP) feed into analytical systems (OLAP) thr
 
 ---
 
-## Concept 9: Serialisation Formats — Avro & Protobuf for Streaming
+## Concept 9: Data Replication & Consistency Models
 
-Analytical file formats (Parquet, ORC) are optimised for batch reads. Streaming pipelines need different formats — ones that are fast to serialise/deserialise and carry schema information so that producers and consumers can evolve independently.
+### Why replication exists
 
-### Apache Avro
+**Replication** is the practice of keeping copies of the same data on multiple nodes or systems. Replication serves three purposes:
+1. **High availability:** If one node fails, another has the data
+2. **Read scalability:** Multiple replicas serve read queries in parallel (read replicas)
+3. **Geographic distribution:** Replicas in different regions reduce latency for global users
 
-Avro is a **row-oriented, binary serialisation format** designed for schema evolution in event-driven systems.
+Every data pipeline that reads from a replica (a very common pattern — never query the primary operational DB directly) is affected by replication behaviour.
 
-**Why Avro for streaming:**
-- Schema is embedded in the message header (or in a registry): consumers always know how to parse
-- Binary encoding: compact and fast (no field names repeated per record, unlike JSON)
-- Rich schema evolution support: add fields with defaults, remove unused fields, rename with aliases
+### Replication lag
 
-**Avro schema (JSON-defined):**
-```json
-{
-  "type": "record",
-  "name": "Order",
-  "fields": [
-    {"name": "order_id",   "type": "int"},
-    {"name": "customer_id","type": "string"},
-    {"name": "amount",     "type": "double"},
-    {"name": "status",     "type": "string"},
-    {"name": "created_at", "type": "long", "logicalType": "timestamp-millis"},
-    {"name": "discount",   "type": ["null", "double"], "default": null}
-  ]
-}
+When a write commits on the **primary**, it is not instantly visible on **replicas** — there is a delay while the change is transmitted and applied. This delay is **replication lag**.
+
+```
+[User places order on Primary] → order_id=1051 committed
+         ↓  (replication lag: 200ms–2s under normal load, minutes under heavy load)
+[Read Replica] → order_id=1051 not yet visible
+
+[Pipeline reads from replica] → misses order_id=1051
+→ order appears "lost" until lag closes
 ```
 
-The `discount` field has type `["null", "double"]` with a null default — adding this field is backward compatible because old readers that do not know about `discount` will use the default.
+**Consequence for pipelines:** A pipeline reading from a replica with a timestamp watermark can miss recently inserted rows that have not yet replicated. Common fix: add a `lookback_seconds` buffer to the watermark.
 
-### Protocol Buffers (Protobuf)
+### Consistency models
 
-Protobuf is Google's binary serialisation format. More compact than Avro, preferred in high-throughput systems.
+**Strong consistency (linearisability):** Every read reflects the most recent write, regardless of which node serves it. Every node has the same view at the same moment.
+- Example: Read from primary only; block reads until replication completes
+- Trade-off: Higher latency; primary becomes bottleneck for reads
 
-```proto
-message Order {
-  int32  order_id    = 1;
-  string customer_id = 2;
-  double amount      = 3;
-  string status      = 4;
-  int64  created_at  = 5;
-  optional double discount = 6;
-}
-```
+**Eventual consistency:** After a write, all replicas will eventually converge to the same value — but there is a window where replicas may return stale data.
+- Example: Read from replica; replica may lag by milliseconds to seconds
+- Trade-off: Lower latency; reads may be stale
 
-**Avro vs. Protobuf:**
+**Read-your-own-writes consistency:** A user always sees their own writes, even if other users may see stale data. Implemented by routing a user's reads to the primary (or to the specific replica that received their write) for a short window.
 
-| | Avro | Protobuf |
-|---|---|---|
-| Schema language | JSON | Proto IDL |
-| Schema evolution | Excellent (named fields + defaults) | Excellent (field numbers stable) |
-| Compression | Good | Better (more compact binary) |
-| Ecosystem | Kafka-native | gRPC, microservices |
-| Self-describing | Yes (schema in file) | No (need .proto file separately) |
-| Use in Kafka | Very common | Common (requires Schema Registry) |
+**Monotonic read consistency:** A user never reads data older than what they previously read. If you read version N, subsequent reads return version ≥ N.
 
-### When to use which format
+### CAP theorem
 
-| Scenario | Format |
+The **CAP theorem** states that a distributed system can guarantee at most two of three properties simultaneously:
+
+| Property | Meaning |
 |---|---|
-| Kafka topics / event streaming | Avro (with Schema Registry) |
-| REST API response stored to lake | JSON → convert to Parquet in Silver |
-| Large analytical table in data lake | Parquet |
-| High-throughput microservice messages | Protobuf |
-| Simple data exchange with external parties | CSV (universal) or JSON |
-| Hive-heavy on-premise analytics | ORC |
+| **C**onsistency | Every read returns the most recent write (strong consistency) |
+| **A**vailability | Every request receives a response (no timeout, even if stale) |
+| **P**artition tolerance | The system continues operating even when network partitions (nodes cannot reach each other) occur |
+
+**Network partitions always happen** in distributed systems (cables fail, switches drop packets). Therefore, real systems must choose between CP or AP:
+
+- **CP (Consistency + Partition tolerance):** When partitioned, refuse requests rather than return stale data. Example: HBase, ZooKeeper, etcd — used for coordination where correctness is critical.
+- **AP (Availability + Partition tolerance):** When partitioned, continue serving requests with potentially stale data. Example: Cassandra, DynamoDB — used for high-throughput user-facing data where availability matters more than perfect consistency.
+
+**CAP in practice:** Most modern databases are "CA during normal operation, CP or AP during partition" — the partition case is rare but must be explicitly designed for.
+
+### ACID vs. BASE
+
+**ACID** (traditional relational databases):
+- **A**tomicity: transactions complete fully or not at all
+- **C**onsistency: every transaction takes the database from one valid state to another
+- **I**solation: concurrent transactions do not interfere
+- **D**urability: committed transactions survive crashes
+
+**BASE** (distributed NoSQL systems, eventual consistency):
+- **B**asically **A**vailable: the system is available most of the time
+- **S**oft state: the state may change over time without new input (replicas converging)
+- **E**ventually consistent: the system will eventually converge to a consistent state
+
+**Relevance to data engineering:**
+- Source OLTP databases are typically ACID → reliable for CDC
+- Distributed message queues (Kafka) are AP → at-least-once delivery, must handle duplicates
+- Data lakes (S3 + table formats) add ACID semantics on top of eventually-consistent object storage
+
+### Replication topologies
+
+**Single-leader (primary-replica):** All writes go to one primary; replicas receive copies. Simple; primary is a bottleneck.
+
+**Multi-leader:** Multiple primaries accept writes; they synchronise with each other. Used for multi-region writes; conflict resolution is complex.
+
+**Leaderless (Dynamo-style):** Any node accepts writes; reads check a quorum of nodes. Used in Cassandra, DynamoDB. Write to W nodes, read from R nodes — if W + R > N (total nodes), reads always see the latest write.
+
+### Practical implications for data engineers
+
+1. **Never query the primary database directly from pipelines** — use read replicas to avoid impacting application performance
+2. **Account for replication lag in watermarks** — add a lag buffer (e.g., process data older than 60 seconds to ensure replication has completed)
+3. **Understand your source's consistency model** — Kafka delivers at-least-once by default; your MERGE must be idempotent
+4. **Eventual consistency in S3** — before Dec 2020, S3 LIST could miss recently written objects; today S3 is strongly consistent, but this is worth verifying when reading from third-party object stores
 
 ---
 
@@ -662,14 +810,14 @@ ALTER TABLE orders SET TBLPROPERTIES (
 | Concept | One-line summary |
 |---|---|
 | File Formats | Parquet (columnar) for analytics; Avro for streaming; CSV/JSON for exchange |
-| Compression | Columnar compression (RLE, dict encoding) gives 5–10× reduction; Snappy/Zstd for Parquet |
+| Change Data Capture | Log-based CDC captures every INSERT/UPDATE/DELETE from source DB in near-real time |
 | DW vs. Lake vs. Lakehouse | Evolution: structured+expensive → flexible+unreliable → open+reliable |
 | Open Table Formats | Delta/Iceberg/Hudi add ACID, time travel, and updates on top of Parquet |
-| Object Storage | Cheap, infinite, durable; immutable objects require table format layer for mutations |
+| Database Indexing | B-Tree, composite, covering, partial indexes; EXPLAIN plans; statistics |
 | Data Catalog | Central inventory of schema, ownership, lineage, and quality metadata |
 | Storage Lifecycle | Hot→Warm→Cold tiers; lifecycle policies automate transitions; compaction keeps files healthy |
 | OLTP vs. OLAP | Row-oriented for transactions; columnar for analytics; separate systems by design |
-| Avro & Protobuf | Binary serialisation for streaming; schema evolution; works with Schema Registry |
+| Replication & Consistency | CAP theorem, ACID vs BASE, replication lag, eventual vs strong consistency |
 | Storage Performance | Predicate pushdown, Z-ordering, bloom filters, file sizing, caching |
 
 ---

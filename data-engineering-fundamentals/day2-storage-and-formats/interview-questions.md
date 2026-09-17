@@ -31,25 +31,25 @@ Parquet uses dictionary encoding internally. What is dictionary encoding and whi
 
 ---
 
-## Concept 2: Data Compression
+## Concept 2: Change Data Capture (CDC)
 
 **Q6 (Warm-up)**  
-Why does columnar storage compress better than row-oriented storage? Explain using the concept of run-length encoding.
+What is Change Data Capture (CDC) and what problem does it solve that a timestamp-based incremental load cannot?
 
 ---
 
 **Q7 (Conceptual)**  
-Compare Snappy, Gzip, and Zstd compression codecs for Parquet files. When would you choose each?
+How does log-based CDC work? What is a Write-Ahead Log (WAL) and why does reading it have near-zero impact on the source database?
 
 ---
 
-**Q8 (Tricky)**  
-A team stores data as Gzip-compressed CSV files in S3 and queries it with Spark. Their Spark job only ever uses 1 executor regardless of how many they request. What is the root cause and how do you fix it?
+**Q8 (Scenario)**  
+A team uses a daily full-load pipeline to sync a 200M-row `transactions` table from MySQL to Snowflake. The sync takes 6 hours and misses hard DELETEs. Propose a CDC-based replacement architecture. What tool would you use, what is the target latency, and how do you handle the initial load?
 
 ---
 
-**Q9 (Scenario)**  
-You compress a 100 GB Parquet table with Gzip and get 18 GB on disk. You then compress the same data with Snappy and get 32 GB on disk. Your query reads only the `status` column. Which format results in a faster query and why? Does file size on disk directly determine query speed?
+**Q9 (Tricky)**  
+A CDC pipeline captures an `UPDATE` event and delivers it to the Silver table. Due to a network issue the event is delivered twice. The Silver MERGE runs twice on the same event. What must be true of the MERGE statement to ensure no data corruption? Write the MERGE in SQL.
 
 ---
 
@@ -117,30 +117,30 @@ What is time travel in Delta Lake? Give two real-world scenarios where time trav
 
 ---
 
-## Concept 5: Object Storage & Storage Tiers
+## Concept 5: Database Indexing & Query Optimisation
 
 **Q21 (Warm-up)**  
-What is object storage and how does it differ from a traditional file system? Why is it the foundation of modern data lakes?
+What is a database index? How does a B-tree index work and what types of queries does it accelerate?
 
 ---
 
 **Q22 (Conceptual)**  
-Explain the S3 storage classes (Standard, Standard-IA, Glacier, Deep Archive). How would you design a lifecycle policy for raw data that must be retained for 7 years but is only actively queried in the first 30 days?
+What is a covering index? How does it eliminate heap access and what are its trade-offs compared to a regular index?
 
 ---
 
 **Q23 (Scenario)**  
-Your Spark job reads 5 million small files from S3 (each ~10 KB, total 50 GB). It takes 2 hours to run even though the actual data processing should take 10 minutes. What is the root cause and what are your options?
+A PostgreSQL table `orders` has 80 million rows. A query `SELECT * FROM orders WHERE status = 'pending'` uses an index on `status` but the query planner ignores it and does a Seq Scan instead. Why might this happen? How would you fix it with a partial index?
 
 ---
 
 **Q24 (Tricky)**  
-S3 charges for API requests (PUT, GET, LIST) in addition to storage. A data lake with 10 million files runs 100 queries per day, each requiring a LIST of all files. Estimate the monthly API cost impact and explain how partitioning and table formats reduce it.
+What is the difference between a composite index `(a, b, c)` and three separate indexes on `(a)`, `(b)`, `(c)`? For which queries does order matter in a composite index?
 
 ---
 
 **Q25 (System design)**  
-Design the object storage layout for a data platform processing 1 TB/day across Bronze, Silver, and Gold layers. Include: bucket structure, folder naming convention, lifecycle policy, and access control strategy.
+You are indexing a 500M-row `events` table. Queries filter by `user_id` (10M distinct values) and `event_date` (daily, 3 years). Nightly bulk loads insert 2M rows. Design a complete indexing strategy: which indexes to create, in what order composite columns should be listed, and how to handle the bulk load performance impact.
 
 ---
 
@@ -215,30 +215,30 @@ What is HTAP (Hybrid Transactional/Analytical Processing)? Name two databases th
 
 ---
 
-## Concept 9: Serialisation Formats — Avro & Protobuf
+## Concept 9: Data Replication & Consistency Models
 
 **Q39 (Warm-up)**  
-Why is JSON not a good format for Kafka messages at high throughput? What are the two key advantages of Avro over JSON for streaming?
+What is replication lag and why does it matter for data pipelines that read from a read replica?
 
 ---
 
 **Q40 (Conceptual)**  
-What is a Schema Registry in the Kafka ecosystem? What problem does it solve and what happens if you remove it?
+Explain the CAP theorem. Why can you not have all three properties simultaneously? Give a real-world example of a CP system and an AP system used in data engineering.
 
 ---
 
 **Q41 (Scenario)**  
-A producer publishes Avro messages to a Kafka topic with schema version 1. A consumer is reading those messages with its own compiled schema version 1. The producer team deploys schema version 2 which removes a field that the consumer reads. What happens to the consumer? How does the Schema Registry prevent this?
+Your pipeline reads from a PostgreSQL read replica with a 30-second average lag. The incremental watermark query is `WHERE updated_at > :last_run`. A record is updated on the primary at 14:00:00. Your pipeline runs at 14:00:10. Is the update captured? What is the fix?
 
 ---
 
 **Q42 (Deep dive)**  
-Compare Avro and Protobuf for a microservice architecture where services are written in Python, Java, and Go. Which would you choose and why?
+What is the difference between ACID and BASE? Where does each model appear in a typical data platform (source database, message queue, data lake)?
 
 ---
 
 **Q43 (Tricky)**  
-In Avro, what is the difference between a union type and an optional field? Write an Avro schema snippet for a field `discount_pct` that is optional (may or may not be present) and defaults to null.
+S3 was historically eventually consistent — a LIST call after a PUT could miss the newly written object. Since December 2020 S3 is strongly consistent. Why does this matter for Delta Lake and Iceberg, and how did these table formats work around eventual consistency before the change?
 
 ---
 

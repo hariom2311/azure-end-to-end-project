@@ -90,68 +90,109 @@ Encoded column:    [0, 1, 0, 2, 0, 1, 0]
 
 ---
 
-## Concept 2: Data Compression
+## Concept 2: Change Data Capture (CDC)
 
-**Q6 — Why columnar storage compresses better**
+**Q6 — What CDC solves that timestamp-based incremental load cannot**
 
-In row-oriented storage, adjacent bytes on disk alternate between different columns with different types and distributions:
-```
-Row 1: [1001, C001, 120.50, completed]
-Row 2: [1002, C002, 45.00,  pending]
-```
-The byte stream alternates between integers, strings, floats, strings — no pattern for a compressor to exploit.
+A timestamp-based incremental load (`WHERE updated_at > :last_run`) has three critical blind spots:
 
-In columnar storage, adjacent bytes are all the same type and often similar values:
-```
-status column: completed, completed, pending, completed, completed, completed, cancelled...
-```
-Run-length encoding (RLE) replaces `completed, completed, completed, completed, completed` with `(completed, 5)`. The entire column collapses dramatically.
+1. **Hard DELETEs are invisible.** When a row is deleted, `updated_at` no longer exists — the row simply disappears. The downstream table never reflects the deletion.
+2. **Clock drift and lag.** If the source database clock is behind the pipeline clock, or if a replica has replication lag, updates that occurred "just before" the watermark are silently skipped.
+3. **No `updated_at` on all tables.** Many legacy tables do not have a reliable `updated_at` column, or it is not updated consistently by all write paths.
 
-An `order_status` column with 5 possible values across 1 billion rows might compress 50:1 with dictionary + RLE. The equivalent row in a row-oriented file cannot be compressed that way because adjacent bytes belong to different columns.
+**CDC captures all three change types — INSERT, UPDATE, DELETE — by reading the database's write-ahead log (WAL) rather than querying the table.** The WAL is the ground truth: every write is recorded there before it is applied to the data pages.
 
 ---
 
-**Q7 — Snappy vs. Gzip vs. Zstd**
+**Q7 — How log-based CDC works (WAL mechanics)**
 
-| Codec | Compression ratio | Speed | Best use |
-|---|---|---|---|
-| Snappy | ~2.5× | Very fast (multi-GB/s) | Default for active Parquet tables — balance of speed and size |
-| Gzip | ~4–6× | Slow (100–300 MB/s) | Cold storage, external delivery where size matters more than query speed |
-| Zstd | ~4–5× | Fast (500 MB/s–1 GB/s, tunable) | Modern best practice — level 3 matches Gzip ratio at near-Snappy speed |
+Every production relational database uses a Write-Ahead Log for crash recovery. Before any change is applied to data pages, it is first written to the WAL with full before/after images.
 
-**Rule of thumb:** Use Zstd for new tables. Use Snappy if your toolchain does not yet support Zstd. Use Gzip only for archival/exchange files that are rarely queried.
+**Why reading the WAL has near-zero production impact:**
+- The WAL is always written regardless — CDC just reads it as a secondary consumer
+- Reading a log file (sequential I/O) does not lock any table rows
+- The database exposes a **replication slot** (PostgreSQL) or **binlog** (MySQL): a stable cursor that CDC tools read at their own pace
+- The source database does not execute any additional queries for CDC — it merely ships WAL records to the reader
 
----
-
-**Q8 — Spark job using only 1 executor with Gzip CSV**
-
-**Root cause:** Gzip is not splittable. Spark cannot divide the file into blocks for parallel processing. Regardless of the number of executors requested, the entire file must be read by a single task on a single executor.
-
-**Fix:** Decompress and convert to Parquet:
-```python
-df = spark.read.csv("s3://bucket/data.csv.gz", header=True, inferSchema=True)
-df.repartition(200).write.parquet("s3://bucket/data_parquet/")
+**Debezium workflow:**
+```
+MySQL binlog → Debezium connector (runs in Kafka Connect) → Kafka topic (one event per row change) → consumer (Spark Structured Streaming / Flink)
 ```
 
-Now the Parquet files are independently readable, Spark assigns one file (or row group) per task, and all executors are used.
-
-**Alternative (if you must keep compression):** Use bzip2 — it is splittable (each bzip2 stream within the file is independent). But Parquet+Snappy is still superior for analytics.
+Each CDC event contains: `op` (c/u/d), `before` (old row image), `after` (new row image), `ts_ms` (commit timestamp), `pos` (log position for exactly-once resumption).
 
 ---
 
-**Q9 — Gzip (18 GB) vs. Snappy (32 GB) Parquet — which is faster to query?**
+**Q8 — CDC-based replacement for a 6-hour full-load pipeline**
 
-**It depends on the I/O vs. CPU trade-off — but for most cloud workloads, Snappy is faster.**
+**Current pain:** 200M-row full load takes 6 hours, misses hard DELETEs, and hammers the source DB with a giant SELECT.
 
-Query: reads only the `status` column.
+**Proposed architecture:**
 
-- **Gzip (18 GB on disk):** Less data to transfer from S3. But Gzip decompression is CPU-intensive and single-threaded per block. After reading the status column chunk (much smaller than 18 GB), you still pay the decompression CPU cost.
+```
+MySQL → Debezium (Kafka Connect) → Kafka topic: orders.cdc
+                                         ↓
+                              Spark Structured Streaming (or Flink)
+                                         ↓
+                         Snowflake Silver table (via MERGE)
+```
 
-- **Snappy (32 GB on disk):** More data to transfer from S3. But Snappy decompression is extremely fast (several GB/s) and parallelises well. The column read is fast end-to-end.
+**Steps:**
 
-**In cloud environments:** S3 → compute network bandwidth is typically 10–25 Gbps, and compute CPU is plentiful. The bottleneck is usually decompression CPU, not bandwidth. Snappy wins because its fast decompression more than compensates for slightly more data transferred.
+1. **Initial snapshot (one-time):** Debezium performs a consistent snapshot read of the full `transactions` table and publishes every row as a `c` (create) event. This happens once, during the transition.
 
-**File size on disk does not directly determine query speed** — you must also account for decompression overhead, parallelism, and whether predicate pushdown eliminates whole row groups before any decompression occurs.
+2. **Ongoing CDC:** After the snapshot, Debezium tails the MySQL binlog. Only changed rows are published. At 5% daily change rate on 200M rows → 10M events/day vs. 200M rows re-read.
+
+3. **Silver MERGE:** The consumer applies events using MERGE (match on `transaction_id`): INSERT for `op=c`, UPDATE for `op=u`, DELETE for `op=d`.
+
+**Target latency:** < 30 seconds from source commit to Silver table (Kafka buffer + streaming micro-batch).
+
+**DELETEs:** Now fully captured — `op=d` events carry the `before` image so you know exactly which row was deleted and can optionally soft-delete (set `is_deleted = true`) for audit trails.
+
+---
+
+**Q9 — Idempotent MERGE for duplicate CDC events**
+
+**Requirement:** The MERGE must be idempotent — running it twice on the same event must produce the same result as running it once.
+
+For a duplicate `UPDATE` event with the same `after` image: re-applying a MERGE that sets `status = 'completed'` when it is already `'completed'` leaves the row unchanged. This is naturally idempotent for UPDATEs.
+
+For `INSERT` events: if the row already exists (from the first delivery), the MERGE matches on the primary key and updates instead of inserting — no duplicate row.
+
+```sql
+MERGE INTO silver.orders AS target
+USING (
+  SELECT
+    after.order_id,
+    after.customer_id,
+    after.amount,
+    after.status,
+    after.updated_at,
+    op,
+    event_ts
+  FROM cdc_staging
+) AS source
+ON target.order_id = source.order_id
+WHEN MATCHED AND source.op IN ('u', 'r') THEN
+  UPDATE SET
+    target.customer_id  = source.customer_id,
+    target.amount       = source.amount,
+    target.status       = source.status,
+    target.updated_at   = source.updated_at,
+    target._cdc_ts      = source.event_ts
+WHEN MATCHED AND source.op = 'd' THEN
+  UPDATE SET target._is_deleted = TRUE,
+             target._deleted_at  = source.event_ts
+WHEN NOT MATCHED AND source.op IN ('c', 'r') THEN
+  INSERT (order_id, customer_id, amount, status, updated_at, _cdc_ts)
+  VALUES (source.order_id, source.customer_id, source.amount,
+          source.status, source.updated_at, source.event_ts);
+```
+
+**Key idempotency properties:**
+- `WHEN MATCHED ... UPDATE SET` is a pure assignment — applying the same values twice is identical to applying once
+- No INSERT when the row already exists — the MATCHED branch fires instead
+- To handle out-of-order duplicates, add: `AND source.event_ts > target._cdc_ts` to the MATCHED condition so stale re-deliveries do not overwrite newer data
 
 ---
 
@@ -362,126 +403,159 @@ A regulator asks "what was the revenue reported on January 31st?" Even if the ta
 
 ---
 
-## Concept 5: Object Storage & Storage Tiers
+## Concept 5: Database Indexing & Query Optimisation
 
-**Q21 — Object storage vs. traditional file system**
+**Q21 — What is a B-tree index and what queries does it accelerate**
 
-**Traditional file system (POSIX):** Hierarchical directories, in-place file modification, strong consistency, limited to one server (or distributed via NFS). Storage and compute are on the same machine.
+A B-tree (Balanced Tree) index is the default index type in PostgreSQL, MySQL, and most relational databases. It stores a sorted copy of the indexed column(s) in a tree structure where each internal node contains keys and pointers to child nodes.
 
-**Object storage (S3/GCS/ADLS):**
-- Flat namespace: objects are identified by a string key (path is just part of the key)
-- Immutable objects: cannot edit in-place; must write a new object with the same key (replaces the old)
-- Infinite horizontal scale: no capacity limits
-- Globally accessible via HTTP/HTTPS
-- Decoupled from compute: Spark running anywhere can read S3
-- 99.999999999% durability (11 nines)
+**How it works:**
+- The root node contains keys that split the value space into ranges
+- Each level narrows the search: a lookup traverses `O(log N)` nodes from root to leaf
+- Leaf nodes contain the actual indexed values and a pointer (heap tuple ID / row pointer) to the physical row
 
-**Why it is the data lake foundation:**
-- Virtually unlimited capacity at low cost
-- Decoupled compute: pay for storage and compute independently
-- Any compute engine (Spark, Athena, Trino) can read the same data
-- Managed service: no infrastructure to operate
+**Queries it accelerates:**
+- **Equality:** `WHERE status = 'pending'` — tree traversal to the exact value, then follow heap pointer
+- **Range:** `WHERE order_date BETWEEN '2024-01-01' AND '2024-01-31'` — find start, scan leaves sequentially (leaves are doubly linked)
+- **Prefix search:** `WHERE name LIKE 'John%'` — tree narrows to the 'John' prefix range
+- **ORDER BY / GROUP BY** on the indexed column — data is pre-sorted, eliminating sort step
+- **MIN / MAX** — the leftmost / rightmost leaf is the answer; no full scan
 
----
-
-**Q22 — S3 storage classes and lifecycle policy for 7-year raw data retention**
-
-| Class | Cost/GB/month | Retrieval latency | Minimum duration |
-|---|---|---|---|
-| Standard | $0.023 | Milliseconds | None |
-| Standard-IA | $0.0125 | Milliseconds | 30 days |
-| Glacier Instant Retrieval | $0.004 | Milliseconds | 90 days |
-| Glacier Flexible Retrieval | $0.0036 | Minutes–hours | 90 days |
-| Deep Archive | $0.00099 | Hours | 180 days |
-
-**Lifecycle policy for raw data (active first 30 days, retained 7 years):**
-```
-Day 0:   Standard          (active querying during first 30 days)
-Day 31:  → Standard-IA     (occasional debugging, millisecond access still needed)
-Day 91:  → Glacier IR      (very rare access, still need fast retrieval for compliance)
-Day 366: → Glacier Flexible (annual compliance reviews only; hours acceptable)
-Day 730: → Deep Archive    (7-year legal hold; almost never accessed)
-```
-
-Enable **S3 Object Lock** in compliance mode to prevent deletion before the 7-year mark.
+**Queries it does NOT help:**
+- `WHERE name LIKE '%John%'` (leading wildcard — no prefix to use)
+- `WHERE amount + tax > 100` (function on the column — value is not stored)
+- Full-table aggregates with no filter
 
 ---
 
-**Q23 — 5 million small files, 2-hour Spark job for 50 GB**
+**Q22 — What is a covering index and how does it eliminate heap access**
 
-**Root cause: The small files problem — metadata overhead dominates compute time.**
+A **covering index** is an index that contains all columns required by a query — so the database can answer the query entirely from the index without touching the actual table (heap).
 
-With 5 million files at 10 KB each:
-1. Spark's driver must **LIST** all files → millions of S3 API calls → minutes just to discover what to read
-2. Each Spark task reads one file (10 KB). Task overhead (scheduler, serialisation, task launch) takes ~100ms per task. With 5 million tasks: 5M × 100ms = 139 hours of task overhead (not parallelised — only N executors run at once)
-3. After listing, the driver holds metadata for 5M files in memory → potential OOM on the driver
+**Normal index lookup (two I/Os per row):**
+1. Traverse B-tree → find index entry → get heap tuple ID
+2. Follow heap tuple ID → read the actual data page in the table
 
-**Options:**
-1. **Compact immediately:** Run a one-time Spark job to merge small files into 128 MB–1 GB Parquet files
-2. **Use Delta Lake OPTIMIZE:** `OPTIMIZE table_name` rewrites small files into target file sizes
-3. **Fix the root cause at write time:** If the small files are produced by a streaming job, configure the writer to write larger files (micro-batch with larger trigger interval, `maxRecordsPerFile` setting)
-4. **Use a table format with file tracking:** Delta Lake / Iceberg only LIST the metadata (transaction log), not all S3 files — dramatically faster file discovery
+**Covering index (one step, index only):**
+1. Traverse B-tree → all required columns are in the index → return directly
+
+```sql
+-- Query that reads order_id, status, amount
+SELECT order_id, amount FROM orders WHERE status = 'pending';
+
+-- Regular index on (status) -- reads the index, then the heap for each row
+CREATE INDEX idx_orders_status ON orders (status);
+
+-- Covering index -- all three columns in the index; heap is never touched
+CREATE INDEX idx_orders_status_covering ON orders (status) INCLUDE (order_id, amount);
+-- PostgreSQL syntax; MySQL uses: CREATE INDEX ... ON orders (status, order_id, amount)
+```
+
+**Trade-offs:**
+- Covering indexes are larger (they store more column data)
+- They must be updated on every INSERT/UPDATE/DELETE that touches any of the included columns
+- Best for high-frequency, read-heavy queries where the heap I/O is the bottleneck
 
 ---
 
-**Q24 — S3 API cost with 10 million files**
+**Q23 — Query planner ignores index on `status`, uses Seq Scan instead**
 
-**Calculation:**
-- 100 queries/day, each LIST-ing 10 million files
-- LIST returns 1,000 objects per request → 10,000 LIST calls per query
-- 100 queries × 10,000 LIST calls = 1,000,000 LIST calls/day
-- S3 LIST cost: $0.005 per 1,000 calls
-- Daily cost: 1,000,000 / 1,000 × $0.005 = $5/day
-- Monthly: ~$150/month just from LIST calls on 10M files
+**Root cause: Low cardinality combined with a non-selective filter.**
 
-**Plus GET costs:** each query reads many files → millions of GET calls/day.
+If `status = 'pending'` matches 60% of the 80 million rows, the query planner calculates:
+- Index path: traverse B-tree, follow 48 million heap tuple pointers (random I/O to 48M rows)
+- Seq Scan path: read the entire table sequentially (one pass, sequential I/O)
 
-**How partitioning reduces it:**
-- With daily partitioning: each query lists only the relevant partition directory (e.g., one day = 10,000 files instead of 10M)
-- LIST calls per query: 10,000/1,000 = 10 LIST calls vs. 10,000
-- 1,000× reduction in LIST API costs
+Sequential I/O is ~10–100× faster than random I/O on spinning disks, and even on SSDs the planner's cost model often prefers Seq Scan when >5–15% of rows match — because random heap lookups generate cache misses.
 
-**How table formats reduce it further:**
-- Delta Lake / Iceberg read a transaction log (a few small files) to discover which data files belong to the table
-- No need to LIST S3 at all for file discovery — the log is authoritative
-- Only one GET per log file, not one GET per data file
+**Fix with a partial index:**
+
+```sql
+-- Index only the rows where status = 'pending' (the selective minority)
+CREATE INDEX idx_orders_pending ON orders (order_id)
+WHERE status = 'pending';
+```
+
+Now the index contains only the ~0.5% of rows that are actually `pending` (not `completed` or `cancelled`). The planner sees that the index covers a small fraction → random I/O for a tiny set → index scan wins.
+
+**When the planner statistics are stale:** Run `ANALYZE orders;` to refresh column statistics. A stale `pg_statistic` estimate that says 5% match when really 60% match will cause wrong plan choices.
 
 ---
 
-**Q25 — Object storage layout for 1 TB/day platform**
+**Q24 — Composite index `(a, b, c)` vs. three separate indexes**
 
+**Composite index `(a, b, c)`:**
+- The sort order is: first by `a`, then by `b` within each `a` group, then by `c` within each `(a, b)` group
+- The **left-prefix rule**: the index can be used for queries filtering on `a`, `(a, b)`, or `(a, b, c)`. It cannot be used for `b` alone or `c` alone (no leading `a`)
+- One index → one B-tree → compact, fast updates
+
+**Three separate indexes on `(a)`, `(b)`, `(c)`:**
+- Each query on `a` alone, `b` alone, or `c` alone can use its respective index
+- For a query on `WHERE a = 1 AND b = 2`, the planner might use **bitmap index scan** (combine results from both indexes with AND) — but this is slower than a single composite index for the combined predicate
+
+**Column order matters in a composite index:**
+
+```sql
+-- Query 1: WHERE user_id = 123 AND event_date = '2024-01-15'
+-- Query 2: WHERE user_id = 123 (no date filter)
+
+-- Good order (user_id first):
+CREATE INDEX idx_events_uid_date ON events (user_id, event_date);
+-- Supports both Query 1 and Query 2 (left-prefix rule)
+
+-- Bad order (event_date first):
+CREATE INDEX idx_events_date_uid ON events (event_date, user_id);
+-- Supports Query 1 and queries filtering by event_date alone
+-- Does NOT support Query 2 (user_id is not a left-prefix here)
 ```
-s3://company-datalake/
-├── bronze/
-│   ├── orders/
-│   │   └── year=2024/month=01/day=15/
-│   │       └── part-001.json.gz
-│   ├── customers/
-│   └── payments/
-├── silver/
-│   ├── orders/
-│   │   └── order_date=2024-01-15/
-│   │       └── part-001.parquet
-│   └── customers/
-│       └── country=AU/year=2024/month=01/
-│           └── part-001.parquet
-└── gold/
-    ├── revenue_summary/
-    │   └── report_date=2024-01-15/
-    │       └── part-001.parquet
-    └── customer_ltv/
-        └── part-001.parquet
+
+**Rule:** Put the most selective column that appears in equality filters first. Put range-filter columns (`BETWEEN`, `>`, `<`) last.
+
+---
+
+**Q25 — Indexing strategy for a 500M-row events table with nightly bulk loads**
+
+**Table:** `events(user_id, event_date, event_type, payload, ...)`
+- 10M distinct `user_id` values (high cardinality)
+- `event_date`: daily, 3 years of history
+- Nightly bulk load: 2M rows inserted
+
+**Index design:**
+
+```sql
+-- Primary access pattern: user_id + event_date range queries
+CREATE INDEX idx_events_uid_date ON events (user_id, event_date);
+-- Supports: WHERE user_id = ? AND event_date >= ? AND event_date <= ?
+-- user_id first (equality, high cardinality) → event_date second (range)
+
+-- If event_type queries are also frequent:
+CREATE INDEX idx_events_uid_type_date ON events (user_id, event_type, event_date);
+-- Supports: WHERE user_id = ? AND event_type = 'click' AND event_date >= ?
 ```
 
-**Lifecycle policy:**
-- Bronze: Standard → IA (30d) → Glacier (90d) → Deep Archive (365d)
-- Silver: Standard → IA (90d) → Glacier (730d)
-- Gold: Standard → IA (365d)
+**Handling the nightly bulk load performance impact:**
 
-**Access control:**
-- Bronze: read only for DE team (IAM role), no analyst access (raw PII)
-- Silver: read for analysts + DE; write only for DE pipeline role
-- Gold: read for all authenticated users; write only for pipeline role
+Indexes slow INSERT performance because each insert must update every index B-tree. For 2M rows, this is significant.
+
+```sql
+-- Approach 1: DROP index before bulk load, recreate after (fastest)
+DROP INDEX CONCURRENTLY idx_events_uid_date;
+-- ... bulk INSERT 2M rows ...
+CREATE INDEX CONCURRENTLY idx_events_uid_date ON events (user_id, event_date);
+-- CONCURRENTLY avoids table lock; takes longer but doesn't block reads
+
+-- Approach 2: Disable autovacuum + fill factor tuning (PostgreSQL)
+ALTER TABLE events SET (autovacuum_enabled = false);
+-- bulk load
+ALTER TABLE events SET (autovacuum_enabled = true);
+ANALYZE events;
+
+-- Approach 3: Partition by event_date (best long-term)
+-- Each nightly partition (one day) is a separate table
+-- Only the current day's partition has insert pressure; indexes on older partitions are static
+```
+
+**Partition-local indexes:** With range partitioning by `event_date`, each partition has its own smaller index. Nightly inserts only update the current partition's index — the 3 years of historical index B-trees are untouched.
 
 ---
 
@@ -706,96 +780,139 @@ HTAP (Hybrid Transactional/Analytical Processing) databases handle both OLTP and
 
 ---
 
-## Concept 9: Serialisation Formats
+## Concept 9: Data Replication & Consistency Models
 
-**Q39 — Why JSON is poor for Kafka at high throughput**
+**Q39 — What is replication lag and why does it matter for pipelines reading from a read replica**
 
-**Problem 1 — Size:** JSON stores field names in every message:
-```json
-{"order_id": 1001, "customer_id": "C001", "amount": 120.50, "status": "completed"}
+**Replication lag** is the delay between a write being committed on the primary database and that write becoming visible on a read replica. It exists because replicas apply changes asynchronously — the primary does not wait for replicas to confirm before acknowledging the write to the application.
+
+**Why it matters for data pipelines:**
+
+A pipeline that reads from a replica using an incremental watermark (`WHERE updated_at > :last_run`) can silently miss records if the lag exceeds the pipeline's run window:
+
 ```
-Field names (`order_id`, `customer_id`, etc.) repeat in every message — for 1 million messages, "order_id" is written 1 million times. In Avro, field names are in the schema (stored once); the message contains only values.
-
-**Problem 2 — No schema enforcement:** Any JSON is valid. A producer typo (`"amout"` instead of `"amount"`) produces a message that parsers silently ignore or crash on.
-
-**Avro advantages over JSON:**
-1. **Compact binary encoding:** 3–10× smaller messages; field names not repeated in data
-2. **Schema enforcement:** Invalid messages are rejected at the producer before they reach the topic
-
----
-
-**Q40 — Schema Registry**
-
-A **Schema Registry** (Confluent Schema Registry, AWS Glue Schema Registry) is a centralised service that stores versioned schemas and enforces compatibility rules.
-
-**Problem it solves:** In a distributed system, producers evolve schemas (add fields, remove fields). Without a registry, consumers break silently when they receive a message with an unexpected schema.
-
-**How it works:**
-1. Producer registers its schema before first publish — gets a schema ID
-2. Each message is prefixed with the schema ID (4 bytes)
-3. Consumer fetches the schema for that ID from the registry and deserialises correctly
-4. Registry enforces compatibility: if producer tries to register an incompatible schema, the registration is **rejected**
-
-**Without a registry:**
-- No enforcement — incompatible schemas publish successfully
-- Consumers receive messages they cannot parse → crashes or silent data corruption
-- No audit trail of schema changes
-
----
-
-**Q41 — Consumer breaks when producer removes a field**
-
-**What happens:** Consumer has schema v1 (includes `status` field). Producer now publishes schema v2 (without `status`). The consumer tries to deserialise a v2 message expecting `status` → field not found → depends on configuration: may throw a `DeserializationException` or silently return null.
-
-**How Schema Registry prevents this:**
-1. Producer tries to register schema v2 (without `status`) under `BACKWARD` compatibility mode
-2. Registry checks: can schema v2 read data written with schema v1? No — v1 has `status`, v2 does not (consumers on v1 cannot read v2 messages)
-3. Registry **rejects** the schema registration with a compatibility error
-4. The producer cannot publish under v2 until it fixes the compatibility violation (add a default for `status` in v2, or switch to `NONE` mode — which removes enforcement)
-
----
-
-**Q42 — Avro vs. Protobuf for Python, Java, Go microservices**
-
-**Recommendation: Protobuf** for a multi-language microservice architecture.
-
-**Reasons:**
-- First-class code generation for Python, Java, Go, Rust, C++, C#, JavaScript — all from a single `.proto` file
-- More compact binary encoding than Avro (~10–30% smaller messages)
-- Field numbers (not names) are stable identifiers — renaming a field in the `.proto` is non-breaking as long as the number is unchanged
-- gRPC (the dominant inter-service RPC framework) is built on Protobuf — your service APIs and your data serialisation use the same format
-
-**Where Avro wins:**
-- Kafka-native ecosystem: the Confluent Schema Registry has deeper Avro support, and most Kafka tooling (Kafka Connect, ksqlDB) defaults to Avro
-- Self-describing files: Avro embeds the full schema in the file header — files are readable without a separate schema file; important for data lake landing zones
-- If your team already uses Confluent Platform (Kafka + Schema Registry), Avro is the natural choice
-
----
-
-**Q43 — Avro union type vs. optional field**
-
-In Avro, there is no "optional" keyword. An optional field is represented as a **union type** with `null`:
-
-```json
-{
-  "name": "discount_pct",
-  "type": ["null", "double"],
-  "default": null
-}
+Timeline:
+  14:00:00  Record updated on primary
+  14:00:10  Pipeline runs, queries replica: "give me rows updated after 13:59:00"
+  14:00:10  Replica is 30 seconds behind → sees rows only up to 13:59:40
+  14:00:10  The 14:00:00 update is NOT YET on the replica → missed
+  14:00:30  Replica finally applies the update — but pipeline already moved watermark
+  → Record is permanently skipped
 ```
 
-- `["null", "double"]` means the field can be either null or a double
-- `"default": null` means: if a message is read that does not include this field (backwards compatibility), use `null` as the default
-- The `null` type must come **first** in the union when the default is null (Avro requires the default to match the first type in the union)
+**Fixes:**
+1. Add a **lag buffer** to the watermark: `WHERE updated_at > :last_run AND updated_at < NOW() - INTERVAL '60 seconds'`
+2. Read from the **primary** for critical pipelines (at the cost of added load)
+3. Monitor `pg_stat_replication.write_lag` / `replay_lag` and alert when lag exceeds threshold
 
-**Union type for non-null alternatives:**
-```json
-{
-  "name": "order_id",
-  "type": ["int", "string"]
-}
+---
+
+**Q40 — CAP theorem: why you cannot have all three properties simultaneously**
+
+The CAP theorem states that a distributed system can guarantee at most two of:
+- **C**onsistency — every read returns the most recent write (or an error)
+- **A**vailability — every request receives a response (no errors, possibly stale)
+- **P**artition tolerance — the system continues operating when network partitions split nodes
+
+**Why all three are impossible:** When a network partition occurs, nodes on either side cannot communicate. To remain Available, each partition must serve responses — but without coordination they may serve stale data, violating Consistency. To remain Consistent, a partitioned node must refuse to serve stale data — but then it is not Available.
+
+Since network partitions are inevitable in any distributed system, the real trade-off is **CP vs AP**:
+
+| | CP example | AP example |
+|---|---|---|
+| Database | PostgreSQL (primary stops accepting writes if it loses quorum) | Cassandra (every node accepts writes; eventual consistency) |
+| Data engineering | HBase (ZooKeeper-coordinated, refuses reads during partition) | DynamoDB (serves stale reads, resolves conflicts later) |
+| Message queue | Kafka with `min.insync.replicas=2` (write fails if replicas unavailable) | Kafka with `acks=1` (primary acknowledges, replica may lag) |
+
+**Practical data engineering choice:** Most data lakes and analytics systems choose **AP** — serving a slightly stale dashboard is acceptable; returning an error is not. Transactional systems (payments, inventory) choose **CP** — stale reads cause real-world harm.
+
+---
+
+**Q41 — Replica lag scenario: is the 14:00:00 update captured?**
+
+**Setup:** Read replica, 30-second average lag. Pipeline runs at 14:00:10. Watermark: `WHERE updated_at > :last_run`.
+
+**Answer: No, the update is NOT captured.**
+
+- Record updated on primary at 14:00:00
+- Pipeline runs at 14:00:10 → queries replica
+- Replica is 30 seconds behind → has applied changes up to ~13:59:40
+- The 14:00:00 update does not yet exist on the replica
+- Pipeline moves its watermark to 14:00:10
+- At 14:00:30 the replica applies the update — but the watermark has already passed → permanently missed
+
+**Fix — lag-aware watermark with buffer:**
+
+```sql
+-- Instead of:
+WHERE updated_at > :last_run_timestamp
+
+-- Use:
+WHERE updated_at > :last_run_timestamp
+  AND updated_at < NOW() - INTERVAL '60 seconds'
+  -- "don't capture anything from the last 60 seconds — let replication catch up"
 ```
-This means `order_id` can be either an int or a string — less common, but valid for heterogeneous sources.
+
+This creates a 60-second "closed window": the pipeline only captures records that are old enough to have replicated. The next pipeline run will pick up the records that were too recent in the previous run.
+
+**Monitoring the lag:**
+```sql
+-- PostgreSQL: check current replica lag
+SELECT client_addr,
+       write_lag,
+       flush_lag,
+       replay_lag
+FROM pg_stat_replication;
+-- Alert if replay_lag > 30 seconds before pipeline runs
+```
+
+---
+
+**Q42 — ACID vs. BASE: where each model appears in a data platform**
+
+| Property | ACID | BASE |
+|---|---|---|
+| Full form | Atomicity, Consistency, Isolation, Durability | Basically Available, Soft state, Eventually consistent |
+| Guarantee | Every transaction is complete and consistent or fully rolled back | System is available; data may be stale; will converge to consistency eventually |
+| Trade-off | Lower throughput, higher latency (locking, coordination) | Higher throughput, lower latency (no cross-node coordination) |
+
+**Where ACID appears in a data platform:**
+
+- **Source OLTP database** (PostgreSQL, MySQL): the system of record — every order, payment, or user action must be fully atomic and durable
+- **Delta Lake / Iceberg / Hudi** on the data lake: these table formats add ACID transactions on top of object storage — critical for ensuring a failed write does not leave a corrupted table visible to readers
+
+**Where BASE appears in a data platform:**
+
+- **Message queues** (Kafka): at-least-once delivery — a message may be delivered twice; consumers must handle duplicates (idempotent writes)
+- **DynamoDB / Cassandra** as a serving store: eventual consistency is acceptable for leaderboard reads, feature store lookups, and recommendation serving where sub-millisecond latency matters more than perfect freshness
+- **S3 Bronze layer** (historically): before December 2020, S3 was eventually consistent — a file might not be immediately visible after a PUT; pipelines had to handle this with retries
+
+**The practical rule for data engineers:** Use ACID for writes that must not be partially applied (Silver/Gold table writes via Delta Lake MERGE). Accept BASE semantics for high-throughput message consumption, and design consumers to be idempotent.
+
+---
+
+**Q43 — S3 eventual consistency before December 2020 and the impact on Delta Lake / Iceberg**
+
+**The historical problem:**
+
+Before December 2020, S3 was eventually consistent for LIST operations and overwrites:
+- You write `part-001.parquet` to S3
+- A LIST call immediately after might return an empty result (the object had not yet propagated through S3's metadata layer)
+- A GET on a newly overwritten object might return the old version for a few seconds
+
+**Why this was dangerous for table formats:**
+
+Delta Lake and Iceberg work by writing new data files and then atomically updating the transaction log / metadata file to point to those files. If S3 did not immediately return the new data file in a LIST response, a reader that validated the file list would see a file referenced by the log but not returned by LIST — causing a read error or silent data skip.
+
+**How Delta Lake worked around eventual consistency (pre-2020):**
+1. **Log-based file tracking:** Delta Lake never relied on S3 LIST to discover files — the `_delta_log` was the authoritative file list. Readers only listed the log directory, not the data directory.
+2. **Write ordering:** Data files were written first and fully durable before the log commit was written. Even if a reader briefly could not LIST the data file, the log commit guaranteeing its existence would not yet be visible either.
+3. **Retry with backoff:** The Delta Lake client retried LIST and GET operations with exponential backoff to handle transient inconsistencies.
+
+**After December 2020 (strong consistency for S3):**
+- Every PUT, DELETE, and LIST is immediately consistent — a file is visible in LIST as soon as the PUT returns success
+- Delta Lake and Iceberg no longer need eventual-consistency workarounds for S3
+- This enabled simpler implementations and removed an entire class of subtle read-after-write bugs
 
 ---
 
