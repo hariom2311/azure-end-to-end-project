@@ -17,32 +17,32 @@ What is the "grain" of a fact table and why must you define it before designing 
 ---
 
 **Q3 (Conceptual)**  
-What is the difference between a Star Schema and a Snowflake Schema? Which would you choose for a BI analytics layer and why?
+What is the difference between a Star Schema and a Snowflake Schema? Which would you recommend for a BI analytics layer and why?
 
 ---
 
 **Q4 (Scenario)**  
-A data engineer builds a `fact_sales` table with grain at the order header level (one row = one order). An analyst asks: "What is the average revenue per product category?" The engineer says this query is impossible with the current model. Why? What grain change fixes it?
+A data engineer builds a `fact_sales` table at the order header grain (one row = one order). An analyst asks: "What is the revenue per product category?" Why is this impossible with the current grain? What change fixes it?
 
 ---
 
-**Q5 (Scenario)**  
-You are designing a fact table for a ride-sharing platform. Each trip has: a driver, a rider, a pickup location, a dropoff location, a start time, an end time, a fare, and a rating. Define the grain and list which columns go in the fact table vs. which go in dimension tables.
+**Q5 (Tricky)**  
+What are the three types of fact tables — Transaction, Periodic Snapshot, and Accumulating Snapshot? Give a concrete example of each from a logistics or supply chain domain.
 
 ---
 
 **Q6 (Tricky)**  
-What is a "conformed dimension"? Why is it important when an organisation has multiple star schemas (e.g., one for sales, one for marketing, one for logistics)?
+What is a surrogate key and why does a star schema use surrogate keys instead of business keys as primary keys on dimension tables? Give two specific scenarios where a business key would fail.
 
 ---
 
-**Q7 (Tricky)**  
-What are the three types of fact tables (Transaction, Periodic Snapshot, Accumulating Snapshot)? Give a concrete example from a logistics domain for each type.
+**Q7 (Deep dive)**  
+What is a conformed dimension and why does it matter when an organisation has multiple star schemas (e.g., one for sales, one for marketing, one for logistics)?
 
 ---
 
-**Q8 (Deep dive)**  
-What is a surrogate key and why does a dimensional model use surrogate keys instead of business keys as the primary key on dimension tables?
+**Q8 (System design)**  
+Design a fact table for a ride-sharing platform. Each trip has a driver, a rider, a pickup location, a dropoff location, a start time, a fare, and a rating. Define the grain, list which columns belong in the fact vs. dimension tables, and identify any role-playing dimensions.
 
 ---
 
@@ -54,164 +54,164 @@ What problem does SCD Type 2 solve that SCD Type 1 cannot?
 ---
 
 **Q10 (Conceptual)**  
-Describe the mechanics of implementing SCD Type 2. What columns must be added to the dimension table? How does a fact table join correctly to a Type 2 dimension?
+Describe the full mechanics of SCD Type 2. What columns must be added? How does the fact table join correctly to a Type 2 dimension?
 
 ---
 
 **Q11 (Scenario)**  
-A sales report shows that Alice (customer C001) generated $450 in Q1. In April, Alice moves from Sydney to Melbourne. An analyst runs the same Q1 report in May and now sees $450 attributed to Melbourne. Which SCD type was used and what was the consequence? What type should have been used?
+A Q1 sales report was run in February and showed Alice (C001) generated $450 in Sydney. Alice moved to Melbourne in April. The same Q1 report run in May now shows $450 attributed to Melbourne. Which SCD type was used and what was the consequence? What type should have been used?
 
 ---
 
 **Q12 (Scenario)**  
-You have a `dim_product` table with SCD Type 2. A product changes its category from "Electronics" to "Computers" on March 15. You have 500M rows of `fact_sales` going back 5 years. After the SCD Type 2 update, how does a query `WHERE product_category = 'Electronics'` behave for pre-March and post-March sales?
+A product changes its category from "Electronics" to "Computers" on March 15. You have 500M rows of `fact_sales` going back 5 years. After applying SCD Type 2, how does a query `WHERE product_category = 'Electronics'` behave for pre-March vs. post-March sales? How many fact rows are touched?
 
 ---
 
 **Q13 (Tricky)**  
-A customer changes their email address three times in one year. How does SCD Type 2 handle this? What does `dim_customer` look like after three changes? How many rows does the customer have?
+A customer changes their email address three times in one year. How does `dim_customer` look after all three changes? How many rows does this customer have? How does the fact table remain correct?
 
 ---
 
 **Q14 (Tricky)**  
-What is the risk of using the natural surrogate key pattern `valid_to = '9999-12-31'` to mark the current row? What is an alternative approach and what are its trade-offs?
+What is the risk of using `valid_to = '9999-12-31'` as a sentinel for the current row? What is an alternative approach and what are the trade-offs?
 
 ---
 
 **Q15 (System design)**  
-Design a dbt model that implements SCD Type 2 on a `customers` source table. The source is a daily full extract (all current customer rows). Describe the logic in pseudocode: how do you detect new records, changed records, and unchanged records?
+You receive a daily full extract of the `customers` table (all current rows, no history included). Describe the logic — in pseudocode or SQL — of a pipeline that implements SCD Type 2 from this daily snapshot. How do you detect new, changed, and unchanged records?
 
 ---
 
-## Concept 3: Data Vault Modelling
+## Concept 3: Normalisation, Normal Forms & Denormalisation Trade-offs
 
 **Q16 (Warm-up)**  
-Name the three building blocks of a Data Vault model and describe in one sentence what each stores.
+What is the difference between 1NF, 2NF, and 3NF? Give one example violation for each.
 
 ---
 
 **Q17 (Conceptual)**  
-Why does Data Vault use a hash key (MD5 or SHA-1 of the business key) rather than a database-generated surrogate key (SERIAL / IDENTITY)?
+Why are OLTP databases typically designed in 3NF, but analytical databases deliberately violate it? What is the cost of 3NF for analytical queries?
 
 ---
 
 **Q18 (Scenario)**  
-Your company acquires another business. The acquired company has a customer database. Some customers exist in both systems. In a dimensional model, how would you handle this? In a Data Vault, what specific construct handles cross-system identity resolution?
+A staging table has these columns: `(order_id, product_id, product_name, category, quantity, store_id, store_city)`. The primary key is `(order_id, product_id)`. Identify all 2NF and 3NF violations and write the corrected schema.
 
 ---
 
 **Q19 (Conceptual)**  
-What is a `hash_diff` column in a Data Vault satellite and why is it important for performance?
+What is a transitive dependency? Give an example from an e-commerce schema and explain which normal form it violates.
 
 ---
 
 **Q20 (Tricky)**  
-A Data Vault hub stores the business key from the source system. A source system changes its primary key format (from numeric IDs to UUIDs). How does this affect the Data Vault, specifically the hub and its hash key? What do you do with the existing rows?
+A dimension table `dim_product` has columns `(product_id, product_name, category, subcategory, brand, brand_country)`. Is this table in 3NF? Identify the violation and explain whether you would fix it or leave it — and why.
 
 ---
 
-## Concept 4: One Big Table (OBT) & Denormalisation
-
-**Q21 (Warm-up)**  
-What is a One Big Table (OBT) and what problem does it solve for non-technical BI users?
+**Q21 (Scenario)**  
+A data engineer argues: "We should keep our Silver layer in 3NF and only denormalise in Gold." Another says: "3NF in the warehouse is over-engineering — just use a star schema everywhere." Which is closer to correct and why?
 
 ---
 
-**Q22 (Conceptual)**  
-A star schema has 1 fact table and 4 dimension tables. An analyst query requires 3 joins. An OBT has all columns pre-joined. What are the two main trade-offs of choosing OBT over a star schema for large datasets?
+**Q22 (Tricky)**  
+What is the update anomaly, insertion anomaly, and deletion anomaly? Give one example of each from a poorly normalised `orders` table that has customer data embedded directly.
 
 ---
 
-**Q23 (Scenario)**  
-An OBT stores `customer_city` for every order row. Alice (customer C001) has placed 50,000 orders and recently moved from Sydney to Melbourne. How many rows in the OBT must be updated? What is the performance implication? How would a star schema + SCD Type 2 handle this differently?
+## Concept 4: Advanced Fact Table Patterns
+
+**Q23 (Warm-up)**  
+What is a factless fact table? Give two scenarios where you need one: one for event occurrence, one for coverage/eligibility.
 
 ---
 
 **Q24 (Conceptual)**  
-Why does columnar compression (Parquet/ORC) reduce the storage penalty of OBT denormalisation compared to a row-oriented database like PostgreSQL?
+How do you calculate zero-sales days for products using a factless fact table? Why can't you derive this from `fact_sales` alone?
 
 ---
 
-**Q25 (Tricky)**  
-When would you choose an OBT over a star schema even for a production analytics platform? Give three specific conditions.
+**Q25 (Scenario)**  
+An order can have multiple promotions applied. If you add a `promotion_id` FK directly to `fact_orders`, what goes wrong when you run `SUM(revenue) GROUP BY promotion_name`? What is the correct modelling pattern?
 
 ---
 
-## Concept 5: dbt — Data Build Tool
-
-**Q26 (Warm-up)**  
-What does dbt do? What part of the ELT pipeline does it handle and what does it not do?
+**Q26 (Conceptual)**  
+What is a role-playing dimension? Give an example using `dim_date` in an order fact table that has three different date foreign keys.
 
 ---
 
-**Q27 (Conceptual)**  
-What is the difference between a dbt `view`, `table`, `incremental`, and `ephemeral` materialisation? When would you use each?
+**Q27 (Tricky)**  
+What is a junk dimension? Why is it preferable to keeping low-cardinality flag columns directly in the fact table?
 
 ---
 
 **Q28 (Scenario)**  
-A dbt `incremental` model for `fct_sales` uses `WHERE order_date >= (SELECT MAX(order_date) FROM {{ this }})` as its incremental filter. A late-arriving order from yesterday arrives in today's source data. Is it captured? What is the standard fix?
+`fact_orders` has three FK columns to `dim_date`: `order_date_key`, `ship_date_key`, `delivery_date_key`. Write the SQL to calculate average delivery time (days from order to delivery) by month of order. Show how you alias the dimension table for each role.
 
 ---
 
-**Q29 (Scenario)**  
-A dbt model `fct_revenue` depends on `dim_customer`, `dim_product`, and `stg_orders`. A developer changes the column name `customer_city` to `city` in `dim_customer`. `fct_revenue` still references `customer_city`. What happens when `dbt run` is executed? How would `dbt test` catch this before it reaches production?
+**Q29 (Deep dive)**  
+Compare accumulating snapshot fact tables to transaction fact tables. When does an accumulating snapshot become inappropriate — what volume or velocity threshold makes it impractical?
 
 ---
 
-**Q30 (Conceptual)**  
-What is `{{ ref() }}` in dbt and why is it superior to hardcoding table names like `FROM analytics.dim_customer`?
+## Concept 5: Data Modelling Anti-patterns
+
+**Q30 (Warm-up)**  
+What is the "wrong grain" anti-pattern? Give a concrete example and explain what symptom in query results reveals it.
 
 ---
 
-**Q31 (Deep dive)**  
-Explain dbt's `unique_key` parameter in an incremental model. What SQL does dbt generate behind the scenes for a `unique_key = 'order_id'`? What happens if two source rows have the same `order_id`?
+**Q31 (Scenario)**  
+A `fact_sales` table has columns `quantity`, `unit_price`, `discount_pct`, `revenue`, and `net_revenue`. A business analyst changes the definition of `revenue` to include tax. Which columns must be recalculated and reloaded? What is the better design?
 
 ---
 
-**Q32 (Tricky)**  
-A dbt project has 200 models. A senior engineer says "staging models should always be views, not tables." Do you agree? What is the reasoning, and when would you break this rule?
+**Q32 (Scenario)**  
+A query `SELECT SUM(revenue) FROM fact_sales JOIN dim_customer ON fact_sales.customer_id = dim_customer.customer_id` returns a number that is 40% higher than expected. What is the most likely cause and how do you diagnose it?
+
+---
+
+**Q33 (Tricky)**  
+A `discount_pct` column is NULL in 30% of rows. Three different teams interpret NULL differently: "no discount applied," "discount unknown," and "not applicable for this product type." What is wrong with using NULL for all three? Design the fix.
+
+---
+
+**Q34 (Scenario)**  
+A fact table stores `order_date` as `VARCHAR(20)` in the format `'DD/MM/YYYY'`. A query filters `WHERE order_date > '2024-06-01'`. What are two specific ways this can produce wrong results?
+
+---
+
+**Q35 (Deep dive)**  
+Explain the fan-out problem with a worked example. How do you detect it before it reaches production? What dimension design choices prevent it?
 
 ---
 
 ## Mixed / Senior-Level Questions
 
-**Q33**  
-A startup has one PostgreSQL database with 15 tables. They want to build their first analytics layer. They ask you to choose between: (A) replicate to Snowflake and build a star schema with dbt, (B) build an OBT directly in PostgreSQL, or (C) implement Data Vault. Which do you recommend and why? What signals in their situation would change your recommendation?
-
----
-
-**Q34**  
-What is the "fan-out problem" in dimensional modelling? Give an example where joining a fact table to two different dimension tables at different granularities produces incorrect aggregates.
-
----
-
-**Q35**  
-A `fact_orders` table has grain at the order line item level. A business analyst wants to add a `customer_lifetime_value` column to the fact table. Why is this wrong? Where should it go?
-
----
-
 **Q36**  
-You are inheriting a data warehouse with no documentation. You find four tables named `orders`, `orders_new`, `orders_final`, and `orders_final_v2`. How do you determine which is the canonical model? What governance practices prevent this situation?
+A startup has one PostgreSQL database with 15 tables and 10 GB of data. They ask you to choose between: (A) build a star schema directly in PostgreSQL, (B) replicate to Snowflake and build a star schema with dbt, (C) build one big flat table. Which do you recommend and what signals would change your recommendation?
 
 ---
 
 **Q37**  
-A fact table has 500M rows. A new business requirement needs a `region` column that does not currently exist on any table. It must be derived from `customer_city` via a lookup table. How do you add this to the dimensional model without reprocessing all 500M rows?
+What is a degenerate dimension? Give an example from a retail domain and explain why it lives in the fact table rather than a dimension table.
 
 ---
 
 **Q38**  
-What is a "degenerate dimension"? Give an example from a retail domain and explain why it is stored in the fact table rather than a separate dimension table.
+You are inheriting a data warehouse with four tables named `orders`, `orders_v2`, `orders_final`, and `orders_final_v2`. No documentation exists. How do you identify the canonical table, and what governance processes prevent this situation?
 
 ---
 
 **Q39**  
-Explain how dbt's `--select` flag with graph operators (`+model`, `model+`, `@model`) enables targeted rebuilds in a large project. Give a scenario where you would use each.
+A 500M-row fact table needs a new `region` column derived from `customer_city` via a lookup. How do you add it without reprocessing all 500M rows?
 
 ---
 
 **Q40**  
-A company runs `dbt run` nightly and all tests pass. The next day, an analyst reports that revenue numbers are 15% lower than expected for the last 7 days. `dbt test` still passes because all column-level constraints (not_null, unique) are satisfied. What category of test is missing, and how would you add it to the dbt project?
+A `dbt test` suite runs `not_null` and `unique` on every column of `fct_sales` and all tests pass. An analyst reports revenue is 15% lower than expected for the last 7 days. What category of test is missing and how would you write it?
 
 ---
