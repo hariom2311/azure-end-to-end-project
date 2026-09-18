@@ -1,0 +1,21 @@
+order_id,customer_id,customer_name,customer_city,customer_country,customer_segment,product_id,product_name,product_category,product_brand,order_date,quantity,unit_price,discount_pct,store_id,store_name,store_region
+1001,C001,Alice Martin,Sydney,AU,Retail,P101,Wireless Headphones,Electronics,SoundMax,2024-01-15,1,120.00,0,S01,Sydney Central,NSW
+1002,C002,Bob Chen,Melbourne,AU,Retail,P102,Running Shoes,Apparel,SwiftStep,2024-01-15,2,85.00,10,S02,Melbourne CBD,VIC
+1003,C003,Carol Smith,Brisbane,AU,Wholesale,P101,Wireless Headphones,Electronics,SoundMax,2024-01-16,5,120.00,15,S03,Brisbane North,QLD
+1004,C001,Alice Martin,Sydney,AU,Retail,P103,Coffee Maker,Appliances,BrewKing,2024-01-16,1,199.00,0,S01,Sydney Central,NSW
+1005,C004,David Lee,Perth,AU,Retail,P104,Yoga Mat,Sports,FlexFit,2024-01-17,1,45.00,0,S04,Perth West,WA
+1006,C002,Bob Chen,Melbourne,AU,Retail,P105,Desk Lamp,Home,LightCo,2024-01-17,3,35.00,5,S02,Melbourne CBD,VIC
+1007,C005,Eva Brown,Sydney,AU,Wholesale,P102,Running Shoes,Apparel,SwiftStep,2024-01-18,10,85.00,20,S01,Sydney Central,NSW
+1008,C003,Carol Smith,Brisbane,AU,Wholesale,P106,Protein Powder,Health,NutriPro,2024-01-18,4,60.00,10,S03,Brisbane North,QLD
+1009,C006,Frank White,Adelaide,AU,Retail,P101,Wireless Headphones,Electronics,SoundMax,2024-01-19,1,120.00,0,S05,Adelaide East,SA
+1010,C004,David Lee,Perth,AU,Retail,P107,Backpack,Apparel,TrailPack,2024-01-19,2,75.00,0,S04,Perth West,WA
+1011,C001,Alice Martin,Sydney,AU,Retail,P108,Bluetooth Speaker,Electronics,SoundMax,2024-01-20,1,89.00,0,S01,Sydney Central,NSW
+1012,C007,Grace Kim,Melbourne,AU,Retail,P103,Coffee Maker,Appliances,BrewKing,2024-01-20,1,199.00,0,S02,Melbourne CBD,VIC
+1013,C005,Eva Brown,Sydney,AU,Wholesale,P104,Yoga Mat,Sports,FlexFit,2024-01-21,6,45.00,15,S01,Sydney Central,NSW
+1014,C008,Henry Zhang,Sydney,AU,Retail,P105,Desk Lamp,Home,LightCo,2024-01-21,2,35.00,0,S01,Sydney Central,NSW
+1015,C002,Bob Chen,Melbourne,AU,Retail,P109,Sunglasses,Apparel,StyleVision,2024-01-22,1,65.00,0,S02,Melbourne CBD,VIC
+1016,C006,Frank White,Adelaide,AU,Retail,P106,Protein Powder,Health,NutriPro,2024-01-22,2,60.00,0,S05,Adelaide East,SA
+1017,C009,Iris Taylor,Brisbane,AU,Retail,P102,Running Shoes,Apparel,SwiftStep,2024-01-23,1,85.00,0,S03,Brisbane North,QLD
+1018,C003,Carol Smith,Brisbane,AU,Wholesale,P101,Wireless Headphones,Electronics,SoundMax,2024-01-23,3,120.00,12,S03,Brisbane North,QLD
+1019,C010,Jack Wong,Perth,AU,Retail,P108,Bluetooth Speaker,Electronics,SoundMax,2024-01-24,1,89.00,0,S04,Perth West,WA
+1020,C007,Grace Kim,Melbourne,AU,Retail,P107,Backpack,Apparel,TrailPack,2024-01-24,1,75.00,0,S02,Melbourne CBD,VIC

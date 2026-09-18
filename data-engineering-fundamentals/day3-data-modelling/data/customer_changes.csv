@@ -1,0 +1,7 @@
+change_id,customer_id,customer_name,old_city,new_city,old_segment,new_segment,change_date,change_reason
+CHG001,C001,Alice Martin,Sydney,Melbourne,Retail,Retail,2024-02-01,customer_relocation
+CHG002,C002,Bob Chen,Melbourne,Melbourne,Retail,Wholesale,2024-02-10,upgrade_to_wholesale
+CHG003,C003,Carol Smith,Brisbane,Brisbane,Wholesale,Wholesale,2024-03-05,no_change_control_row
+CHG004,C001,Alice Martin,Melbourne,Perth,Retail,Retail,2024-04-20,customer_relocation
+CHG005,C007,Grace Kim,Melbourne,Sydney,Retail,Retail,2024-03-15,customer_relocation
+CHG006,C004,David Lee,Perth,Perth,Retail,Premium,2024-05-01,upgrade_to_premium
