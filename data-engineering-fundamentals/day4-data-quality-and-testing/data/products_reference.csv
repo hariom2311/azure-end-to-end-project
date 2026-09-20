@@ -1,0 +1,11 @@
+product_id,product_name,category,unit_price,is_active
+P101,Wireless Headphones,Electronics,120.50,true
+P102,Running Shoes,Apparel,85.00,true
+P103,Coffee Maker,Appliances,199.00,true
+P104,Yoga Mat,Sports,45.00,true
+P105,Desk Lamp,Home,35.00,true
+P106,Protein Powder,Health,60.00,true
+P107,Backpack,Apparel,75.00,true
+P108,Bluetooth Speaker,Electronics,89.00,true
+P109,Sunglasses,Apparel,65.00,true
+P110,Gift Voucher,Other,0.00,true
