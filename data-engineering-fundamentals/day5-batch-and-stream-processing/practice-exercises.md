@@ -48,7 +48,7 @@ If the orders table had 10,000 partitions (one per order_id), each containing 1 
 
 ## Exercise 2 — Stream Processing: Late Events & Offset Management
 
-**Concept:** Stream Processing — Kafka, Consumers & Exactly-Once Semantics
+**Concept:** Stream Processing — Azure Event Hubs, Consumers & Exactly-Once Semantics
 
 **The events dataset has late arrivals:**  
 - `EVT007`: `event_time = 09:10`, `processing_time = 09:18` (8 minutes late)
@@ -64,15 +64,15 @@ Write a query that calculates the lateness (in minutes) for each event as `proce
 Imagine events EVT001, EVT002, EVT003 are delivered twice (duplicate delivery). Write the SQL that a consumer would run to deduplicate on `event_id`, keeping only the first occurrence. This simulates the idempotent sink pattern.
 
 **2c. Simulate offset tracking.**  
-In Kafka, consumers commit offsets after processing. Write a table DDL and INSERT for an `offsets` table that tracks: `(consumer_group, topic, partition, last_committed_offset)`. Then write the query a consumer would use to determine "which events have I not yet processed?" — simulating reading from the committed offset.
+In Event Hubs, consumers commit checkpoints (sequence numbers) after processing. Write a table DDL and INSERT for an `offsets` table that tracks: `(consumer_group, event_hub, partition, last_committed_offset)`. Then write the query a consumer would use to determine "which events have I not yet processed?" — simulating reading from the committed checkpoint.
 
 ```sql
-CREATE TABLE kafka_offsets (
-    consumer_group TEXT,
-    topic          TEXT,
-    partition_id   INT,
+CREATE TABLE eventhub_offsets (
+    consumer_group   TEXT,
+    event_hub        TEXT,
+    partition_id     INT,
     committed_offset BIGINT,
-    updated_at     TIMESTAMP
+    updated_at       TIMESTAMP
 );
 
 -- The events table has a surrogate offset (use row_number() as offset proxy)
@@ -162,7 +162,7 @@ Draw (in text/ASCII) the Lambda architecture for this system. Label:
 List three specific problems the team will face maintaining this Lambda architecture over 12 months. For each problem, explain why it is painful.
 
 **4c. Design the Kappa alternative.**  
-Redesign using Kappa architecture. What changes? What are the constraints for Kappa to work in this scenario (Kafka retention, stream processor choice, reprocessing mechanism)?
+Redesign using Kappa architecture. What changes? What are the constraints for Kappa to work in this scenario (Event Hubs retention / Capture, stream processor choice, reprocessing mechanism)?
 
 **4d. Make the recommendation.**  
 Given the requirements (3-second fraud alert + monthly historical dashboard), which architecture would you recommend for this specific use case and why? Is there a modern Lakehouse approach that simplifies the choice?
@@ -231,7 +231,7 @@ Design a complete batch + stream processing solution for a ride-sharing company 
 
 For each requirement, specify:
 - Batch or stream? Why?
-- Technology choice (Kafka, Spark, Flink, Airflow, etc.)
+- Technology choice (Event Hubs, Spark, Flink, Airflow, etc.)
 - Window type (if streaming)
 - Latency SLA
 - How you would handle late data or corrections

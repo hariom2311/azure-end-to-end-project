@@ -6,7 +6,7 @@ Every data engineering system processes data in one of two modes: **batch** (pro
 
 **The 5 concepts:**
 1. Batch Processing — Spark Architecture & Partitioning
-2. Stream Processing — Kafka, Consumers & Exactly-Once Semantics
+2. Stream Processing — Azure Event Hubs, Consumers & Exactly-Once Semantics
 3. Windowing & Watermarks — Handling Time in Streams
 4. Lambda & Kappa Architecture — Batch + Stream Design Patterns
 5. Pipeline Orchestration — Airflow DAGs, Sensors & Backfill
@@ -128,7 +128,7 @@ With broadcast: Send small table to all executors → no shuffle needed.
 
 ---
 
-## Concept 2: Stream Processing — Kafka, Consumers & Exactly-Once Semantics
+## Concept 2: Stream Processing — Azure Event Hubs, Consumers & Exactly-Once Semantics
 
 ### What is stream processing?
 
@@ -139,62 +139,76 @@ With broadcast: Send small table to all executors → no shuffle needed.
 - Source systems push events continuously (clickstreams, IoT sensors, payment events)
 - You need to react to individual events, not just periodic aggregates
 
-### Apache Kafka architecture
+### Azure Event Hubs architecture
 
-Kafka is the dominant event streaming platform. It acts as a durable, distributed, replayable message bus between producers and consumers.
+**Azure Event Hubs** is a fully managed, real-time event streaming platform on Azure. It acts as a durable, distributed, replayable message bus between producers and consumers. Event Hubs exposes a **Kafka-compatible endpoint** — any Kafka producer/consumer works against Event Hubs with only a connection string change.
 
 ```
-Producers                Kafka Cluster               Consumers
-─────────               ──────────────               ─────────
-Payment       ──────►  Topic: payments               Fraud service
+Producers                Event Hubs Namespace        Consumers
+─────────               ──────────────────────       ─────────
+Payment       ──────►  Event Hub: payments           Fraud service
 service       ──────►  ├── Partition 0               Audit service
                        ├── Partition 1               Analytics job
 Order         ──────►  └── Partition 2
 service
 ```
 
-**Topic:** A named stream of records. Like a table in a database but append-only.
+**Event Hub:** A named stream of records within a namespace. Equivalent to a Kafka topic — append-only.
 
-**Partition:** Topics are split into partitions for parallelism. Each partition is an ordered, immutable log. Records in a partition have monotonically increasing **offsets**.
+**Partition:** Event Hubs are split into partitions for parallelism. Each partition is an ordered, immutable log. Records in a partition have monotonically increasing **sequence numbers** (equivalent to Kafka offsets).
 
-**Offset:** The position of a record within a partition. Consumers track their own offsets — they can replay events by resetting the offset.
+**Sequence number / Offset:** The position of an event within a partition. Consumers track their own checkpoints — they can replay events by resetting to an earlier sequence number.
 
-**Retention:** Kafka retains messages for a configurable period (default 7 days) regardless of whether they have been consumed. This enables replays and multiple independent consumers.
+**Retention:** Event Hubs retains events for 1–90 days (configurable; Premium/Dedicated tiers support longer). This enables replays and multiple independent consumer groups reading the same hub.
+
+**Key Azure-specific concepts:**
+
+| Concept | Event Hubs | Kafka equivalent |
+|---|---|---|
+| Namespace | Container for multiple Event Hubs | Kafka cluster |
+| Event Hub | Named stream | Topic |
+| Consumer Group | Independent read position per application | Consumer group |
+| Partition count | Set at creation (2–32 Standard; up to 2000 Dedicated) | Set at creation, can be increased |
+| Capture | Auto-archive events to Azure Blob / ADLS Gen2 as Avro/Parquet | No direct equivalent |
+| Schema Registry | Built-in schema validation and evolution | Confluent Schema Registry |
 
 ### Consumer groups
 
-A **consumer group** is a set of consumers that cooperate to consume a topic. Each partition is assigned to exactly one consumer in the group — parallelism scales with partition count.
+A **consumer group** is an independent view of the event stream — each consumer group maintains its own checkpoint (offset/sequence number) independently.
 
 ```
-Topic: payments (3 partitions)
+Event Hub: payments (3 partitions)
 
-Consumer Group A (analytics):     Consumer Group B (fraud):
-Consumer A1 → Partition 0         Consumer B1 → Partition 0 + 1
-Consumer A2 → Partition 1         Consumer B2 → Partition 2
-Consumer A3 → Partition 2
+Consumer Group "analytics":       Consumer Group "fraud":
+Reader A1 → Partition 0           Reader B1 → Partition 0 + 1
+Reader A2 → Partition 1           Reader B2 → Partition 2
+Reader A3 → Partition 2
 
-(Both groups read all events independently)
+(Both groups read all events independently from their own checkpoints)
 ```
 
-**Key rule:** `#consumers ≤ #partitions`. If you have more consumers than partitions, some consumers are idle.
+**Key rule:** `#readers ≤ #partitions`. If you have more readers in a group than partitions, some readers are idle.
+
+**Event Hubs Standard limit:** 20 consumer groups per Event Hub. Premium/Dedicated: unlimited.
 
 ### Delivery semantics
 
 | Semantic | Guarantee | Risk | How |
 |---|---|---|---|
-| At-most-once | Each event delivered 0 or 1 times | Data loss (if consumer crashes before processing) | Commit offset before processing |
-| At-least-once | Each event delivered 1+ times | Duplicates (if consumer crashes after processing but before commit) | Commit offset after processing |
-| Exactly-once | Each event delivered exactly 1 time | None — but complex to implement | Transactional producers + idempotent consumers |
+| At-most-once | Each event delivered 0 or 1 times | Data loss (if consumer crashes before processing) | Checkpoint before processing |
+| At-least-once | Each event delivered 1+ times | Duplicates (if consumer crashes after processing but before checkpoint) | Checkpoint after processing |
+| Exactly-once | Each event delivered exactly 1 time | None — but complex to implement | Idempotent consumers + atomic checkpoint + output write |
 
 ### Exactly-once semantics (EOS)
 
-**Producer side:** Enable idempotent producer (`enable.idempotence=true`). Kafka deduplicates retries using a sequence number.
+**Producer side:** Event Hubs does not support Kafka-style idempotent producers natively. Use idempotent message design — include a unique `event_id` in every event payload so consumers can deduplicate.
 
-**Consumer side:** The consumer's processing must be idempotent — processing the same event twice produces the same result. This is the responsibility of the consumer application.
+**Consumer side:** The consumer's processing must be idempotent — processing the same event twice produces the same result.
 
-**End-to-end EOS with Kafka Streams / Flink:**
-- Use Kafka transactions: produce output and commit offset atomically
-- If the consumer crashes, it reprocesses from the last committed offset — but the output topic/database deduplicates using the event key
+**End-to-end EOS with Spark Structured Streaming + Event Hubs:**
+- Spark reads from Event Hubs using the `azure-eventhubs-spark` connector
+- Checkpoints are stored in ADLS Gen2 or Azure Blob Storage
+- If the consumer crashes, it restarts from the last checkpoint — the output sink deduplicates using the event's sequence number or `event_id`
 
 **Practical EOS for a database sink:**
 ```sql
@@ -204,15 +218,27 @@ ON CONFLICT (event_id) DO UPDATE SET ...=EXCLUDED....;
 -- Re-processing the same event_id is a no-op: same result
 ```
 
-### Kafka performance levers
+**Spark Structured Streaming connection:**
+```python
+connection_string = "Endpoint=sb://mynamespace.servicebus.windows.net/;..."
+
+df = spark.readStream \
+    .format("eventhubs") \
+    .options(**{"eventhubs.connectionString": connection_string,
+                "eventhubs.consumerGroup": "analytics"}) \
+    .load()
+```
+
+### Event Hubs performance levers
 
 | Lever | Effect |
 |---|---|
-| Increase partition count | More consumer parallelism (but cannot reduce partitions without recreating topic) |
-| `batch.size` (producer) | Larger batches → higher throughput, higher latency |
-| `linger.ms` (producer) | Wait up to N ms to build a larger batch |
-| `fetch.min.bytes` (consumer) | Consumer waits until this many bytes available → lower CPU, higher latency |
-| Compaction | Topic retains only the latest record per key (useful for CDC) |
+| Increase partition count | More consumer parallelism (set at creation; cannot change on Standard tier) |
+| Throughput Units (Standard) | 1 TU = 1 MB/s ingress, 2 MB/s egress — scale up for high-volume |
+| Processing Units (Premium) | Higher throughput, dynamic scaling, dedicated resources |
+| `EventHubProducerClient` batch size | Larger batches → higher throughput, higher latency |
+| Event Hub Capture | Auto-archive raw events to ADLS Gen2 — free replay without custom consumer code |
+| Compaction (via Schema Registry) | Not native — implement at consumer side using `event_id` dedup |
 
 ---
 
@@ -316,7 +342,7 @@ Source events
     │       Reprocesses all historical data nightly
     │       Produces accurate, complete batch views
     │
-    ├──► Speed layer  (Kafka + Flink/Spark Streaming)
+    ├──► Speed layer  (Event Hubs + Flink/Spark Streaming)
     │       Processes only recent events (last few hours)
     │       Produces approximate/recent real-time views
     │
@@ -339,16 +365,16 @@ Source events
 ```
 Source events
     │
-    └──► Stream layer only  (Kafka + Flink / Spark Streaming)
+    └──► Stream layer only  (Event Hubs + Flink / Spark Streaming)
              Processes all events (recent and historical)
-             For reprocessing: replay from Kafka (long retention) or S3 event log
+             For reprocessing: replay from Event Hubs (long retention) or ADLS event log
              Produces one unified view
 ```
 
-**Key insight:** If you use Kafka with long retention (weeks/months) or store a replay log in S3, you can reprocess historical data by replaying the stream from the beginning. No separate batch layer needed.
+**Key insight:** If you use Event Hubs with long retention (up to 90 days, or infinite with Capture to ADLS Gen2) or store a replay log in ADLS, you can reprocess historical data by replaying the stream from the beginning. No separate batch layer needed.
 
 **When Kappa works well:**
-- Source events are immutable and replayable (Kafka with adequate retention)
+- Source events are immutable and replayable (Event Hubs with adequate retention or Capture enabled)
 - Transformations are stateless or have short state windows
 - The team wants one codebase and one processing paradigm
 
@@ -365,14 +391,14 @@ Source events
 | Historical reprocessing | Full batch recompute | Replay from event log |
 | Accuracy | Batch view is authoritative | Single view (stream) is authoritative |
 | Operational complexity | High (two systems) | Lower (one system) |
-| Best fit | Large-scale history + real-time dashboard | Event-driven systems with long Kafka retention |
+| Best fit | Large-scale history + real-time dashboard | Event-driven systems with long Event Hubs retention |
 
 ### Modern convergence: the Lakehouse streaming approach
 
 Delta Lake / Apache Iceberg with Spark Structured Streaming + batch both reading the same table format:
 
 ```
-Kafka events ──► Spark Structured Streaming ──► Delta Lake Silver table
+Event Hubs ──► Spark Structured Streaming ──► Delta Lake Silver table
                                                        │
                               ┌────────────────────────┤
                               ▼                        ▼
@@ -546,7 +572,7 @@ with DAG(
 | Concept | Key interview point |
 |---|---|
 | Batch / Spark | Shuffle is expensive; broadcast small tables; lazy evaluation; partition skew |
-| Kafka / EOS | Offsets are consumer-side; at-least-once is default; EOS requires idempotent sinks |
+| Event Hubs / EOS | Checkpoints are consumer-side; at-least-once is default; EOS requires idempotent sinks |
 | Windowing | Event time vs. processing time; watermark = lateness tolerance; session windows close on gap |
 | Lambda / Kappa | Lambda = two codebases, authoritative batch; Kappa = one codebase, stream replay |
 | Airflow | `execution_date` ≠ wall clock; sensors wait for external conditions; XComs for metadata only |

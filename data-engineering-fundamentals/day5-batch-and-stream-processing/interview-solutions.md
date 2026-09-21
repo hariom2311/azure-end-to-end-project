@@ -153,36 +153,36 @@ This controls how many partitions are created after a shuffle operation (e.g., a
 
 ---
 
-## Concept 2: Stream Processing — Kafka, Consumers & Exactly-Once Semantics
+## Concept 2: Stream Processing — Azure Event Hubs, Consumers & Exactly-Once Semantics
 
-**Q9 — Kafka topic partitions**
+**Q9 — Azure Event Hub partitions**
 
-A **partition** is an ordered, immutable log of records within a topic. Each partition is stored on one broker (with replicas on others for fault tolerance). Records within a partition have monotonically increasing **offsets**.
+A **partition** is an ordered, immutable log of events within an Event Hub. Each partition is stored and replicated across the Event Hubs cluster. Events within a partition have monotonically increasing **sequence numbers** (equivalent to Kafka offsets).
 
-**Why partition count matters for consumers:** In a consumer group, each partition is assigned to exactly one consumer. Parallelism is bounded by the number of partitions.
+**Why partition count matters for consumers:** In a consumer group, each partition is assigned to exactly one reader. Parallelism is bounded by the number of partitions.
 
 ```
-3 partitions, 3 consumers → 1 partition per consumer (maximum parallelism)
-3 partitions, 1 consumer  → 1 consumer reads all 3 partitions (no parallelism)
-3 partitions, 6 consumers → 3 consumers active, 3 idle (waste)
+3 partitions, 3 readers → 1 partition per reader (maximum parallelism)
+3 partitions, 1 reader  → 1 reader reads all 3 partitions (no parallelism)
+3 partitions, 6 readers → 3 readers active, 3 idle (waste)
 ```
 
-If you need 10-way parallelism, you need at least 10 partitions. You cannot increase consumer parallelism beyond the partition count without adding more partitions first.
+If you need 10-way parallelism, you need at least 10 partitions. You cannot increase consumer parallelism beyond the partition count without creating a new Event Hub with more partitions (Standard tier does not allow changing partition count after creation).
 
 ---
 
-**Q10 — Kafka consumer offset**
+**Q10 — Event Hubs consumer checkpoint**
 
-An **offset** is a sequential integer that uniquely identifies each record's position within a partition (starting from 0).
+A **checkpoint** (also called an offset or sequence number) is a sequential integer that uniquely identifies each event's position within a partition (starting from 0).
 
-**Who tracks it:** The **consumer** tracks its own offset. Specifically, offsets are committed to a special Kafka topic called `__consumer_offsets`. The broker stores these committed offsets — but the consumer decides when to commit them, not the broker.
+**Who tracks it:** The **consumer** tracks its own checkpoint. Checkpoints are stored in Azure Blob Storage or ADLS Gen2 (via the `EventProcessorClient`). The Event Hubs namespace stores the events — but each consumer group independently decides when to checkpoint its position.
 
-**This design is intentional:** Different consumer groups track their own independent offsets for the same topic, enabling multiple applications to read the same topic at different positions independently.
+**This design is intentional:** Different consumer groups maintain independent checkpoints for the same Event Hub, enabling multiple applications to read at different positions independently.
 
 ```
-Partition 0: [offset 0] [offset 1] [offset 2] [offset 3] [offset 4]
-Consumer A committed offset: 3 (has processed 0-2, next read from 3)
-Consumer B committed offset: 1 (has processed 0, next read from 1)
+Partition 0: [seq 0] [seq 1] [seq 2] [seq 3] [seq 4]
+Consumer Group "analytics"  checkpoint: 3 (has processed 0-2, next read from 3)
+Consumer Group "fraud"      checkpoint: 1 (has processed 0, next read from 1)
 ```
 
 ---
@@ -191,21 +191,21 @@ Consumer B committed offset: 1 (has processed 0, next read from 1)
 
 | Semantic | Guarantee | How | Default? |
 |---|---|---|---|
-| At-most-once | 0 or 1 deliveries | Commit offset BEFORE processing. If crash between commit and processing → event lost forever | No |
-| At-least-once | 1+ deliveries | Commit offset AFTER processing. If crash between processing and commit → event reprocessed | Yes (most Kafka clients) |
-| Exactly-once | Exactly 1 delivery | Idempotent producer + transactional commit of output + offset atomically | Requires explicit configuration |
+| At-most-once | 0 or 1 deliveries | Checkpoint BEFORE processing. If crash between checkpoint and processing → event lost forever | No |
+| At-least-once | 1+ deliveries | Checkpoint AFTER processing. If crash between processing and checkpoint → event reprocessed | Yes (most Event Hubs clients) |
+| Exactly-once | Exactly 1 delivery | Idempotent consumer + atomic checkpoint + output write | Requires explicit design |
 
-**What causes duplicates in at-least-once:** The consumer processes event E, writes output, then crashes before committing the offset. On restart, the consumer re-reads event E (same offset) and processes it again → duplicate output.
+**What causes duplicates in at-least-once:** The consumer processes event E, writes output, then crashes before committing the checkpoint. On restart, the consumer re-reads event E (same sequence number) and processes it again → duplicate output.
 
-**Default for Kafka consumers:** At-least-once. `enable.auto.commit=true` with `auto.commit.interval.ms=5000` means offsets commit every 5 seconds regardless of processing status — creating a small duplicates window.
+**Default for Event Hubs consumers:** At-least-once. The `EventProcessorClient` checkpoints periodically — events between the last checkpoint and a crash are reprocessed on restart.
 
 ---
 
-**Q12 — 4 partitions, 6 consumers**
+**Q12 — 4 partitions, 6 readers**
 
-**4 consumers are actively reading.** Each partition is assigned to exactly one consumer in the group. With 4 partitions and 6 consumers, 4 consumers each own 1 partition. The remaining **2 consumers are idle** — they belong to the consumer group but have no partition assigned.
+**4 readers are actively reading.** Each partition is assigned to exactly one reader in the consumer group. With 4 partitions and 6 readers, 4 readers each own 1 partition. The remaining **2 readers are idle** — they belong to the consumer group but have no partition assigned.
 
-This is wasted capacity. The rule: **you cannot have more parallelism than partitions**. To use all 6 consumers, increase the topic to 6 partitions. Kafka allows adding partitions to an existing topic (but with caveats for keyed messages — existing messages' routing changes).
+This is wasted capacity. The rule: **you cannot have more parallelism than partitions**. To use all 6 readers, you need an Event Hub with at least 6 partitions. On the Standard tier, partition count is fixed at creation — you must create a new Event Hub with the desired partition count and migrate.
 
 ---
 
@@ -223,7 +223,7 @@ If the crash happened **after processing but before committing**: The last commi
 
 ---
 
-**Q14 — Exactly-once to PostgreSQL without Kafka transactions**
+**Q14 — Exactly-once to PostgreSQL without distributed transactions**
 
 **Strategy: Idempotent upsert at the database level.**
 
@@ -243,15 +243,17 @@ WHERE payments.payment_id = EXCLUDED.payment_id;
 
 ---
 
-**Q15 — Kafka topic design for 1M events/second**
+**Q15 — Event Hub design for 1M events/second**
 
-**Partition count:** Target ~100 MB/s per partition (a comfortable broker throughput ceiling). At 1M events/second assuming 1 KB average event size = 1 GB/s total. `1 GB/s ÷ 100 MB/s per partition = ~10 partitions minimum.` Add headroom: **24–32 partitions** (power of 2 is conventional, easier to rebalance).
+**Partition count:** Target ~100 MB/s per partition (a comfortable throughput ceiling). At 1M events/second assuming 1 KB average event size = 1 GB/s total. `1 GB/s ÷ 100 MB/s per partition = ~10 partitions minimum.` Add headroom: **32 partitions** on Standard tier (max 32), or up to 2000 on Dedicated tier.
+
+**Throughput Units:** 1M events/sec at 1 KB = 1 GB/s ingress. Standard tier: 1 TU = 1 MB/s ingress → need 1000 TUs. Use **Event Hubs Premium or Dedicated** for this scale — they offer Processing Units with dynamic scaling and no per-TU cap.
 
 **Partitioning key:** `payment_card_id` (or `customer_id`). This ensures all events for the same card land on the same partition → **ordering guarantee per card** → a consumer processing fraud rules sees card events in sequence, never out of order for a single card.
 
-**If you change the partitioning key to `random`:**
-- Throughput improves slightly (more even distribution)
-- But ordering is lost — events for the same card can land on different partitions and be processed by different consumers in any order
+**If you change the partitioning key to `null` (round-robin):**
+- Throughput distribution improves (events spread evenly across partitions)
+- But ordering is lost — events for the same card can land on different partitions and be processed by different readers in any order
 - Fraud rules that depend on sequence ("3 transactions within 1 minute for the same card") break silently
 
 **Rule:** Choose the partitioning key based on the ordering requirement, not just throughput. Ordering is only guaranteed within a partition, never across partitions.
@@ -268,7 +270,7 @@ WHERE payments.payment_id = EXCLUDED.payment_id;
 
 **Real-world example where they differ significantly:**
 
-A retail mobile app lets customers browse and add to cart while offline. A customer opens the app at 14:00, adds 3 items between 14:00 and 14:30 while on the subway (no connectivity). The phone reconnects at 15:10 and sends all 3 events to Kafka.
+A retail mobile app lets customers browse and add to cart while offline. A customer opens the app at 14:00, adds 3 items between 14:00 and 14:30 while on the subway (no connectivity). The phone reconnects at 15:10 and sends all 3 events to Event Hubs.
 
 - Event times: 14:02, 14:15, 14:28 (real browsing times)
 - Processing times: 15:10, 15:10, 15:10 (all arrive at once)
@@ -378,7 +380,7 @@ Conclusion: YES, the event (event_time=09:03) IS included.
 - The sink table must support UPDATEs (not append-only)
 - Flink supports this natively with `RETRACT` and `UPSERT` changelog modes
 - Pro: Fully accurate results
-- Con: Downstream consumers must handle retractions (the revised value); append-only sinks (Kafka topic, immutable S3 files) cannot support this
+- Con: Downstream consumers must handle retractions (the revised value); append-only sinks (Event Hub topic, immutable ADLS files) cannot support this
 - Use when: Financial accuracy is required and the sink supports updates (Delta Lake, PostgreSQL)
 
 ---
@@ -393,7 +395,7 @@ Conclusion: YES, the event (event_time=09:03) IS included.
 
 **Batch layer:** Recomputes all results from scratch using the full historical dataset at scheduled intervals (nightly). Produces the **batch view** — authoritative and complete. Technology: Spark on HDFS/S3 or a data warehouse.
 
-**Speed layer:** Processes only the most recent events in near-real-time. Produces the **speed view** — approximate but current (covers data from the last batch run to now). Technology: Kafka + Flink/Spark Streaming.
+**Speed layer:** Processes only the most recent events in near-real-time. Produces the **speed view** — approximate but current (covers data from the last batch run to now). Technology: Event Hubs + Flink/Spark Streaming.
 
 **Serving layer:** Merges the batch view (for historical queries) and the speed view (for recent data) to answer queries. When the next batch run completes, the speed view is discarded and replaced.
 
@@ -411,7 +413,7 @@ In practice, the two codebases inevitably drift:
 - A bug fix applied to batch may not be applied to streaming until weeks later
 - Results from batch and speed for the same time period diverge → "which number is right?"
 
-**How Kappa solves it:** Eliminates the batch layer entirely. One processing framework, one codebase. Historical reprocessing is done by replaying events from Kafka (with long retention) or from an event log in object storage. One set of business logic, one set of tests, one deployment.
+**How Kappa solves it:** Eliminates the batch layer entirely. One processing framework, one codebase. Historical reprocessing is done by replaying events from Event Hubs (with long retention or Capture to ADLS Gen2) or from an event log in object storage. One set of business logic, one set of tests, one deployment.
 
 ---
 
@@ -420,7 +422,7 @@ In practice, the two codebases inevitably drift:
 **Recommendation: Lakehouse Kappa approach.**
 
 **Real-time inventory (Requirement A — 1 second):**
-- Stream processor: Kafka + Flink or Spark Structured Streaming
+- Stream processor: Event Hubs + Flink or Spark Structured Streaming
 - Window: No window needed — stateful per-product inventory counter updated on each event
 - Latency: Sub-second is achievable with Flink
 
@@ -429,7 +431,7 @@ In practice, the two codebases inevitably drift:
 - Monthly or nightly batch reads for historical aggregations
 - No separate batch layer: Delta's time-travel gives access to any historical snapshot
 
-**Why not full Lambda:** 3 years of history is large but replayable. Kafka can retain 3 years with adequate storage (or use S3 as the replay source). Maintaining two codebases for e-commerce inventory is disproportionate to the complexity.
+**Why not full Lambda:** 3 years of history is large but replayable. Event Hubs Capture archives all events to ADLS Gen2 automatically — replay from there without Kafka retention limits. Maintaining two codebases for e-commerce inventory is disproportionate to the complexity.
 
 **Why not pure batch:** 1-second latency for inventory is impossible with batch.
 
@@ -463,7 +465,7 @@ If the order status was wrong in the speed view (approximate), the batch view co
 
 2. **Race to deploy:** The batch job is deployed first. For 4 hours (until the streaming job is deployed), the batch and speed views are computing different aggregations. The serving layer merges them → incorrect combined results.
 
-3. **Test gap:** The streaming job has no integration tests for the new dimension because it's hard to set up a Kafka/Flink test environment. The batch job has comprehensive Spark tests. A downstream bug in the streaming path is discovered 3 weeks after deployment when a business analyst reports wrong numbers in the live dashboard.
+3. **Test gap:** The streaming job has no integration tests for the new dimension because it's hard to set up an Event Hubs/Flink test environment. The batch job has comprehensive Spark tests. A downstream bug in the streaming path is discovered 3 weeks after deployment when a business analyst reports wrong numbers in the live dashboard.
 
 ---
 
@@ -473,7 +475,7 @@ If the order status was wrong in the speed view (approximate), the batch view co
 
 **Single storage layer, dual access pattern:**
 ```
-Kafka events
+Event Hubs events
     → Spark Structured Streaming (write mode: append)
     → Delta Lake Silver table
     
@@ -485,7 +487,7 @@ Concurrent readers:
 
 **The Delta transaction log** (`_delta_log/`) is the key: every write (streaming or batch) records a JSON commit. The streaming reader uses this log to find new data without full table scans. The batch reader uses it for snapshot isolation.
 
-**Historical reprocessing without a batch layer:** Delta's **time-travel** (`VERSION AS OF N` or `TIMESTAMP AS OF T`) lets you query any historical state of the table. For reprocessing: run a Spark batch job reading `Delta.forPath(path).asOf(timestamp)` from the beginning, write to a new table, then swap. No separate batch layer or Kafka replay needed.
+**Historical reprocessing without a batch layer:** Delta's **time-travel** (`VERSION AS OF N` or `TIMESTAMP AS OF T`) lets you query any historical state of the table. For reprocessing: run a Spark batch job reading `Delta.forPath(path).asOf(timestamp)` from the beginning, write to a new table, then swap. No separate batch layer or Event Hubs replay needed — Event Hubs Capture to ADLS Gen2 provides the raw event archive if a full replay is required.
 
 **ACID transactions:** Multiple streaming writers and batch readers can operate concurrently without corrupting the table. Delta handles the concurrency with optimistic locking on the transaction log.
 
@@ -682,21 +684,27 @@ load_task = PythonOperator(
 
 ---
 
-**Q37 — Increasing Kafka partitions from 3 to 10**
+**Q37 — Increasing Event Hub partitions from 3 to 10**
 
-**What must happen first:** Increase the partition count on the existing topic using the Kafka admin API or CLI:
+**What must happen first:** On Azure Event Hubs **Standard tier**, partition count is fixed at creation and **cannot be changed**. You must create a new Event Hub with 10 partitions and migrate traffic to it.
+
+On **Premium or Dedicated tier**, partition count can be increased (but not decreased) via the Azure portal or CLI:
 ```bash
-kafka-topics.sh --alter --topic payments --partitions 10 --bootstrap-server localhost:9092
+az eventhubs eventhub update \
+  --resource-group myRG \
+  --namespace-name myNamespace \
+  --name payments \
+  --partition-count 10
 ```
 
-**Risk of increasing partition count on a keyed topic:** For a topic partitioned by key (e.g., `payment_card_id`), the partition assignment for a given key is determined by `hash(key) % partition_count`. Changing partition count from 3 to 10 changes this formula. **All existing keys get reassigned to potentially different partitions.**
+**Risk of increasing partition count on a keyed Event Hub:** For an Event Hub partitioned by key (e.g., `payment_card_id`), the partition assignment is determined by `hash(key) % partition_count`. Changing the count from 3 to 10 changes this formula. **All existing keys get reassigned to potentially different partitions.**
 
 This means:
-1. **Ordering guarantees break for in-flight messages.** Messages for `card_id=CARD001` were on partition 2 (old) and are now on partition 7 (new). A consumer that has processed up to offset 100 on partition 2 may miss in-flight messages that land on partition 7.
-2. **Rebalance storm.** All consumers in all consumer groups for this topic trigger a rebalance (partition reassignment). During rebalance, no messages are consumed — brief processing pause.
-3. **New consumers.** You can now add 7 more consumers to the group for full parallelism.
+1. **Ordering guarantees break for in-flight events.** Events for `card_id=CARD001` were on partition 2 (old) and are now on partition 7 (new). A reader that has checkpointed up to sequence 100 on partition 2 may miss in-flight events that land on partition 7.
+2. **Checkpoint invalidation.** Existing checkpoints in Blob Storage reference the old partition layout. Readers must reset or carefully reconcile their checkpoints after the partition change.
+3. **New readers.** You can now add 7 more readers to the consumer group for full parallelism.
 
-**Safe approach:** Do the partition increase during a low-traffic window. Ensure consumers handle rebalances gracefully (pause processing, commit offsets, then resume).
+**Safe approach:** Perform the partition change during a low-traffic window. Use Event Hubs Capture to ensure no events are lost during migration. Reset consumer checkpoints and replay from a known safe sequence number.
 
 ---
 
@@ -764,7 +772,7 @@ events \
 
 **Requirement A — Alert within 30 seconds of temperature > 90°C:**
 - **Streaming:** Real-time threshold check per event
-- Technology: Kafka (ingest) + Flink (stateless filter per event)
+- Technology: Event Hubs (ingest) + Flink (stateless filter per event)
 - Window: No window — per-event check, no aggregation needed
 - Pattern: `IF temperature > 90 THEN emit_alert(device_id, temperature, event_time)`
 - Latency SLA: < 5 seconds (well within 30 second requirement)
@@ -772,7 +780,7 @@ events \
 
 **Requirement B — Hourly average per device (accurate, handles late data):**
 - **Streaming with batch-like semantics:** Spark Structured Streaming → Delta Lake
-- Technology: Kafka → Spark Structured Streaming with 10-minute watermark → Delta Silver
+- Technology: Event Hubs → Spark Structured Streaming with 10-minute watermark → Delta Silver
 - Window: Tumbling 1-hour window by device_id and event_time
 - Watermark: 10 minutes (devices may have brief connectivity gaps)
 - Late data: Routed to DLQ topic; nightly batch reconciliation updates hourly averages in Delta
@@ -790,7 +798,7 @@ events \
 100,000 IoT devices
          │
          ▼
-    Kafka topic: device_telemetry
+    Event Hub: device_telemetry
     (partitioned by device_id, 100 partitions)
          │
     ┌────┴─────────────────────┐

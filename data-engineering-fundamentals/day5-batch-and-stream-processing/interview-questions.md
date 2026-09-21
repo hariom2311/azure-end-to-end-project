@@ -46,40 +46,40 @@ What is `spark.sql.shuffle.partitions` and what is its default value? When would
 
 ---
 
-## Concept 2: Stream Processing — Kafka, Consumers & Exactly-Once Semantics
+## Concept 2: Stream Processing — Azure Event Hubs, Consumers & Exactly-Once Semantics
 
 **Q9 (Warm-up)**  
-What is a Kafka topic partition? Why does partition count matter for consumer parallelism?
+What is an Azure Event Hub partition? Why does partition count matter for consumer parallelism?
 
 ---
 
 **Q10 (Warm-up)**  
-What is a Kafka consumer offset? Who tracks it — the broker, the consumer, or ZooKeeper?
+What is an Event Hubs consumer checkpoint (sequence number / offset)? Who tracks it — the broker, the consumer, or the namespace?
 
 ---
 
 **Q11 (Conceptual)**  
-What are the three delivery semantics in stream processing? Which is the default for most Kafka consumers, and what causes duplicates in at-least-once delivery?
+What are the three delivery semantics in stream processing? Which is the default for most Event Hubs consumers, and what causes duplicates in at-least-once delivery?
 
 ---
 
 **Q12 (Scenario)**  
-A Kafka topic has 4 partitions and a consumer group has 6 consumers. How many consumers are actively reading? What happens to the other 2?
+An Event Hub has 4 partitions and a consumer group has 6 readers. How many readers are actively reading? What happens to the other 2?
 
 ---
 
 **Q13 (Scenario)**  
-A payment processing consumer crashes after processing 1,000 events but before committing the offset. On restart, what events does it reprocess? What must be true about the consumer's processing logic to make this safe?
+A payment processing consumer crashes after processing 1,000 events but before committing its checkpoint. On restart, what events does it reprocess? What must be true about the consumer's processing logic to make this safe?
 
 ---
 
 **Q14 (Tricky)**  
-You need to ensure a Kafka consumer that writes to PostgreSQL achieves exactly-once semantics. The consumer cannot use Kafka transactions. How do you implement this at the database level?
+You need to ensure an Event Hubs consumer that writes to PostgreSQL achieves exactly-once semantics. The consumer cannot use distributed transactions. How do you implement this at the database level?
 
 ---
 
 **Q15 (Deep dive)**  
-Design a Kafka topic for a global payment system processing 1 million events per second. How many partitions would you create? What is your partitioning key and why? What would happen to ordering guarantees if you changed the key?
+Design an Event Hub for a global payment system processing 1 million events per second. How many partitions would you create? What is your partitioning key and why? What would happen to ordering guarantees if you changed the key?
 
 ---
 
@@ -197,7 +197,7 @@ A data engineer says "we use batch processing because streaming is too complex."
 ---
 
 **Q37**  
-A Kafka topic was created with 3 partitions. The team now needs to scale consumer parallelism to 10 consumers. What must happen first? What is the risk of increasing partition count on an existing topic?
+An Azure Event Hub was created with 3 partitions. The team now needs to scale consumer parallelism to 10 consumers. What must happen first? What is the risk of increasing partition count on an existing Event Hub?
 
 ---
 
