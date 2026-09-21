@@ -4,12 +4,11 @@
 
 Every data engineering system processes data in one of two modes: **batch** (process a large block of data at scheduled intervals) or **stream** (process each event as it arrives). Understanding both — and knowing when to use each — is the most common technical deep-dive in DE interviews. Day 5 covers the mechanics of both modes, the windowing and watermark logic that makes stream processing correct, the architectural patterns that combine them, and the orchestration layer that glues everything together.
 
-**The 5 concepts:**
+**The 4 concepts:**
 1. Batch Processing — Spark Architecture & Partitioning
 2. Stream Processing — Azure Event Hubs, Consumers & Exactly-Once Semantics
 3. Windowing & Watermarks — Handling Time in Streams
-4. Lambda & Kappa Architecture — Batch + Stream Design Patterns
-5. Pipeline Orchestration — Airflow DAGs, Sensors & Backfill
+4. Pipeline Orchestration — Airflow DAGs, Sensors & Backfill
 
 ---
 
@@ -130,115 +129,154 @@ With broadcast: Send small table to all executors → no shuffle needed.
 
 ## Concept 2: Stream Processing — Azure Event Hubs, Consumers & Exactly-Once Semantics
 
-### What is stream processing?
+### The simple idea — think of it like a WhatsApp group
 
-**Stream processing** treats data as an unbounded, continuous sequence of events. Each event is processed as it arrives — or within a small window of time. The dataset has no defined end.
+Imagine a **WhatsApp group** for a bank's payment system:
 
-**When to use streaming:**
-- Data must be fresh within seconds or minutes (fraud detection, live dashboards, alerting)
-- Source systems push events continuously (clickstreams, IoT sensors, payment events)
-- You need to react to individual events, not just periodic aggregates
+- Every time a customer makes a payment, the payment app **sends a message** to the group
+- Multiple teams are **reading** that same group — the fraud team, the analytics team, the audit team
+- Each team reads at their **own pace** and remembers where they left off
+- Messages stay in the group for **7 days** so a team that was offline can catch up
 
-### Azure Event Hubs architecture
+**Azure Event Hubs is exactly this** — a managed cloud service where applications send events, and multiple other applications read those events independently.
 
-**Azure Event Hubs** is a fully managed, real-time event streaming platform on Azure. It acts as a durable, distributed, replayable message bus between producers and consumers. Event Hubs exposes a **Kafka-compatible endpoint** — any Kafka producer/consumer works against Event Hubs with only a connection string change.
+---
 
-```
-Producers                Event Hubs Namespace        Consumers
-─────────               ──────────────────────       ─────────
-Payment       ──────►  Event Hub: payments           Fraud service
-service       ──────►  ├── Partition 0               Audit service
-                       ├── Partition 1               Analytics job
-Order         ──────►  └── Partition 2
-service
-```
+### Real example: A payment is made at a supermarket
 
-**Event Hub:** A named stream of records within a namespace. Equivalent to a Kafka topic — append-only.
-
-**Partition:** Event Hubs are split into partitions for parallelism. Each partition is an ordered, immutable log. Records in a partition have monotonically increasing **sequence numbers** (equivalent to Kafka offsets).
-
-**Sequence number / Offset:** The position of an event within a partition. Consumers track their own checkpoints — they can replay events by resetting to an earlier sequence number.
-
-**Retention:** Event Hubs retains events for 1–90 days (configurable; Premium/Dedicated tiers support longer). This enables replays and multiple independent consumer groups reading the same hub.
-
-**Key Azure-specific concepts:**
-
-| Concept | Event Hubs | Kafka equivalent |
-|---|---|---|
-| Namespace | Container for multiple Event Hubs | Kafka cluster |
-| Event Hub | Named stream | Topic |
-| Consumer Group | Independent read position per application | Consumer group |
-| Partition count | Set at creation (2–32 Standard; up to 2000 Dedicated) | Set at creation, can be increased |
-| Capture | Auto-archive events to Azure Blob / ADLS Gen2 as Avro/Parquet | No direct equivalent |
-| Schema Registry | Built-in schema validation and evolution | Confluent Schema Registry |
-
-### Consumer groups
-
-A **consumer group** is an independent view of the event stream — each consumer group maintains its own checkpoint (offset/sequence number) independently.
+**What happens step by step:**
 
 ```
-Event Hub: payments (3 partitions)
-
-Consumer Group "analytics":       Consumer Group "fraud":
-Reader A1 → Partition 0           Reader B1 → Partition 0 + 1
-Reader A2 → Partition 1           Reader B2 → Partition 2
-Reader A3 → Partition 2
-
-(Both groups read all events independently from their own checkpoints)
+1. Customer taps card at Woolworths checkout
+         │
+         ▼
+2. Payment app sends an event to Event Hubs:
+   {
+     "event_id": "EVT-20240115-001",
+     "card_id":  "4111-xxxx-xxxx-1234",
+     "amount":   45.80,
+     "merchant": "Woolworths Sydney CBD",
+     "timestamp": "2024-01-15T09:01:05Z"
+   }
+         │
+         ▼
+3. Event Hubs stores the event in a partition (like a queue lane)
+         │
+    ┌────┴────────────────────────────┐
+    │                                 │
+    ▼                                 ▼
+4a. Fraud team reads it              4b. Analytics team reads it
+    → checks: 3 taps in 1 min?           → updates daily spend report
+    → alerts if suspicious               → updates merchant dashboard
+    (reads at their own checkpoint)       (reads at their own checkpoint)
 ```
 
-**Key rule:** `#readers ≤ #partitions`. If you have more readers in a group than partitions, some readers are idle.
+**Key insight:** The payment app sends the event **once**. Both teams read it **independently**. Neither team blocks the other.
 
-**Event Hubs Standard limit:** 20 consumer groups per Event Hub. Premium/Dedicated: unlimited.
+---
 
-### Delivery semantics
+### Core concepts explained simply
 
-| Semantic | Guarantee | Risk | How |
+**Event Hub** — the named stream. Like a specific WhatsApp group. You might have one Event Hub for `payments`, another for `logins`, another for `website-clicks`.
+
+**Partition** — a lane inside the Event Hub. Events for the same card always go to the same lane (so they stay in order). More lanes = more teams can read in parallel.
+
+```
+Event Hub: payments
+├── Partition 0  → all events for cards starting with 0–3
+├── Partition 1  → all events for cards starting with 4–6
+└── Partition 2  → all events for cards starting with 7–9
+```
+
+**Sequence number** — the position of an event in its partition (0, 1, 2, 3 …). Like the message number in a WhatsApp group. A consumer remembers its last-read sequence number so it knows where to continue after a restart.
+
+**Consumer Group** — an independent reader. The fraud team is one consumer group; the analytics team is another. Each maintains its own bookmark (checkpoint). They never interfere with each other.
+
+**Checkpoint** — the bookmark. After processing event #47, the consumer saves "I've read up to 47" to Azure Blob Storage. If it crashes and restarts, it picks up from 47.
+
+**Retention** — how long Event Hubs keeps messages (default 1 day, up to 90 days). A team that was down for 2 days can replay all missed events if retention covers that window.
+
+---
+
+### The three delivery guarantees
+
+> **Teaching analogy:** You send a parcel.
+
+| Guarantee | Parcel analogy | What happens | Risk |
 |---|---|---|---|
-| At-most-once | Each event delivered 0 or 1 times | Data loss (if consumer crashes before processing) | Checkpoint before processing |
-| At-least-once | Each event delivered 1+ times | Duplicates (if consumer crashes after processing but before checkpoint) | Checkpoint after processing |
-| Exactly-once | Each event delivered exactly 1 time | None — but complex to implement | Idempotent consumers + atomic checkpoint + output write |
+| At-most-once | Post it and forget | Checkpoint first, then process. If crash during processing → event lost | Data loss |
+| At-least-once | Send with tracking + retry on no-reply | Process first, then checkpoint. If crash before checkpoint → reprocess | Duplicates |
+| Exactly-once | Courier with signed receipt + no-duplicate logic | Process + checkpoint atomically, sink is idempotent | Complex but safe |
 
-### Exactly-once semantics (EOS)
+**In practice, most systems use at-least-once + an idempotent sink.**
 
-**Producer side:** Event Hubs does not support Kafka-style idempotent producers natively. Use idempotent message design — include a unique `event_id` in every event payload so consumers can deduplicate.
+---
 
-**Consumer side:** The consumer's processing must be idempotent — processing the same event twice produces the same result.
+### What "idempotent sink" means — with example
 
-**End-to-end EOS with Spark Structured Streaming + Event Hubs:**
-- Spark reads from Event Hubs using the `azure-eventhubs-spark` connector
-- Checkpoints are stored in ADLS Gen2 or Azure Blob Storage
-- If the consumer crashes, it restarts from the last checkpoint — the output sink deduplicates using the event's sequence number or `event_id`
+Idempotent = "doing it twice gives the same result as doing it once."
 
-**Practical EOS for a database sink:**
+**Problem:** The analytics consumer processes payment EVT-001, writes to the database, then crashes before checkpointing. On restart it reprocesses EVT-001. Now EVT-001 is in the database **twice** → revenue is double-counted.
+
+**Fix — use UPSERT (INSERT + ON CONFLICT UPDATE):**
+
 ```sql
--- Upsert instead of insert — idempotent:
-INSERT INTO silver.events (event_id, ...) VALUES (...)
-ON CONFLICT (event_id) DO UPDATE SET ...=EXCLUDED....;
--- Re-processing the same event_id is a no-op: same result
+-- If EVT-001 already exists → update in place (no duplicate)
+-- If EVT-001 is new → insert it
+INSERT INTO silver.payments (event_id, card_id, amount, merchant, event_time)
+VALUES ('EVT-001', '4111-xxxx-1234', 45.80, 'Woolworths', '2024-01-15T09:01:05Z')
+ON CONFLICT (event_id)
+DO UPDATE SET amount = EXCLUDED.amount,
+              merchant = EXCLUDED.merchant;
+
+-- Processing EVT-001 ten times → same single row in the table
 ```
 
-**Spark Structured Streaming connection:**
+Now re-processing the same event is completely safe.
+
+---
+
+### Reading from Event Hubs into Spark (code)
+
 ```python
-connection_string = "Endpoint=sb://mynamespace.servicebus.windows.net/;..."
+# Spark Structured Streaming reads Event Hubs as a live stream
+connection_string = "Endpoint=sb://mybank.servicebus.windows.net/;..."
 
-df = spark.readStream \
+raw_stream = spark.readStream \
     .format("eventhubs") \
-    .options(**{"eventhubs.connectionString": connection_string,
-                "eventhubs.consumerGroup": "analytics"}) \
+    .options(**{
+        "eventhubs.connectionString": connection_string,
+        "eventhubs.consumerGroup":    "analytics-team"
+    }) \
     .load()
+
+# Each row has: body, sequenceNumber, offset, enqueuedTime, partition
+payments = raw_stream.select(
+    from_json(col("body").cast("string"), payment_schema).alias("data")
+).select("data.*")
+
+# Write to Delta Lake Silver table (streaming write)
+payments.writeStream \
+    .format("delta") \
+    .option("checkpointLocation", "abfss://checkpoints/payments/") \
+    .outputMode("append") \
+    .start("abfss://silver/payments/")
 ```
 
-### Event Hubs performance levers
+**What the checkpoint does:** Every micro-batch, Spark saves the last sequence number it processed to `abfss://checkpoints/payments/`. On restart, it reads from that sequence number — no events are skipped, no events are reprocessed (as long as the sink is idempotent).
 
-| Lever | Effect |
+---
+
+### Azure Event Hubs key facts for interviews
+
+| Fact | Detail |
 |---|---|
-| Increase partition count | More consumer parallelism (set at creation; cannot change on Standard tier) |
-| Throughput Units (Standard) | 1 TU = 1 MB/s ingress, 2 MB/s egress — scale up for high-volume |
-| Processing Units (Premium) | Higher throughput, dynamic scaling, dedicated resources |
-| `EventHubProducerClient` batch size | Larger batches → higher throughput, higher latency |
-| Event Hub Capture | Auto-archive raw events to ADLS Gen2 — free replay without custom consumer code |
-| Compaction (via Schema Registry) | Not native — implement at consumer side using `event_id` dedup |
+| Partition count | Fixed at creation on Standard tier (2–32). Cannot be changed without recreating the hub. |
+| Retention | 1–90 days on Standard/Premium. Use **Event Hub Capture** to archive to ADLS Gen2 forever. |
+| Throughput Units | Standard tier: 1 TU = 1 MB/s ingress, 2 MB/s egress. Scale TUs for high volume. |
+| Consumer groups | Up to 20 on Standard tier. Each group has its own independent checkpoint. |
+| Kafka compatibility | Event Hubs exposes a Kafka-compatible endpoint — existing Kafka code works with just a connection string change. |
+| Capture | Auto-archives all events to ADLS Gen2 as Avro/Parquet — enables replay without holding events in the hub. |
 
 ---
 
@@ -321,96 +359,7 @@ events \
 
 ---
 
-## Concept 4: Lambda & Kappa Architecture — Batch + Stream Design Patterns
-
-### The core problem
-
-Pure batch: fresh data available only after the batch window closes (e.g., hourly, daily). Stale for interactive dashboards.
-
-Pure stream: fast and fresh, but stateful aggregations over long windows (months of history) are expensive to maintain in a stream processor. Reprocessing historical data requires replaying the entire stream.
-
-**Lambda and Kappa are two architectural patterns that solve this tension.**
-
-### Lambda Architecture
-
-**Two paths, one serving layer:**
-
-```
-Source events
-    │
-    ├──► Batch layer  (Spark on HDFS/S3)
-    │       Reprocesses all historical data nightly
-    │       Produces accurate, complete batch views
-    │
-    ├──► Speed layer  (Event Hubs + Flink/Spark Streaming)
-    │       Processes only recent events (last few hours)
-    │       Produces approximate/recent real-time views
-    │
-    └──► Serving layer (merges batch view + speed view)
-            Answers queries using:
-            - Batch view for old data (complete)
-            - Speed view for recent data (approximate)
-```
-
-**The batch view** is authoritative and recomputed from scratch. It catches corrections, late arrivals, and is always accurate.
-
-**The speed view** covers only the recent window (the "hot" data the batch hasn't processed yet). It is eventually superseded by the next batch run.
-
-**Trade-off:** Two codebases doing essentially the same logic (batch and streaming). The logic must be kept in sync. Historically, this was unavoidable — but it's the biggest operational pain point of Lambda.
-
-### Kappa Architecture
-
-**One path, one technology:**
-
-```
-Source events
-    │
-    └──► Stream layer only  (Event Hubs + Flink / Spark Streaming)
-             Processes all events (recent and historical)
-             For reprocessing: replay from Event Hubs (long retention) or ADLS event log
-             Produces one unified view
-```
-
-**Key insight:** If you use Event Hubs with long retention (up to 90 days, or infinite with Capture to ADLS Gen2) or store a replay log in ADLS, you can reprocess historical data by replaying the stream from the beginning. No separate batch layer needed.
-
-**When Kappa works well:**
-- Source events are immutable and replayable (Event Hubs with adequate retention or Capture enabled)
-- Transformations are stateless or have short state windows
-- The team wants one codebase and one processing paradigm
-
-**When Lambda is still preferred:**
-- Reprocessing petabytes of history is impractical in a streaming engine
-- The batch layer uses massively parallel SQL (Spark, Trino) that outperforms stream processors for large-scale historical aggregations
-- Existing batch investment is significant and correct; only real-time layer needs adding
-
-### Practical comparison
-
-| Dimension | Lambda | Kappa |
-|---|---|---|
-| Codebases | 2 (batch + stream) | 1 (stream only) |
-| Historical reprocessing | Full batch recompute | Replay from event log |
-| Accuracy | Batch view is authoritative | Single view (stream) is authoritative |
-| Operational complexity | High (two systems) | Lower (one system) |
-| Best fit | Large-scale history + real-time dashboard | Event-driven systems with long Event Hubs retention |
-
-### Modern convergence: the Lakehouse streaming approach
-
-Delta Lake / Apache Iceberg with Spark Structured Streaming + batch both reading the same table format:
-
-```
-Event Hubs ──► Spark Structured Streaming ──► Delta Lake Silver table
-                                                       │
-                              ┌────────────────────────┤
-                              ▼                        ▼
-                     Streaming read               Batch read
-                  (real-time dashboard)       (nightly Gold model)
-```
-
-The Delta table is both the streaming sink and the batch source — one storage layer, one schema, one truth. This is the practical Kappa in modern DE stacks.
-
----
-
-## Concept 5: Pipeline Orchestration — Airflow DAGs, Sensors & Backfill
+## Concept 4: Pipeline Orchestration — Airflow DAGs, Sensors & Backfill
 
 ### What is orchestration?
 
@@ -572,7 +521,6 @@ with DAG(
 | Concept | Key interview point |
 |---|---|
 | Batch / Spark | Shuffle is expensive; broadcast small tables; lazy evaluation; partition skew |
-| Event Hubs / EOS | Checkpoints are consumer-side; at-least-once is default; EOS requires idempotent sinks |
+| Event Hubs / EOS | Checkpoints are consumer-side; at-least-once is default; idempotent sink = safe re-processing |
 | Windowing | Event time vs. processing time; watermark = lateness tolerance; session windows close on gap |
-| Lambda / Kappa | Lambda = two codebases, authoritative batch; Kappa = one codebase, stream replay |
 | Airflow | `execution_date` ≠ wall clock; sensors wait for external conditions; XComs for metadata only |
