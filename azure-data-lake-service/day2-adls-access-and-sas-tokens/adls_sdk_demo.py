@@ -1,17 +1,26 @@
 """
 ADLS Gen2 SDK Demo — Day 2
 Tests: list containers, create directory, upload file, read file, list paths
-Run: python adls_sdk_demo.py
 
-Set these two env vars before running (never hardcode secrets):
-  $env:ADLS_ACCOUNT_NAME = "stadlsdev001"
-  $env:ADLS_SAS_TOKEN    = "?sv=2022-11-02&ss=b&..."
+Loads credentials from the project root .env file automatically.
+Run: python adls_sdk_demo.py
 """
 
 import os
 import sys
+from pathlib import Path
+from dotenv import load_dotenv
 from azure.storage.filedatalake import DataLakeServiceClient
 from azure.core.exceptions import ResourceExistsError, ResourceNotFoundError
+
+# Walk up from this file's directory to find the project root .env
+_here = Path(__file__).resolve().parent
+for _parent in [_here, *_here.parents]:
+    _env = _parent / ".env"
+    if _env.exists():
+        load_dotenv(_env)
+        print(f"Loaded .env from: {_env}")
+        break
 
 
 def get_client() -> DataLakeServiceClient:
