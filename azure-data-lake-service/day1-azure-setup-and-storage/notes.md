@@ -151,7 +151,7 @@ Both are Microsoft Azure storage services that store files (blobs). But they ser
 | Think of it as | A Google Drive for apps — great for storing any file | A proper data warehouse filesystem — built for big data analytics |
 | Folder structure | Flat — no real folders, just "/" in the name | True hierarchical directories — real folders with permissions |
 | Performance | Good for individual file access | Optimised for reading millions of files in parallel (Spark, Databricks) |
-| Security | Container-level or SAS token access | File and folder-level permissions (POSIX ACLs) |
+| Security | Container-level or SAS(Shared Access Signature) token access | File and folder-level permissions (POSIX ACLs) |
 | Cost | Slightly cheaper | Slightly more expensive but much faster for analytics workloads |
 
 **The key technical difference:**
