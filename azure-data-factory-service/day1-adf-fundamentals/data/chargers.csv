@@ -1,0 +1,16 @@
+charger_id,location_id,location_name,city,state,connector_type,max_power_kw,status,installed_date,last_serviced,total_sessions,total_energy_kwh,manufacturer,model
+CHG_001,LOC_BLR_01,Koramangala Hub,Bangalore,Karnataka,CCS2,50,operational,2025-03-10,2026-01-01,1243,18645.00,ABB,Terra 54
+CHG_002,LOC_BLR_01,Koramangala Hub,Bangalore,Karnataka,Type2,22,operational,2025-03-10,2026-01-05,876,9636.00,Schneider,EVlink Pro
+CHG_003,LOC_BLR_02,Whitefield Depot,Bangalore,Karnataka,CHAdeMO,50,operational,2025-04-15,2025-12-20,987,14805.00,ABB,Terra 54
+CHG_004,LOC_MUM_01,Andheri Station,Mumbai,Maharashtra,Type2,22,operational,2025-05-01,2026-01-10,1102,12122.00,Schneider,EVlink Pro
+CHG_005,LOC_MUM_01,Andheri Station,Mumbai,Maharashtra,CCS2,50,maintenance,2025-05-01,2025-11-15,654,9810.00,ABB,Terra 54
+CHG_006,LOC_HYD_01,Hitech City Plaza,Hyderabad,Telangana,CCS2,150,operational,2025-06-20,2026-01-12,765,57375.00,Tritium,Veefil-RT
+CHG_007,LOC_HYD_01,Hitech City Plaza,Hyderabad,Telangana,CHAdeMO,50,operational,2025-06-20,2026-01-08,543,8145.00,ABB,Terra 54
+CHG_008,LOC_DEL_01,Connaught Place Fast,Delhi,Delhi,CCS2,150,operational,2025-07-01,2026-01-15,934,70050.00,Tritium,Veefil-RT
+CHG_009,LOC_DEL_01,Connaught Place Fast,Delhi,Delhi,Type2,22,operational,2025-07-01,2025-12-28,712,7832.00,Schneider,EVlink Pro
+CHG_010,LOC_CHN_01,T Nagar Charging Bay,Chennai,Tamil Nadu,CCS2,50,operational,2025-08-15,2026-01-03,445,6675.00,ABB,Terra 54
+CHG_011,LOC_PUN_01,Pune FC Road Hub,Pune,Maharashtra,CCS2,50,operational,2025-09-01,2025-12-15,378,5670.00,ABB,Terra 54
+CHG_012,LOC_DEL_02,Dwarka Sector 12,Delhi,Delhi,CCS2,150,operational,2025-09-10,2026-01-14,512,38400.00,Tritium,Veefil-RT
+CHG_013,LOC_BLR_03,Electronic City Gate,Bangalore,Karnataka,Type2,22,offline,2025-10-01,2025-10-15,12,132.00,Schneider,EVlink Pro
+CHG_014,LOC_MUM_02,BKC Station,Mumbai,Maharashtra,CCS2,150,operational,2025-10-20,2026-01-11,298,22350.00,Tritium,Veefil-RT
+CHG_015,LOC_HYD_02,Gachibowli Campus,Hyderabad,Telangana,CCS2,50,operational,2025-11-05,2026-01-09,187,2805.00,ABB,Terra 54

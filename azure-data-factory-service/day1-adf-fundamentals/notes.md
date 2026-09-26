@@ -288,7 +288,7 @@ ADF has a built-in expression language used in Dataset paths, activity parameter
 |---|---|
 | Name | `ds_http_source_csv` |
 | Linked service | `ls_http_source` |
-| Relative URL | `/hariom2311/azure-ev-end-to-end-project/main/payments%20-%2001%20Jan%2026%20-%2017%20Sep%2026.csv` |
+| Relative URL | `/hariom2311/azure-ev-end-to-end-project/main/azure-data-factory-service/day1-adf-fundamentals/data/payments.csv` |
 | First row as header | Checked |
 | Import schema | From connection/store |
 
@@ -432,6 +432,8 @@ This passes the pipeline's `run_date` parameter into the Dataset, which inserts 
 - By default, columns are mapped by name (automatic)
 
 You should see the source CSV columns on the left mapped to matching sink columns on the right.
+
+> **Data file note:** The source CSV (`data/payments.csv`) contains 20 synthetic EV payment records with columns: `id`, `amount`, `currency`, `status`, `order_id`, `method`, `email`, `created_at`, and more. It is stored in this repo under `azure-data-factory-service/day1-adf-fundamentals/data/` and served via `raw.githubusercontent.com` — no external API or sign-in needed.
 
 **Step 7 — Configure the Settings tab**
 - Click the **"Settings"** tab

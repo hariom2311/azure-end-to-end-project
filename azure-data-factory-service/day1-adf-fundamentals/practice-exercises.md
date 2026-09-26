@@ -137,7 +137,7 @@ Answer the following based on what you have built:
 |---|---|
 | Name | `ds_http_source_csv` |
 | Linked service | `ls_http_source` |
-| Relative URL | `/hariom2311/azure-ev-end-to-end-project/main/payments%20-%2001%20Jan%2026%20-%2017%20Sep%2026.csv` |
+| Relative URL | `/hariom2311/azure-ev-end-to-end-project/main/azure-data-factory-service/day1-adf-fundamentals/data/payments.csv` |
 | First row as header | Checked |
 | Import schema | From connection/store |
 
@@ -324,11 +324,26 @@ You are building an ingestion layer for an EV charging company. There are 20 sou
 
 **Approach:**
 1. Store a JSON or CSV configuration file in `bronze/config/table_config.json` that lists all 20 tables:
+   The config file is already provided in this repo at `data/table_config.json`. Upload it to `bronze/config/table_config.json` in your ADLS Gen2 account.
+
+   Content of `data/table_config.json`:
    ```json
    [
-     { "table_name": "payments",    "source_path": "/data/payments.csv",    "run_date": "2026-09-25" },
-     { "table_name": "sessions",    "source_path": "/data/sessions.csv",    "run_date": "2026-09-25" },
-     { "table_name": "chargers",    "source_path": "/data/chargers.csv",    "run_date": "2026-09-25" }
+     {
+       "table_name": "payments",
+       "source_path": "/hariom2311/azure-ev-end-to-end-project/main/azure-data-factory-service/day1-adf-fundamentals/data/payments.csv",
+       "run_date": "2026-01-15"
+     },
+     {
+       "table_name": "sessions",
+       "source_path": "/hariom2311/azure-ev-end-to-end-project/main/azure-data-factory-service/day1-adf-fundamentals/data/sessions.csv",
+       "run_date": "2026-01-15"
+     },
+     {
+       "table_name": "chargers",
+       "source_path": "/hariom2311/azure-ev-end-to-end-project/main/azure-data-factory-service/day1-adf-fundamentals/data/chargers.csv",
+       "run_date": "2026-01-15"
+     }
    ]
    ```
 2. Use a **Lookup Activity** to read this JSON file from ADLS Gen2 into memory

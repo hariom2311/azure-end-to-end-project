@@ -1,0 +1,23 @@
+[
+  {
+    "table_name": "payments",
+    "source_path": "/hariom2311/azure-ev-end-to-end-project/main/azure-data-factory-service/day1-adf-fundamentals/data/payments.csv",
+    "run_date": "2026-01-15",
+    "format": "csv",
+    "description": "Payment transactions for EV charging subscriptions"
+  },
+  {
+    "table_name": "sessions",
+    "source_path": "/hariom2311/azure-ev-end-to-end-project/main/azure-data-factory-service/day1-adf-fundamentals/data/sessions.csv",
+    "run_date": "2026-01-15",
+    "format": "csv",
+    "description": "EV charging session records including duration and energy consumed"
+  },
+  {
+    "table_name": "chargers",
+    "source_path": "/hariom2311/azure-ev-end-to-end-project/main/azure-data-factory-service/day1-adf-fundamentals/data/chargers.csv",
+    "run_date": "2026-01-15",
+    "format": "csv",
+    "description": "Charger hardware inventory across all locations"
+  }
+]
