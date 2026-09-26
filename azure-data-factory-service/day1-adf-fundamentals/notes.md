@@ -1,539 +1,762 @@
-# Day 1 — Azure Data Factory: Core Concepts, Linked Services, Datasets & Copy Activity
+# Day 1 — Azure Data Factory: Introduction & Key Terminologies
 
 ## Overview
 
-Before building data pipelines in Azure Data Factory, you need to understand what ADF actually is, why it exists, and how its three fundamental building blocks — Linked Services, Datasets, and Activities — fit together. Day 1 covers everything from provisioning your first ADF instance in the Azure portal to running a Debug pipeline that copies a CSV file from an HTTP source into ADLS Gen2 as Parquet.
+Azure Data Factory (ADF) is Microsoft's cloud-native data integration service. Before writing a single pipeline, you need to understand what ADF is, what every term means, and how all the pieces connect. Day 1 is a complete introduction — every important ADF concept explained with analogies, plus hands-on steps to create and test each one in the Azure portal.
 
 **The 3 concepts:**
-1. What is Azure Data Factory — why it exists, ETL vs. ELT, ADF vs. Python scripts, and the ADF Studio UI
-2. Linked Services and Datasets — saved connections and data shape/location definitions
-3. Copy Activity and Debug Run — the data mover, schema mapping, DIUs, and fault tolerance
+1. What is ADF — why it exists, core architecture, and the Studio UI
+2. ADF Terminologies — every building block explained: Linked Services, Datasets, Activities, Pipelines, Triggers, Integration Runtime, Parameters, Expressions, Data Flows, Git Integration, Monitoring
+3. Hands-on Walkthrough — create a Linked Service, Dataset, Pipeline, Schedule Trigger, enable Git, and monitor a run using the VoltGrid EV API as the real data source
 
 ---
 
 ## Concept 1: What is Azure Data Factory?
 
-### The core problem ADF solves
+### The problem ADF solves
 
-Imagine your company has data sitting in ten different places: a payment processor's HTTP API, an on-premises SQL Server, an Oracle database in a data centre, Salesforce, and six more SaaS tools. Every night, someone needs to pull data from all ten sources, clean it, and load it into the data lake so analysts can run reports in the morning.
+Imagine your company has data sitting in 10 different places: a REST API, an on-premises SQL Server, Salesforce, an FTP server, and 6 more SaaS tools. Every night, someone needs to pull data from all 10 sources, clean it, and load it into the data lake so analysts can query it in the morning.
 
-Without ADF, a data engineer writes Python scripts for each source, sets up a scheduler (cron or Airflow), handles retries manually, builds monitoring dashboards from scratch, and re-does all of this work every time a new source is added. This works — but it does not scale, it is hard for non-engineers to maintain, and monitoring failures at 3 AM is miserable.
+Without ADF:
+- A data engineer writes Python scripts for each source
+- Sets up cron jobs or Airflow to schedule them
+- Writes retry logic, monitoring, and alerting from scratch
+- Rebuilds all of this each time a new source is added
 
-**Azure Data Factory** is Microsoft's managed, cloud-native data integration service. It is a no-code / low-code orchestration platform that:
-- Connects to 90+ data sources out of the box (HTTP, SQL, Salesforce, SAP, S3, ADLS, CosmosDB, and more)
-- Schedules and orchestrates data movement and transformation pipelines
-- Provides a visual drag-and-drop pipeline designer
-- Monitors every pipeline run with full logs, retry history, and alerting
-- Scales automatically with zero infrastructure to manage
+**Azure Data Factory** handles all of this out of the box:
 
-### ETL vs. ELT — and where ADF fits
-
-**ETL (Extract, Transform, Load):** Transform data before loading it into the destination. The transformation happens in a middle-tier compute engine. The destination receives clean, shaped data.
-
-**ELT (Extract, Load, Transform):** Load raw data into the destination first, then transform it inside the destination using its own compute (Spark, SQL). The destination is powerful enough to do the transformation itself.
-
-| | ETL | ELT |
+| | Python Script | Azure Data Factory |
 |---|---|---|
-| When to transform | Before loading | After loading |
-| Where transformation runs | Middle-tier compute (SSIS, Informatica, ADF Data Flow) | Inside the destination (Spark, Synapse SQL, dbt) |
-| Best for | Structured, relational targets (data warehouse) | Cloud data lakes (Databricks, Synapse, BigQuery) |
-| ADF role | Full ETL engine using Data Flow activity | Orchestration layer — load raw to Bronze, trigger Spark to transform |
-
-**In this course:** We use ADF for ELT. ADF's Copy Activity loads raw data into the Bronze layer of ADLS Gen2. Databricks or Synapse Spark then transforms Bronze → Silver → Gold. ADF orchestrates the whole chain.
-
-### ADF vs. writing Python scripts
-
-A common question: *why use ADF at all? Can't I just write a Python script with `requests` and `pyarrow`?*
-
-| Dimension | Python script | Azure Data Factory |
-|---|---|---|
-| Time to first pipeline | Fast (minutes) | Slightly slower (UI setup) |
-| Connectivity | Write SDK code per source | 90+ connectors built-in |
-| Scheduling | External tool (cron, Airflow) | Built-in triggers (schedule, event, tumbling window) |
+| Data source connectivity | Write SDK code per source | 90+ built-in connectors |
+| Scheduling | External (cron / Airflow) | Built-in Schedule / Event / Tumbling Window triggers |
 | Monitoring | Build it yourself | Built-in run history, alerts, Log Analytics |
-| Retry logic | Write it yourself | Configurable retry policy per activity |
-| Scaling | Manual (add more VMs) | Auto-scale with DIUs |
-| Non-engineer friendly | No | Yes — visual designer |
-| Cost | Compute cost 24/7 | Serverless — pay only per pipeline run |
+| Retry logic | Write it yourself | Configurable per activity |
+| Scaling | Manual | Auto-scales with DIUs |
+| Cost model | Pay for compute 24/7 | Serverless — pay only per pipeline run |
+| Non-engineer friendly | No | Yes — visual drag-and-drop designer |
 
-**When Python scripts are better:** Simple one-time migrations, highly custom transformation logic, team with strong Python skills and an existing Airflow setup.
+### ETL vs. ELT — where ADF fits
 
-**When ADF is better:** Ongoing, scheduled ingestion from many sources, team has mixed technical skills, built-in monitoring is a priority, Azure-native ecosystem.
+**ETL (Extract → Transform → Load):** Transform data in a middle layer before loading. Old approach — used when the destination was a slow relational data warehouse.
+
+**ELT (Extract → Load → Transform):** Load raw data first, then transform it inside the powerful destination (Spark, Synapse SQL). Modern approach for cloud data lakes.
+
+```
+ETL:  Source → [Transform in middle] → Destination (clean data)
+ELT:  Source → [Load raw] → Destination → [Transform inside destination]
+```
+
+**ADF in this course:** We use ADF for **ELT**. ADF's Copy Activity loads raw data from the VoltGrid API into the Bronze layer of ADLS Gen2. Databricks or Synapse Spark then transforms Bronze → Silver → Gold. ADF orchestrates the whole chain.
 
 ### The ADF Studio UI — 4 panels
 
-ADF Studio is the browser-based designer at `https://adf.azure.com`. It has four main areas:
+ADF Studio is the browser-based designer at `https://adf.azure.com`.
 
 ```
 ADF Studio
-├── Author     ← Build pipelines, linked services, datasets, data flows
-├── Monitor    ← View all pipeline runs, activity runs, trigger runs, debug history
-├── Manage     ← Manage linked services, integration runtimes, git configuration, triggers
-└── Learn      ← ADF documentation, templates, tutorials (quick-start gallery)
+├── ✏️  Author   — Build pipelines, datasets, linked services, data flows
+├── 📺  Monitor  — View all pipeline runs, activity runs, trigger runs
+├── 🔧  Manage   — Linked services, integration runtimes, triggers, Git config
+└── 🎓  Learn    — Template gallery, tutorials, quick-start guides
 ```
 
 | Panel | What you do here |
 |---|---|
-| **Author** | Create and edit pipelines. Drag activities onto the canvas. Configure source and sink. Set parameters. Write expressions. |
-| **Monitor** | See every pipeline run. Filter by status (Succeeded, Failed, In Progress). Drill into individual activity runs. View input/output JSON. |
-| **Manage** | Create Linked Services (connections). Configure Integration Runtime (self-hosted or Azure). Set up triggers. Manage Git repo. |
-| **Learn** | ADF template gallery — pre-built pipeline templates for common patterns (HTTP to ADLS, SQL to Parquet, SalesForce to Data Lake). |
+| **Author** | Create pipelines. Drag activities onto the canvas. Write expressions. Set parameters. |
+| **Monitor** | See every run. Filter by status. Drill into individual activity runs and view logs. |
+| **Manage** | Create connections (Linked Services). Configure Integration Runtime. Manage triggers. |
+| **Learn** | Browse pre-built pipeline templates — HTTP to ADLS, SQL to Parquet, Salesforce to lake. |
 
 ---
 
-### Step-by-step: Create an ADF instance in `rg-datalake-dev`
+## Concept 2: ADF Terminologies — Every Building Block
 
-**Step 1 — Open the Azure Portal**
-- Go to `https://portal.azure.com` and sign in
+### 2.1 Linked Service
 
-**Step 2 — Search for Data Factory**
-- In the top search bar, type **"Data factories"**
-- Click **"Data factories"** under Services
+**What it is:** A saved connection definition — stores the URL, authentication method, and credentials (or a Key Vault reference) for a data source or destination.
 
-**Step 3 — Click Create**
-- Click **"+ Create"**
+**Analogy:** A saved contact in your phone. You do not re-enter the bank's number every time you call — you tap "Bank". Similarly, ADF does not re-enter connection details every pipeline — it references the saved Linked Service.
 
-**Step 4 — Fill in the Basics tab**
+**Key rule:** One Linked Service per source system. All pipelines that connect to the same REST API share one Linked Service.
 
-| Field | Value |
+```
+Linked Services (configured once in Manage panel):
+├── ls_voltgrid_api     ← REST API: https://your-app.vercel.app
+├── ls_adls_gen2        ← ADLS Gen2: stadlsdev001
+├── ls_sql_server       ← Azure SQL Database: payments-db.database.windows.net
+└── ls_keyvault         ← Azure Key Vault: kv-ev-intelligence-dev
+```
+
+**Supported authentication methods:**
+| Method | When to use |
 |---|---|
-| Subscription | Free Trial (or your active subscription) |
-| Resource group | `rg-datalake-dev` |
-| Region | **Australia East** |
-| Name | `adf-datalake-dev-001` (must be globally unique) |
-| Version | **V2** (always use V2) |
-
-- Click **"Next: Git configuration"**
-
-**Step 5 — Git configuration tab**
-- For this course: check **"Configure Git later"**
-- In production you would connect to Azure DevOps or GitHub for source control
-- Click **"Next: Networking"**
-
-**Step 6 — Networking tab**
-- Connectivity method: **Public endpoint**
-- Click **"Next: Advanced"**
-
-**Step 7 — Advanced tab (leave defaults)**
-- Click **"Review + create"**
-
-**Step 8 — Review and Create**
-- Confirm: Resource group = `rg-datalake-dev`, Region = Australia East, Version = V2
-- Click **"Create"**
-- Deployment takes approximately 60 seconds
-
-**Step 9 — Launch ADF Studio**
-- Click **"Go to resource"**
-- On the ADF overview page, click **"Launch Studio"** (the blue button)
-- ADF Studio opens in a new tab at `https://adf.azure.com`
-- You should see the Author canvas with the 4 panel icons on the left sidebar
-
-> **Checkpoint:** You can see the ADF Studio interface with the pencil icon (Author), monitor icon (Monitor), toolbox icon (Manage), and graduation cap icon (Learn) in the left sidebar. The Author canvas is empty — ready to build.
+| Anonymous | Public HTTP endpoints |
+| Account key | ADLS Gen2 or Blob Storage (dev only) |
+| Service Principal | Production — app identity, no user involved |
+| Managed Identity | Best practice — no secrets at all, Azure handles auth |
+| Username/Password | Legacy sources (FTP, SFTP, basic HTTP) |
 
 ---
 
-## Concept 2: Linked Services and Datasets
+### 2.2 Dataset
 
-### Linked Services — analogy: saved contacts in your phone
+**What it is:** A description of the data — its location (which Linked Service, which path) and its shape (file format, schema, delimiter). A Dataset does NOT contain data — it is a pointer.
 
-A **Linked Service** is a saved connection definition. It stores the information ADF needs to connect to a data source or destination: the URL, authentication method, credentials (or a reference to Key Vault for the credentials).
-
-**Phone book analogy:** A Linked Service is like a saved contact in your phone. When you want to call your bank, you do not re-enter the phone number every time — you tap "Bank" and the number is already there. Similarly, when you want to connect to your ADLS Gen2 account, you do not re-enter the account name, key, and URL every time — you reference the Linked Service `ls_adls_gen2` and ADF fills in the details.
-
-**Key rule:** Create one Linked Service per source system, not one per pipeline. All pipelines that read from ADLS Gen2 share the same `ls_adls_gen2` Linked Service.
+**Analogy:** A shipping label on a parcel. The label says where to pick it up (source), what format the contents are in, and where to deliver it. The delivery driver (Copy Activity) reads the label and moves the parcel.
 
 ```
-Linked Services (created once in Manage panel):
-├── ls_adls_gen2         ← connects to stadlsdev001 (ADLS Gen2 storage account)
-├── ls_http_source       ← connects to https://data.example.com (HTTP endpoint)
-├── ls_sql_payments      ← connects to payments SQL Server database
-└── ls_keyvault          ← connects to Azure Key Vault (to retrieve secrets)
+Dataset = Linked Service + Location + Format
 
-Pipelines (reuse existing Linked Services):
-├── pl_ingest_http_to_bronze       → uses ls_http_source + ls_adls_gen2
-├── pl_ingest_sql_to_bronze        → uses ls_sql_payments + ls_adls_gen2
-└── pl_refresh_gold_payments       → uses ls_adls_gen2 + ls_adls_gen2
-```
-
-### Datasets — analogy: shipping label on a parcel
-
-A **Dataset** is a description of data — its location (which Linked Service, which container/path) and its shape (file format, delimiter, schema). It does not contain the data itself; it just describes where the data is and what it looks like.
-
-**Shipping label analogy:** A Dataset is like the label on a parcel. The label tells the courier where to pick up the package (source), what is inside (format), and where to deliver it (sink). The courier (Copy Activity) does not need to know the internals — it just reads the label and moves the parcel.
-
-```
-Dataset = Linked Service reference + location + format
-
-ds_http_source_csv:
-  Linked Service: ls_http_source
-  Relative URL:   /datasets/ev-payments/payments.csv
-  Format:         DelimitedText (CSV)
-  Delimiter:      comma
-  First row header: true
+ds_voltgrid_payments_json:
+  Linked Service: ls_voltgrid_api
+  Relative URL:   /api/db/payments/
+  Format:         JSON
+  Auth header:    Token {token}    ← passed at runtime via pipeline parameter
 
 ds_adls_bronze_parquet:
   Linked Service: ls_adls_gen2
   Container:      bronze
-  Directory:      payments/@{pipeline().parameters.run_date}
-  Format:         Parquet
-  Compression:    snappy
+  Directory:      payments/@{dataset().run_date}
+  Format:         Parquet (Snappy compression)
 ```
 
-### ADF Expressions
+**Common Dataset formats:**
+| Format | Use case |
+|---|---|
+| DelimitedText (CSV) | Simple flat files |
+| JSON | REST API responses |
+| Parquet | Bronze/Silver/Gold lake storage |
+| Delta | Delta Lake tables |
+| Binary | Files you don't want ADF to inspect (just move as-is) |
 
-ADF has a built-in expression language used in Dataset paths, activity parameters, and conditions. Expressions are wrapped in `@{ }` or `@` when the entire value is an expression.
+---
+
+### 2.3 Activity
+
+**What it is:** One unit of work inside a pipeline. ADF has three categories of activities:
+
+#### Data Movement Activities
+| Activity | What it does |
+|---|---|
+| **Copy Activity** | Reads from a source Dataset, writes to a sink Dataset. The workhorse of ADF. |
+
+#### Data Transformation Activities
+| Activity | What it does |
+|---|---|
+| **Data Flow** | No-code Spark transformations — filter, join, aggregate, pivot, lookup, split |
+| **Databricks Notebook** | Run a Databricks notebook (Python, Scala, SQL) |
+| **HDInsight Hive/Spark** | Run Spark or Hive jobs on HDInsight |
+| **Azure Function** | Trigger a serverless function |
+
+#### Control Flow Activities
+| Activity | What it does |
+|---|---|
+| **ForEach** | Loop over an array — run inner activities for each item |
+| **If Condition** | Branch: if true → do A, else → do B |
+| **Switch** | Multi-branch: route based on a value (like a switch statement) |
+| **Lookup** | Query a database/file and return the result for use downstream |
+| **Wait** | Pause the pipeline for N seconds |
+| **Execute Pipeline** | Call another pipeline (modular design) |
+| **Until** | Loop until a condition is true (e.g., wait for a file to arrive) |
+| **Web Activity** | Call any HTTP endpoint — great for Slack/Teams alerts on failure |
+| **Fail** | Explicitly fail the pipeline with a custom message |
+| **Get Metadata** | Get file properties: size, existence, column count, last modified |
+
+---
+
+### 2.4 Pipeline
+
+**What it is:** A logical grouping of activities with defined execution order and dependencies. A pipeline is the workflow.
+
+**Analogy:** A recipe. Individual activities are the steps ("chop onions", "boil water"). The pipeline is the full recipe — it defines the order and what happens if a step fails.
+
+```
+Pipeline: pl_ingest_voltgrid_to_bronze
+├── Get Token (Web Activity)     → calls POST /api/auth/login/ → returns token
+├── Copy Payments (Copy Activity) → On Success of Get Token
+│     Source: ls_voltgrid_api → /api/db/payments/?page=1
+│     Sink:   ls_adls_gen2   → bronze/payments/2026-01-15/
+└── Alert on Failure (Web Activity) → On Failure of Copy Payments → POST to Teams webhook
+```
+
+**Activity dependency types:**
+| Dependency | When the next activity runs |
+|---|---|
+| **On Success** | Only if the previous activity succeeded (green) |
+| **On Failure** | Only if the previous activity failed (red) |
+| **On Completion** | Always — regardless of success or failure |
+| **On Skipped** | Only if the previous activity was skipped |
+
+---
+
+### 2.5 Trigger
+
+**What it is:** Defines when a pipeline runs. Without a trigger, a pipeline only runs when you manually click "Debug" or "Trigger Now".
+
+**Analogy:** An alarm clock. The pipeline is what to do when you wake up. The trigger is the alarm that wakes you.
+
+#### Schedule Trigger
+Runs at fixed times — like a cron job.
+```
+Trigger: trg_daily_ingestion
+Type:    Schedule
+Start:   2026-01-15 02:00 AM UTC
+Recurrence: Every 1 Day
+```
+**Limitation:** Does not track which runs completed. If Monday's run fails, it will not automatically rerun Monday's data — it just fires again on Tuesday.
+
+#### Tumbling Window Trigger
+Like a schedule trigger but **backfill-aware** — it tracks which time windows have been processed and reruns any that failed.
+```
+Trigger: trg_tumbling_payments
+Type:    Tumbling Window
+Frequency: Every 1 Day
+Start: 2026-01-01 (past date — triggers backfill for every day since then)
+```
+Use for: pipelines that process one day/hour of data and must have complete, gap-free history.
+
+#### Storage Event Trigger
+Fires when a blob is created or deleted in Azure Storage.
+```
+Trigger: trg_on_file_arrival
+Type:    Storage Event
+Storage account: stadlsdev001
+Container:       landing-zone
+Blob path begins with: incoming/payments/
+Event:   Blob created
+```
+Use for: file-landing patterns — pipeline runs the moment a file drops into a folder.
+
+#### Manual Trigger
+Run the pipeline on demand via "Trigger Now" in the Studio. Useful for testing and ad-hoc runs.
+
+---
+
+### 2.6 Integration Runtime (IR)
+
+**What it is:** The compute infrastructure that executes ADF activities. It is the engine — ADF Studio is the cockpit.
+
+```
+Integration Runtime Types:
+├── Azure IR (AutoResolveIntegrationRuntime)
+│     ← Default. Managed by Microsoft. No setup needed.
+│     ← Used for: cloud-to-cloud (REST API → ADLS Gen2, Azure SQL → ADLS Gen2)
+│
+├── Self-Hosted IR (SHIR)
+│     ← Software installed on YOUR machine or VM.
+│     ← Used for: on-premises SQL Server, Oracle, SAP inside a private network
+│
+└── Azure-SSIS IR
+      ← Runs legacy SQL Server Integration Services (SSIS) packages in Azure
+      ← Used for: migrating old SSIS ETL jobs to cloud without rewriting them
+```
+
+| | Azure IR | Self-Hosted IR |
+|---|---|---|
+| Setup | None — fully managed | Install agent on a machine in your network |
+| Source location | Public internet or Azure PaaS | On-premises or private VNet |
+| Cost | Included in Copy Activity cost | Cost of the VM running the agent |
+| Use case | REST API, ADLS Gen2, Azure SQL | On-prem SQL Server, Oracle, SAP |
+
+---
+
+### 2.7 Parameters and Expressions
+
+**Parameters** make pipelines reusable. Instead of hardcoding `2026-01-15` in the sink path, you pass it as a parameter at runtime.
+
+**Pipeline parameter example:**
+```
+Parameter: run_date (String, default: "2026-01-15")
+Used in sink path: bronze/payments/@{pipeline().parameters.run_date}/
+```
+
+**Expressions** are ADF's built-in formula language — wrapped in `@{}` or `@` when the whole value is an expression.
 
 ```
 # Reference a pipeline parameter
 @pipeline().parameters.run_date
 
-# Concatenate a dynamic folder path using a parameter
+# Build a dynamic folder path
 @{concat('bronze/payments/', pipeline().parameters.run_date, '/')}
 
-# Reference a system variable (pipeline run ID)
-@pipeline().RunId
+# Today's date as a string
+@{formatDateTime(utcnow(), 'yyyy-MM-dd')}
 
-# Reference an activity output (e.g., from a Lookup activity)
-@activity('LookupSourceList').output.firstRow.table_name
+# Reference a trigger's scheduled time
+@{formatDateTime(trigger().scheduledTime, 'yyyy-MM-dd')}
 
-# Conditional expression
+# Reference output from a previous activity (e.g. Web Activity that fetched a token)
+@activity('GetToken').output.token
+
+# Conditional — use prod account in prod, dev account in dev
 @if(equals(pipeline().parameters.env, 'prod'), 'stadlsprod001', 'stadlsdev001')
+```
+
+**Dataset parameters** — similar to pipeline parameters but scoped to the dataset:
+```
+Dataset: ds_adls_bronze_parquet
+Parameter: run_date (String)
+Directory field: payments/@{dataset().run_date}
 ```
 
 ---
 
-### Step-by-step: Create the ADLS Gen2 Linked Service (`ls_adls_gen2`)
+### 2.8 Data Flow
 
-**Step 1 — Open the Manage panel**
-- In ADF Studio, click the toolbox icon (Manage) in the left sidebar
+**What it is:** A no-code Spark transformation designer built into ADF. Used for complex transformations that need more than column renaming — filtering, joining, aggregating, splitting, pivoting.
 
-**Step 2 — Navigate to Linked Services**
-- Under "Connections", click **"Linked services"**
-- Click **"+ New"**
+**Copy Activity vs Data Flow:**
+| | Copy Activity | Data Flow |
+|---|---|---|
+| Purpose | Move data as-is (minor mapping only) | Transform, enrich, reshape data |
+| Transformations | Column rename + type cast only | Filter, join, aggregate, pivot, lookup, split |
+| Underlying engine | ADF managed movement | Apache Spark (auto-provisioned) |
+| Performance | Very fast (optimised bulk copy) | Spark overhead — slower for small datasets |
+| Cost | Charged per DIU-hour (cheap) | Charged per vCore-hour (more expensive) |
+| Code required | None | None (visual) or expression language |
 
-**Step 3 — Search for ADLS Gen2**
-- In the "New linked service" search box, type **"Azure Data Lake Storage Gen2"**
-- Click on the **"Azure Data Lake Storage Gen2"** tile
-- Click **"Continue"**
+**Rule of thumb:**
+- **Bronze ingestion:** Copy Activity — just move the raw data, no changes
+- **Silver transformation:** Data Flow or Databricks Notebook — clean, join, aggregate
 
-**Step 4 — Fill in the Linked Service configuration**
+---
+
+### 2.9 Git Integration
+
+**What it is:** ADF can connect to a Git repository (Azure DevOps or GitHub) for source control of your pipeline definitions.
+
+**Why it matters:**
+- All pipelines, datasets, linked services are stored as JSON files in Git
+- Changes go through pull requests — peer review before they hit production
+- Full history: who changed what and when
+- Branch-based development: build in a feature branch, merge to main, publish to prod
+
+```
+Without Git:                    With Git:
+─────────────────               ─────────────────────────────────────────────
+Edit in Studio → Publish        Edit in Studio → Commit to branch → PR review
+No history                      Full git history
+No review                       Code review before production
+Shared dev/prod ADF             Separate dev ADF (feature branch) + prod ADF (main branch)
+```
+
+**How Git integration works in ADF:**
+- Each resource (pipeline, dataset, linked service) is stored as a `.json` file in the repo
+- **Publish** in ADF Studio = push to the `adf_publish` branch (ARM template for the live factory)
+- You work in a collaboration branch (e.g., `main` or `dev`)
+- Developers create feature branches → PR → merge → Publish from collaboration branch
+
+---
+
+### 2.10 Monitoring
+
+**What it is:** The Monitor panel shows the complete run history for your Data Factory.
+
+**Levels of monitoring:**
+```
+Pipeline Runs   ← Did the whole pipeline succeed or fail? How long did it take?
+    └── Activity Runs  ← Which specific activity failed? What was the error?
+            └── Input/Output JSON  ← What exactly did the activity read/write?
+```
+
+**Monitor panel sections:**
+| Section | What you see |
+|---|---|
+| Pipeline runs | All pipeline executions — status, duration, trigger name |
+| Activity runs | Drill into a pipeline run — see each activity's status, duration, rows copied |
+| Trigger runs | All trigger executions — when each trigger fired and whether it succeeded |
+| Debug runs | Runs from clicking "Debug" — separate from production trigger runs |
+
+**Alerting:**
+- ADF integrates with Azure Monitor → set up alert rules for "Failed pipeline runs > 0"
+- Alert action: email, SMS, Teams webhook, PagerDuty
+- Also configure directly in ADF: pipeline → **On Failure** → Web Activity → POST to webhook
+
+**Key metrics visible per Copy Activity run:**
+```
+Data read:       12.5 MB
+Data written:    4.2 MB (Parquet compressed)
+Rows copied:     8,421
+Duration:        00:00:14
+DIUs used:       2
+Throughput:      0.89 MB/s
+```
+
+---
+
+### 2.11 DIUs (Data Integration Units)
+
+**What it is:** The compute unit for Copy Activity. Each DIU is a bundle of CPU, memory, and network capacity. More DIUs = more parallel threads = faster copy.
+
+| Setting | Behaviour | When to use |
+|---|---|---|
+| Auto (default) | ADF picks 2–32 DIUs based on data size | Most cases |
+| Manual (e.g. 32) | You fix the DIU count | When you need predictable cost or performance |
+
+For small REST API responses (< 100 MB): Auto picks 2 DIUs — cheap and fast.
+For large table exports (100+ GB): Auto may scale to 32 DIUs — faster but more expensive.
+
+---
+
+### 2.12 Fault Tolerance
+
+**What it is:** What happens when the Copy Activity encounters a bad row.
+
+| Setting | Behaviour |
+|---|---|
+| Fail on first error (default) | Pipeline fails if any incompatible row is encountered |
+| Skip incompatible rows | Bad rows are logged and skipped — copy continues |
+| Enable logging | Skipped rows written to an ADLS Gen2 path for review |
+
+Always enable logging when skipping rows — silent discard hides data quality problems.
+
+---
+
+## Concept 3: Hands-on Walkthrough
+
+### What we will build
+
+We will build a real ADF pipeline that:
+1. Calls the **VoltGrid EV API** to get a Bearer token
+2. Uses that token to fetch **payments data** from `/api/db/payments/`
+3. Writes the raw JSON response to **ADLS Gen2 bronze** layer
+4. Runs on a **daily schedule** at 2am UTC
+5. Monitored via the **Monitor panel**
+6. Source-controlled with **Git integration**
+
+```
+VoltGrid API                    ADF Pipeline                     ADLS Gen2
+─────────────                   ──────────────────────────────   ─────────────────────────
+POST /api/auth/login/  →  Web Activity (GetToken)
+GET  /api/db/payments/ →  Copy Activity (CopyPayments)    →  bronze/payments/2026-01-15/
+                           On Failure →
+                          Web Activity (AlertOnFailure)
+```
+
+**Pre-requisite:** ADLS Gen2 storage account `stadlsdev001` with a `bronze` container (created in ADLS Day 1).
+
+---
+
+### Step-by-step: Create ADF Instance
+
+**Step 1 — Search for Data Factory in the portal**
+- Go to `https://portal.azure.com`
+- In the top search bar, type **"Data factories"**
+- Click **"Data factories"** under Services
+
+**Step 2 — Create**
+- Click **"+ Create"**
+
+**Step 3 — Fill in Basics tab**
+
+| Field | Value |
+|---|---|
+| Subscription | Free Trial |
+| Resource group | `rg-datalake-dev` |
+| Region | Australia East |
+| Name | `adf-datalake-dev` (must be globally unique — add numbers if taken) |
+| Version | **V2** |
+
+**Step 4 — Git configuration tab**
+- For now: check **"Configure Git later"** (we will set it up in a later step)
+- Click **"Review + create"** → **"Create"**
+- Deployment: ~60 seconds
+
+**Step 5 — Launch Studio**
+- Click **"Go to resource"** → click **"Launch Studio"**
+- ADF Studio opens in a new tab
+
+> **Checkpoint:** You see the ADF Studio with 4 icons in the left sidebar (pencil, TV, toolbox, graduation cap). The Author canvas is blank and ready.
+
+---
+
+### Step-by-step: Create Linked Services
+
+#### A — ADLS Gen2 Linked Service
+
+**Step 1** — Click **🔧 Manage** → **Linked services** → **+ New**
+
+**Step 2** — Search **"Azure Data Lake Storage Gen2"** → Continue
+
+**Step 3** — Configure:
 
 | Field | Value |
 |---|---|
 | Name | `ls_adls_gen2` |
-| Description | Connection to stadlsdev001 ADLS Gen2 bronze/silver/gold lake |
-| Connect via integration runtime | AutoResolveIntegrationRuntime |
+| Description | Connects to stadlsdev001 ADLS Gen2 data lake |
 | Authentication method | Account key |
-| Account selection method | From Azure subscription |
-| Azure subscription | Your subscription |
 | Storage account name | `stadlsdev001` |
 
-**Step 5 — Test the connection**
-- Click **"Test connection"** at the bottom
-- You should see a green **"Connection successful"** message
-
-**Step 6 — Create**
-- Click **"Create"**
-- `ls_adls_gen2` now appears in your Linked Services list
-
-> **Checkpoint:** The Linked Services list shows `ls_adls_gen2` with a green status indicator. Test connection succeeded.
+**Step 4** — Click **"Test connection"** → confirm "Connection successful" → **"Create"**
 
 ---
 
-### Step-by-step: Create the HTTP Linked Service (`ls_http_source`)
+#### B — VoltGrid API Linked Service (HTTP)
 
-**Step 1 — Click "+ New"** in the Linked Services panel
+**Step 1** — **+ New** → search **"HTTP"** → Continue
 
-**Step 2 — Search for HTTP**
-- Type **"HTTP"** in the search box
-- Click the **"HTTP"** tile (generic HTTP connector)
-- Click **"Continue"**
-
-**Step 3 — Fill in the configuration**
+**Step 2** — Configure:
 
 | Field | Value |
 |---|---|
-| Name | `ls_http_source` |
-| Description | Generic HTTP connector for CSV source data |
-| Base URL | `https://raw.githubusercontent.com` (or your actual source URL) |
+| Name | `ls_voltgrid_api` |
+| Description | VoltGrid EV platform REST API |
+| Base URL | `https://your-app.vercel.app` |
 | Authentication type | Anonymous |
-| Enable server certificate validation | Checked |
 
-**Step 4 — Test connection and Create**
-- Click **"Test connection"** → should succeed (HTTP 200 from the base URL)
-- Click **"Create"**
+> We use Anonymous at the Linked Service level because authentication is handled inside the pipeline — we call `POST /api/auth/login/` first to get a token, then pass it as a header in the Copy Activity. This is the correct pattern for token-based REST APIs.
 
----
-
-### Step-by-step: Create the source Dataset (`ds_http_source_csv`)
-
-**Step 1 — Go to the Author panel**
-- Click the pencil icon (Author) in the left sidebar
-
-**Step 2 — Create a new Dataset**
-- In the Factory Resources pane (left side of Author), click the **"+"** next to "Datasets"
-- Select **"New dataset"**
-
-**Step 3 — Search for HTTP**
-- Type **"HTTP"** in the search
-- Select **"HTTP"** → click **"Continue"**
-
-**Step 4 — Select format**
-- Select **"DelimitedText"** (CSV)
-- Click **"Continue"**
-
-**Step 5 — Configure the Dataset**
-
-| Field | Value |
-|---|---|
-| Name | `ds_http_source_csv` |
-| Linked service | `ls_http_source` |
-| Relative URL | `/hariom2311/azure-ev-end-to-end-project/main/azure-data-factory-service/day1-adf-fundamentals/data/payments.csv` |
-| First row as header | Checked |
-| Import schema | From connection/store |
-
-- Click **"OK"**
-
-**Step 6 — Verify the Schema tab**
-- Click on `ds_http_source_csv` to open it
-- Go to the **"Schema"** tab → click **"Import schema"**
-- ADF reads the CSV headers and populates the column list automatically
-
-> **Checkpoint:** The Schema tab shows column names imported from the CSV (e.g., `transaction_id`, `amount`, `currency`, `timestamp`). If you see "0 columns", check the Relative URL and Linked Service base URL.
+**Step 3** — **"Test connection"** → **"Create"**
 
 ---
 
-### Step-by-step: Create the sink Dataset (`ds_adls_bronze_parquet`)
+### Step-by-step: Create Datasets
 
-**Step 1 — Create a new Dataset**
-- In the Factory Resources pane, click **"+"** next to Datasets → **"New dataset"**
+#### A — VoltGrid Payments Source Dataset
 
-**Step 2 — Search for ADLS Gen2**
-- Type **"Azure Data Lake Storage Gen2"**
-- Select **"Azure Data Lake Storage Gen2"** → click **"Continue"**
+**Step 1** — Click **✏️ Author** → **"+"** next to Datasets → **New dataset**
 
-**Step 3 — Select format**
-- Select **"Parquet"**
-- Click **"Continue"**
+**Step 2** — Search **"HTTP"** → select **HTTP** → Continue → select **JSON** → Continue
 
-**Step 4 — Configure the Dataset**
+**Step 3** — Configure:
 
 | Field | Value |
 |---|---|
-| Name | `ds_adls_bronze_parquet` |
+| Name | `ds_voltgrid_payments` |
+| Linked service | `ls_voltgrid_api` |
+| Relative URL | `/api/db/payments/` |
+| Request method | GET |
+| Import schema | None (schema varies per page, defined in mapping) |
+
+**Step 4** — Go to **Parameters** tab → **+ New**:
+- Name: `auth_token`, Type: `String`
+
+**Step 5** — Go back to **Connection** tab → **Additional headers** → **+ New**:
+- Header name: `Authorization`
+- Header value: `@{concat('Token ', dataset().auth_token)}`
+
+This injects the Bearer token from the pipeline into every request this dataset makes.
+
+**Step 6** — Click **"OK"**
+
+---
+
+#### B — ADLS Gen2 Bronze Sink Dataset
+
+**Step 1** — **"+"** next to Datasets → **New dataset**
+
+**Step 2** — Search **"Azure Data Lake Storage Gen2"** → Continue → select **JSON** → Continue
+
+**Step 3** — Configure:
+
+| Field | Value |
+|---|---|
+| Name | `ds_adls_bronze_json` |
 | Linked service | `ls_adls_gen2` |
 | File path — Container | `bronze` |
 | File path — Directory | `payments/@{dataset().run_date}` |
-| File path — File | `payments_raw.parquet` |
-| Import schema | None (sink schema is defined by source mapping) |
+| File path — File | `payments_raw.json` |
 
-**Step 5 — Add a Dataset parameter for `run_date`**
-- Go to the **"Parameters"** tab
-- Click **"+ New"**
-- Name: `run_date`, Type: `String`, Default value: leave blank
-- This allows each pipeline run to write to a date-partitioned path (e.g., `bronze/payments/2026-09-25/`)
+**Step 4** — Go to **Parameters** tab → **+ New**:
+- Name: `run_date`, Type: `String`
 
-- Click **"Publish All"** (top bar) to save your work
-
-> **Checkpoint:** The directory path `payments/@{dataset().run_date}` shows in the Connection tab. The Parameters tab shows `run_date` as a String parameter.
+**Step 5** — Click **"OK"** → **"Publish All"**
 
 ---
 
-## Concept 3: Copy Activity and Debug Run
+### Step-by-step: Build the Pipeline
 
-### Copy Activity — analogy: logistics truck
+**Step 1 — Create pipeline**
+- **✏️ Author** → **"+"** next to Pipelines → **New pipeline**
+- Name: `pl_ingest_voltgrid_payments_to_bronze`
+- Description: Fetches VoltGrid payment data from REST API and writes to ADLS Gen2 bronze layer
 
-A **Copy Activity** is ADF's data-mover. It picks up data from a source (defined by a Dataset), optionally maps and converts columns, and writes the data to a sink (defined by another Dataset).
+**Step 2 — Add pipeline parameters**
+- Click the canvas background → **Parameters** tab at the bottom → **+ New**:
 
-**Logistics truck analogy:** Think of Copy Activity as a delivery truck. The source Dataset is the pickup address. The sink Dataset is the delivery address. The Copy Activity is the truck that drives between them. You configure what the truck should do: how fast to drive (DIUs), what to do if it encounters a broken road (fault tolerance), and how to relabel the boxes during transit (schema mapping).
-
-```
-Copy Activity
-├── Source tab       ← which Dataset to read, query filter, partition options
-├── Sink tab         ← which Dataset to write, write behaviour (overwrite, append)
-├── Mapping tab      ← rename columns, change data types, skip columns
-├── Settings tab     ← DIUs, degree of parallelism, fault tolerance, logging
-└── User properties  ← custom key-value metadata (for monitoring)
-```
-
-### DIUs — Data Integration Units
-
-**DIUs (Data Integration Units)** are the compute units ADF uses to run a Copy Activity. Each DIU is a bundle of CPU, memory, and network throughput.
-
-| Setting | Behaviour | When to use |
+| Name | Type | Default |
 |---|---|---|
-| **Auto** (default) | ADF picks the optimal DIU count based on data size | Most cases — ADF is usually right |
-| **Manual (e.g., 4 DIUs)** | You fix the DIU count | When you need predictable performance or cost |
-
-More DIUs = higher throughput (copy faster) = higher cost per run. For small files (< 1 GB), `Auto` picks 2–4 DIUs. For large datasets (100+ GB), ADF may auto-scale to 32 DIUs.
-
-### Fault tolerance — skip incompatible rows
-
-When copying heterogeneous data (e.g., a CSV with some malformed rows), Copy Activity can be configured to:
-
-| Option | Behaviour |
-|---|---|
-| **Fail on first error** (default) | Pipeline fails if any row is incompatible |
-| **Skip incompatible rows** | Bad rows are skipped; the copy continues |
-| **Log skipped rows** | Skipped rows are written to a log file in ADLS Gen2 |
-
-This is configured in the **Settings** tab of the Copy Activity under "Fault tolerance".
+| `run_date` | String | `2026-01-15` |
+| `api_username` | String | `voltgrid_demo` |
+| `api_password` | String | `EVcharge@AU2025` |
 
 ---
 
-### Step-by-step: Build `pl_ingest_http_to_bronze` and add Copy Activity
-
-**Step 1 — Create a new Pipeline**
-- In the Author panel, click **"+"** next to "Pipelines" → **"New pipeline"**
-- In the Properties pane (right side), set:
-  - **Name:** `pl_ingest_http_to_bronze`
-  - **Description:** Ingests raw payment CSV from HTTP source into ADLS Gen2 bronze/payments/ as Parquet
-
-**Step 2 — Add a Pipeline Parameter for `run_date`**
-- At the bottom of the pipeline canvas, click the **"Parameters"** tab
-- Click **"+ New"**
+**Step 3 — Add Web Activity to get token**
+- From Activities pane, expand **"General"** → drag **"Web"** onto canvas
+- Name: `GetAuthToken`
+- **Settings** tab:
 
 | Field | Value |
 |---|---|
-| Name | `run_date` |
-| Type | String |
-| Default value | `2026-09-25` |
+| URL | `https://your-app.vercel.app/api/auth/login/` |
+| Method | POST |
+| Headers | `Content-Type: application/json` |
+| Body | `@{concat('{"username":"', pipeline().parameters.api_username, '","password":"', pipeline().parameters.api_password, '"}')}` |
 
-**Step 3 — Add a Copy Activity to the canvas**
-- In the Activities pane (left of canvas), expand **"Move & transform"**
-- Drag **"Copy data"** onto the canvas
-- Click on the Copy data activity to select it
-- In the General tab at the bottom, set **Name:** `CopyPaymentsHttpToBronze`
+This calls the VoltGrid login endpoint and the output JSON contains `{"token": "abc123..."}`. The token is referenced downstream as `@activity('GetAuthToken').output.token`.
 
-**Step 4 — Configure the Source tab**
-- Click the **"Source"** tab in the activity properties panel (bottom)
+---
+
+**Step 4 — Add Copy Activity → connect On Success from Web Activity**
+- Drag **"Copy data"** onto canvas
+- Drag the **green arrow** from `GetAuthToken` to the Copy Activity → dependency is **On Success**
+- Name: `CopyPaymentsToBronze`
+
+**Source tab:**
 
 | Field | Value |
 |---|---|
-| Source dataset | `ds_http_source_csv` |
+| Source dataset | `ds_voltgrid_payments` |
+| Dataset property — auth_token | `@activity('GetAuthToken').output.token` |
 | Request method | GET |
-| Additional headers | leave blank |
-| Pagination rules | leave blank (single file) |
+| Additional headers | leave blank (already in dataset) |
 
-**Step 5 — Configure the Sink tab**
-- Click the **"Sink"** tab
+**Sink tab:**
 
 | Field | Value |
 |---|---|
-| Sink dataset | `ds_adls_bronze_parquet` |
+| Sink dataset | `ds_adls_bronze_json` |
 | Dataset property — run_date | `@pipeline().parameters.run_date` |
-| Copy behaviour | None (overwrite if file exists) |
+| File extension | `.json` |
 
-This passes the pipeline's `run_date` parameter into the Dataset, which inserts it into the folder path `bronze/payments/2026-09-25/`.
-
-**Step 6 — Configure the Mapping tab**
-- Click the **"Mapping"** tab
-- Click **"Import schemas"** — ADF reads both source and sink schemas and shows them side by side
-- By default, columns are mapped by name (automatic)
-
-You should see the source CSV columns on the left mapped to matching sink columns on the right.
-
-> **Data file note:** The source CSV (`data/payments.csv`) contains 20 synthetic EV payment records with columns: `id`, `amount`, `currency`, `status`, `order_id`, `method`, `email`, `created_at`, and more. It is stored in this repo under `azure-data-factory-service/day1-adf-fundamentals/data/` and served via `raw.githubusercontent.com` — no external API or sign-in needed.
-
-**Step 7 — Configure the Settings tab**
-- Click the **"Settings"** tab
+**Settings tab:**
 
 | Field | Value |
 |---|---|
 | Data integration units | Auto |
-| Degree of copy parallelism | Auto |
 | Fault tolerance | Skip incompatible rows |
-| Enable logging | Checked |
-| Log settings — Linked service | `ls_adls_gen2` |
-| Log settings — Folder path | `logs/copy-activity-errors/` |
+| Enable logging | Checked → `ls_adls_gen2` → `logs/copy-errors/` |
 
 ---
 
-### Step-by-step: Configure schema mapping (column rename)
+**Step 5 — Add Web Activity for failure alert → connect On Failure**
+- Drag another **"Web"** onto canvas
+- Drag the **red arrow** from `CopyPaymentsToBronze` to this activity → dependency **On Failure**
+- Name: `AlertOnFailure`
+- **Settings** tab:
 
-In the **Mapping** tab, you can rename columns between source and sink. For example, if the source CSV has `cust_id` but your Bronze schema standard uses `customer_id`:
-
-**Step 1 — In the Mapping tab, locate the `cust_id` row**
-
-**Step 2 — Under "Destination" column name, click on `cust_id`**
-- The field becomes editable
-- Change it to `customer_id`
-
-**Step 3 — Click elsewhere to confirm**
-
-The mapping now shows:
-```
-Source column    →    Sink column
-─────────────────────────────────
-cust_id          →    customer_id
-amount           →    amount
-currency         →    currency
-timestamp        →    event_timestamp
-```
-
-You can also change data types in the "Type" dropdown next to each sink column — for example, converting a `String` `timestamp` column to `Timestamp` type in Parquet.
+| Field | Value |
+|---|---|
+| URL | Your Teams/Slack webhook URL (or `https://httpbin.org/post` for testing) |
+| Method | POST |
+| Body | `@{concat('{"text":"ADF Pipeline FAILED: ', pipeline().Pipeline, ' at ', utcnow(), '"}')}`  |
 
 ---
 
-### Step-by-step: Debug run and verify output
-
-**Step 1 — Click Debug**
-- At the top of the pipeline canvas, click **"Debug"**
-- ADF prompts you to enter parameter values for the run
-- Set `run_date`: `2026-09-25`
+**Step 6 — Debug run**
+- Click **"Debug"** at the top of the canvas
+- In the Parameters dialog, confirm `run_date = 2026-01-15`
 - Click **"OK"**
+- Watch each activity turn yellow (running) → green (succeeded)
+- Click the glasses icon on `CopyPaymentsToBronze` to see rows copied, data written, DIUs used
 
-**Step 2 — Watch the activity run**
-- The pipeline canvas shows the activity turn yellow (running) then green (succeeded) or red (failed)
-- At the bottom, the **"Output"** tab shows the run status in real time
+> **Checkpoint:** `GetAuthToken` succeeds with a token in the output. `CopyPaymentsToBronze` succeeds. Navigate to `stadlsdev001` → `bronze/payments/2026-01-15/` — you should see `payments_raw.json`.
 
-**Step 3 — Inspect the Copy Activity output**
-- Click the glasses icon (View details) on the activity run row in the Output tab
-- You will see the Copy Activity details:
+**Step 7 — Publish All**
+- Click **"Publish All"** → **"Publish"**
+- All resources (linked services, datasets, pipeline) are now saved to the live factory
 
-```
-Data read:       2.1 MB (from HTTP source)
-Data written:    0.8 MB (Parquet compressed with Snappy)
-Files read:      1
-Files written:   1
-Rows copied:     14,230
-Duration:        00:00:08
-DIUs used:       2
-Throughput:      0.26 MB/s
-```
+---
 
-**Step 4 — Verify the Parquet file in ADLS Gen2**
-- Go to the Azure portal → `stadlsdev001` → Containers → `bronze`
-- Navigate to: `bronze/payments/2026-09-25/`
-- You should see `payments_raw.parquet`
-- Click on the file → **"View/Edit"** (or download and open in a Parquet viewer)
+### Step-by-step: Create a Schedule Trigger
 
-> **Checkpoint:** The file `payments_raw.parquet` exists at `bronze/payments/2026-09-25/payments_raw.parquet`. The Parquet file size should be smaller than the source CSV (due to Snappy compression). If the file does not appear, check the Copy Activity error output and review the sink Dataset path configuration.
+**Step 1** — With `pl_ingest_voltgrid_payments_to_bronze` open, click **"Add trigger"** → **"New/Edit"**
 
-**Step 5 — Publish All**
-- Back in ADF Studio, click **"Publish All"** in the top bar
-- A diff panel shows all unsaved changes (pipeline, datasets, linked services)
-- Click **"Publish"**
-- ADF saves all resources to the Data Factory
+**Step 2** — Click **"+ New"**
 
-> **Checkpoint:** After Publish All, a green success banner appears. All resources are now permanently saved. The Debug run only tested the pipeline — Publish All makes your changes live and available to triggers.
+**Step 3** — Configure:
+
+| Field | Value |
+|---|---|
+| Name | `trg_daily_payments` |
+| Type | Schedule |
+| Start date | Today |
+| Time | 02:00 AM UTC |
+| Recurrence | Every 1 Day |
+| End | No end |
+
+**Step 4** — Set trigger parameters:
+
+| Parameter | Value |
+|---|---|
+| `run_date` | `@{formatDateTime(trigger().scheduledTime, 'yyyy-MM-dd')}` |
+| `api_username` | `voltgrid_demo` |
+| `api_password` | `EVcharge@AU2025` |
+
+**Step 5** — Click **"OK"** → **"Publish All"**
+
+> **Checkpoint:** Go to **🔧 Manage → Triggers** — confirm `trg_daily_payments` shows as **Started** (green).
+
+---
+
+### Step-by-step: Enable Git Integration
+
+**Step 1** — Go to **🔧 Manage → Git configuration** → **"Configure"**
+
+**Step 2** — Select repository type: **GitHub**
+
+**Step 3** — Configure:
+
+| Field | Value |
+|---|---|
+| GitHub account | your GitHub username |
+| Repository name | `azure-ev-end-to-end-project` |
+| Collaboration branch | `main` |
+| Publish branch | `adf_publish` |
+| Root folder | `/azure-data-factory-service/adf-resources` |
+
+**Step 4** — Click **"Apply"**
+
+After Git is connected:
+- Every pipeline/dataset/linked service has a **"Save"** button that commits to the collaboration branch
+- **"Publish All"** deploys from the collaboration branch to the live factory
+- You can see pipeline JSON files in your GitHub repo under the root folder
+
+---
+
+### Step-by-step: Monitor a Pipeline Run
+
+**Step 1** — Click the **📺 Monitor** icon
+
+**Step 2** — Go to **"Pipeline runs"**
+- Find `pl_ingest_voltgrid_payments_to_bronze` in the list
+- Status: Succeeded / Failed / In Progress
+- Duration and trigger name shown
+
+**Step 3** — Click on the pipeline run row to drill into **Activity runs**
+- You see each activity: `GetAuthToken`, `CopyPaymentsToBronze`, etc.
+- Status, duration, and start time per activity
+
+**Step 4** — Click the glasses icon (👓) on `CopyPaymentsToBronze`
+- **Input:** source URL, dataset name, auth header presence
+- **Output:** rows copied, data read (MB), data written (MB), DIUs used, throughput (MB/s)
+- **Error** (if failed): full error message with error code
+
+**Step 5 — Set up an email alert**
+- Go to the Azure portal → `adf-datalake-dev` → **Monitoring → Alerts → + New alert rule**
+- Condition: Signal = **"Failed pipeline runs"** metric > 0
+- Action group: add your email
+- This sends an email whenever any pipeline fails — no code needed
 
 ---
 
 ## Summary
 
-| Concept | Key takeaway |
+| Term | One-line definition |
 |---|---|
-| Azure Data Factory | Managed cloud-native data integration service — orchestrates data movement from 90+ sources with built-in scheduling, monitoring, and retry |
-| ETL vs. ELT | ADF supports both; in modern data lakes, ADF is the ELT orchestrator (load raw to Bronze, trigger Spark to transform) |
-| ADF vs. Python | ADF wins on connectivity, scheduling, monitoring, and non-engineer accessibility; Python wins on custom logic and existing Airflow setups |
-| ADF Studio panels | Author (build), Monitor (observe), Manage (configure connections), Learn (templates) |
-| Linked Service | Saved connection — one per source system; stores auth credentials; referenced by Datasets and Activities |
-| Dataset | Data shape + location — references a Linked Service, adds file path, format, and schema; analogous to a shipping label |
-| ADF Expression | `@pipeline().parameters.run_date` — used to make paths, values, and conditions dynamic at runtime |
-| Copy Activity | The data mover — reads from source Dataset, applies column mapping, writes to sink Dataset |
-| Schema Mapping | Rename or retype columns between source and sink in the Copy Activity Mapping tab |
-| DIUs | Compute units for Copy Activity — Auto lets ADF optimise; manual control for cost predictability |
-| Fault tolerance | Skip incompatible rows + log them to ADLS Gen2 — prevents one bad row from failing the entire pipeline run |
-| Debug run | Runs the pipeline immediately in test mode with parameter values you enter — does not require a Trigger or Publish |
-| Publish All | Saves all authored changes (pipelines, datasets, linked services) to the live Data Factory |
+| **Linked Service** | Saved connection credentials — one per source system |
+| **Dataset** | Data shape + location — pointer, not the data itself |
+| **Activity** | One unit of work — Copy, Data Flow, Web, ForEach, Lookup, etc. |
+| **Pipeline** | Ordered workflow of activities with dependencies |
+| **Trigger** | Alarm clock for a pipeline — Schedule, Tumbling Window, or Event |
+| **Integration Runtime** | Compute engine — Azure IR (cloud) or Self-Hosted IR (on-premises) |
+| **Parameter** | Variable passed to a pipeline at runtime — makes pipelines reusable |
+| **Expression** | `@{}` dynamic formula — `@{concat(...)}`, `@{formatDateTime(...)}` |
+| **Data Flow** | No-code Spark transformation inside ADF |
+| **Git Integration** | Source control for pipeline definitions — version history + PR review |
+| **Monitor** | Run history panel — pipeline runs → activity runs → input/output |
+| **DIU** | Data Integration Unit — compute for Copy Activity (more = faster) |
+| **Fault Tolerance** | Skip bad rows + log them instead of failing the whole pipeline |
+| **Publish All** | Deploy all saved changes from the Studio to the live factory |
+| **Debug** | Manual one-off run in test mode — does not require a trigger |
