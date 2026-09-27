@@ -13,27 +13,27 @@
 **1.1 — Create the ADF instance**
 - Go to Azure Portal → Data factories → **+ Create**
 - Resource group: `rg-ev-intelligence-dev`
-- Name: `adf-ev-intelligence-dev`
+- Name: `adf-datalake-dev-ded`
 - Region: `Central India`
 - Version: `V2`
 - Click **Review + Create** → **Create**
 - Once deployed, click **Launch studio** and bookmark the URL
 
 **1.2 — Find the Managed Identity Object ID**
-- Portal → Data factories → `adf-ev-intelligence-dev` → **Properties**
+- Portal → Data factories → `adf-datalake-dev-ded` → **Properties**
 - Copy the **Managed Identity Object ID**
 
 **1.3 — Grant Key Vault access**
-- Portal → Key vaults → `kv-ev-intelligence-dev` → **Access Control (IAM)**
-- Add role assignment: `Key Vault Secrets User` → Managed identity → Data factory → `adf-ev-intelligence-dev`
+- Portal → Key vaults → `key-vault-session-ded` → **Access Control (IAM)**
+- Add role assignment: `Key Vault Secrets User` → Managed identity → Data factory → `adf-datalake-dev-ded`
 
 **1.4 — Grant ADLS Gen2 access**
 - Portal → Storage accounts → `evdatalakedev` → **Access Control (IAM)**
-- Add role assignment: `Storage Blob Data Contributor` → Managed identity → `adf-ev-intelligence-dev`
+- Add role assignment: `Storage Blob Data Contributor` → Managed identity → `adf-datalake-dev-ded`
 
 **Verify:**
-- Key Vault → **Role assignments** tab → confirm `adf-ev-intelligence-dev` appears under `Key Vault Secrets User`
-- Storage → **Role assignments** tab → confirm `adf-ev-intelligence-dev` appears under `Storage Blob Data Contributor`
+- Key Vault → **Role assignments** tab → confirm `adf-datalake-dev-ded` appears under `Key Vault Secrets User`
+- Storage → **Role assignments** tab → confirm `adf-datalake-dev-ded` appears under `Storage Blob Data Contributor`
 
 **Key Vault secrets to confirm exist** (if missing, add them):
 
@@ -54,7 +54,7 @@
 1. ADF Studio → **Manage** → **Linked services** → **+ New**
 2. Search `Key Vault` → **Azure Key Vault** → **Continue**
 3. Name: `ls_keyvault`
-4. Azure Key Vault name: `kv-ev-intelligence-dev`
+4. Azure Key Vault name: `key-vault-session-ded`
 5. Authentication method: **System Assigned Managed Identity**
 6. **Test connection** → must show green
 7. **Create**
@@ -143,7 +143,7 @@
 1. In the Activities panel (left), expand **General** → drag **Web Activity** onto the canvas
 2. Click the activity → rename to `act_get_username`
 3. **Settings** tab:
-   - URL: `https://kv-ev-intelligence-dev.vault.azure.net/secrets/voltgrid-username/?api-version=7.0`
+   - URL: `https://key-vault-session-ded.vault.azure.net/secrets/voltgrid-username/?api-version=7.0`
    - Method: `GET`
    - Authentication: **System Assigned Managed Identity**
    - Resource: `https://vault.azure.net`
@@ -153,7 +153,7 @@
 1. Drag another **Web Activity** onto canvas → rename to `act_get_password`
 2. Hover over `act_get_username` → drag the **green arrow** to `act_get_password` (this creates an On Success dependency)
 3. **Settings** tab:
-   - URL: `https://kv-ev-intelligence-dev.vault.azure.net/secrets/voltgrid-password/?api-version=7.0`
+   - URL: `https://key-vault-session-ded.vault.azure.net/secrets/voltgrid-password/?api-version=7.0`
    - Method: `GET`
    - Authentication: **System Assigned Managed Identity**
    - Resource: `https://vault.azure.net`

@@ -403,7 +403,7 @@ ForEach item in Lookup output:
    ```
 
 **Alternative (no Web Activity needed):**
-Azure Monitor → Alerts → New alert rule → scope `adf-ev-intelligence-dev` → condition: "Failed pipeline runs count > 0" → action group: send email to the team. This fires for any pipeline failure without touching the pipeline JSON.
+Azure Monitor → Alerts → New alert rule → scope `adf-datalake-dev-ded` → condition: "Failed pipeline runs count > 0" → action group: send email to the team. This fires for any pipeline failure without touching the pipeline JSON.
 
 ---
 
@@ -414,7 +414,7 @@ The Key Vault REST API always returns the secret in the `value` field:
 {
   "value": "EVcharge@AU2025",
   "contentType": null,
-  "id": "https://kv-ev-intelligence-dev.vault.azure.net/secrets/voltgrid-password/abc123version",
+  "id": "https://key-vault-session-ded.vault.azure.net/secrets/voltgrid-password/abc123version",
   "attributes": { "enabled": true, "created": ..., "updated": ... }
 }
 ```
@@ -423,7 +423,7 @@ The Key Vault REST API always returns the secret in the `value` field:
 
 **For a versioned secret** (`my-secret` at version `abc123`), the URL becomes:
 ```
-https://kv-ev-intelligence-dev.vault.azure.net/secrets/my-secret/abc123/?api-version=7.0
+https://key-vault-session-ded.vault.azure.net/secrets/my-secret/abc123/?api-version=7.0
 ```
 Omitting the version (as in Day 2) always returns the **latest enabled version** — which is what you want. Pin to a specific version only if you need to guarantee a specific secret value regardless of future rotations.
 
@@ -433,7 +433,7 @@ Omitting the version (as in Day 2) always returns the **latest enabled version**
 
 **1 change total.** Update the secret value in Key Vault:
 
-1. Portal → Key vaults → `kv-ev-intelligence-dev` → **Secrets** → `voltgrid-password`
+1. Portal → Key vaults → `key-vault-session-ded` → **Secrets** → `voltgrid-password`
 2. Click **+ New Version** → enter the new password → **Create**
 
 That's it. The pipeline JSON is unchanged. The linked service is unchanged. The next run of `act_get_password` reads the new secret value from Key Vault automatically — because the Web Activity always reads the latest enabled version.

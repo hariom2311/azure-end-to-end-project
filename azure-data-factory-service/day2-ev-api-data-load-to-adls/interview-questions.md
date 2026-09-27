@@ -157,7 +157,7 @@ You are asked to add a daily **Schedule Trigger** to `pl_bronze_api_payments` th
 **Q28 (Tricky)**
 The Key Vault REST API endpoint used in the Web Activity is:
 ```
-https://kv-ev-intelligence-dev.vault.azure.net/secrets/voltgrid-username/?api-version=7.0
+https://key-vault-session-ded.vault.azure.net/secrets/voltgrid-username/?api-version=7.0
 ```
 The response contains many fields: `id`, `value`, `attributes`, `tags`. Why do you reference `.output.value` to get the secret? If the Key Vault secret name was `my-secret/2` (with a version), how would the URL change?
 

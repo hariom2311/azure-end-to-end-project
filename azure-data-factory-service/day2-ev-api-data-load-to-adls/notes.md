@@ -61,7 +61,7 @@ A Linked Service is ADF's saved connection definition — it stores HOW to conne
 
 | Linked Service | Type | What it connects to |
 |---|---|---|
-| `ls_keyvault` | Azure Key Vault | `kv-ev-intelligence-dev` — stores API credentials |
+| `ls_keyvault` | Azure Key Vault | `key-vault-session-ded` — stores API credentials |
 | `ls_voltgrid_api` | REST | VoltGrid API base URL |
 | `ls_adls_bronze` | ADLS Gen2 | `evdatalakedev` storage account — the Bronze layer |
 
@@ -139,7 +139,7 @@ ADF gets a free System-assigned Managed Identity — no password, no rotation. Y
 
 | Resource | Role | Why |
 |---|---|---|
-| `kv-ev-intelligence-dev` | Key Vault Secrets User | Read secrets at pipeline runtime |
+| `key-vault-session-ded` | Key Vault Secrets User | Read secrets at pipeline runtime |
 | `evdatalakedev` | Storage Blob Data Contributor | Write JSON files to Bronze container |
 
 Without these roles: Key Vault Web Activities fail with 403, Copy Activity sink fails with 403.
@@ -153,7 +153,7 @@ Without these roles: Key Vault Web Activities fail with 403, Copy Activity sink 
 1. Portal → search **Data factories** → **+ Create**
 2. Fill in:
    - Resource group: `rg-ev-intelligence-dev`
-   - Name: `adf-ev-intelligence-dev`
+   - Name: `adf-datalake-dev-ded`
    - Region: `Central India`
    - Version: `V2`
 3. **Review + Create** → **Create** (~1 minute)
@@ -162,15 +162,15 @@ Without these roles: Key Vault Web Activities fail with 403, Copy Activity sink 
 ### Step 2 — Grant Managed Identity Access
 
 **On Key Vault:**
-1. Portal → **Key vaults** → `kv-ev-intelligence-dev` → **Access Control (IAM)**
+1. Portal → **Key vaults** → `key-vault-session-ded` → **Access Control (IAM)**
 2. **+ Add** → **Add role assignment** → `Key Vault Secrets User`
-3. Members → Managed identity → Data factory (V2) → `adf-ev-intelligence-dev`
+3. Members → Managed identity → Data factory (V2) → `adf-datalake-dev-ded`
 4. **Review + assign**
 
 **On ADLS Gen2:**
 1. Portal → **Storage accounts** → `evdatalakedev` → **Access Control (IAM)**
 2. **+ Add** → **Add role assignment** → `Storage Blob Data Contributor`
-3. Members → Managed identity → Data factory (V2) → `adf-ev-intelligence-dev`
+3. Members → Managed identity → Data factory (V2) → `adf-datalake-dev-ded`
 4. **Review + assign**
 
 Wait 2 minutes after assigning roles before testing any linked service.
@@ -180,7 +180,7 @@ Wait 2 minutes after assigning roles before testing any linked service.
 **ls_keyvault:**
 1. ADF Studio → **Manage** → **Linked services** → **+ New**
 2. Search `Key Vault` → **Azure Key Vault** → **Continue**
-3. Name: `ls_keyvault` | Azure Key Vault: `kv-ev-intelligence-dev` | Auth: System Assigned Managed Identity
+3. Name: `ls_keyvault` | Azure Key Vault: `key-vault-session-ded` | Auth: System Assigned Managed Identity
 4. **Test connection** → green → **Create**
 
 **ls_voltgrid_api:**
@@ -223,7 +223,7 @@ Wait 2 minutes after assigning roles before testing any linked service.
 **Activity 1 — act_get_username:**
 - Drag **Web Activity** onto canvas → rename to `act_get_username`
 - Settings tab:
-  - URL: `https://kv-ev-intelligence-dev.vault.azure.net/secrets/voltgrid-username/?api-version=7.0`
+  - URL: `https://key-vault-session-ded.vault.azure.net/secrets/voltgrid-username/?api-version=7.0`
   - Method: `GET`
   - Authentication: `System Assigned Managed Identity`
   - Resource: `https://vault.azure.net`
