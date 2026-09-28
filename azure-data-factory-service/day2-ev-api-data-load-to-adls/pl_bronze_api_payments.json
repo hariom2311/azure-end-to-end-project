@@ -1,0 +1,193 @@
+{
+    "name": "pl_bronze_api_payments",
+    "properties": {
+        "activities": [
+            {
+                "name": "act_get_username",
+                "type": "WebActivity",
+                "dependsOn": [],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "method": "GET",
+                    "url": "https://key-vault-session-ded.vault.azure.net/secrets/voltgrid-username/?api-version=7.0",
+                    "authentication": {
+                        "type": "MSI",
+                        "resource": "https://vault.azure.net"
+                    }
+                }
+            },
+            {
+                "name": "act_get_password",
+                "type": "WebActivity",
+                "dependsOn": [],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "method": "GET",
+                    "url": "https://key-vault-session-ded.vault.azure.net/secrets/voltgrid-password/?api-version=7.0",
+                    "authentication": {
+                        "type": "MSI",
+                        "resource": "https://vault.azure.net"
+                    }
+                }
+            },
+            {
+                "name": "act_api_login",
+                "type": "WebActivity",
+                "dependsOn": [
+                    {
+                        "activity": "act_get_username",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    },
+                    {
+                        "activity": "act_get_password",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "method": "POST",
+                    "headers": {
+                        "Content-Type": "application/json"
+                    },
+                    "url": "https://ev-project-navy-mu.vercel.app/api/auth/login/",
+                    "body": "@concat('{\"username\":\"', activity('act_get_username').output.value, '\",\"password\":\"', activity('act_get_password').output.value, '\"}')"
+                }
+            },
+            {
+                "name": "act_set_token",
+                "type": "SetVariable",
+                "dependsOn": [
+                    {
+                        "activity": "act_api_login",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "variableName": "v_token",
+                    "value": {
+                        "value": "@activity('act_api_login').output.token",
+                        "type": "Expression"
+                    }
+                }
+            },
+            {
+                "name": "act_copy_payments",
+                "type": "Copy",
+                "dependsOn": [
+                    {
+                        "activity": "act_set_token",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "source": {
+                        "type": "RestSource",
+                        "httpRequestTimeout": "00:01:40",
+                        "requestInterval": "00.00:00:00.010",
+                        "requestMethod": "GET",
+                        "additionalHeaders": {
+                            "Authorization": "@concat('Token ', variables('v_token'))"
+                        },
+                        "paginationRules": {
+                            "supportRFC5988": "true"
+                        }
+                    },
+                    "sink": {
+                        "type": "JsonSink",
+                        "storeSettings": {
+                            "type": "AzureBlobFSWriteSettings"
+                        },
+                        "formatSettings": {
+                            "type": "JsonWriteSettings",
+                            "filePattern": "setOfObjects"
+                        }
+                    },
+                    "enableStaging": false
+                },
+                "inputs": [
+                    {
+                        "referenceName": "ds_voltgrid_payments_src",
+                        "type": "DatasetReference",
+                        "parameters": {
+                            "p_page": {
+                                "value": "@pipeline().parameters.p_page",
+                                "type": "Expression"
+                            },
+                            "p_page_size": {
+                                "value": "@pipeline().parameters.p_page_size",
+                                "type": "Expression"
+                            }
+                        }
+                    }
+                ],
+                "outputs": [
+                    {
+                        "referenceName": "ds_bronze_payments_sink",
+                        "type": "DatasetReference"
+                    }
+                ]
+            }
+        ],
+        "parameters": {
+            "p_page": {
+                "type": "string",
+                "defaultValue": "1"
+            },
+            "p_page_size": {
+                "type": "string",
+                "defaultValue": "200"
+            }
+        },
+        "variables": {
+            "v_token": {
+                "type": "String"
+            },
+            "date": {
+                "type": "String"
+            }
+        },
+        "annotations": []
+    }
+}
