@@ -1,182 +1,182 @@
-# Day 5 — Interview Questions: ADF Advanced Activities
+# Day 5 — Interview Questions: Remaining ADF Activities
 
-> 30 questions on Mapping Data Flow, Databricks Notebook, Stored Procedure, Validation, and Azure Function activities.
+> 30 questions on Lookup, Delete, Script, Wait, WebHook, Filter, ForEach, Switch, and Until.
 > Attempt first, then check `interview-solutions.md`.
 
 ---
 
-## Mapping Data Flow
+## Lookup
 
 **Q1 (Warm-up)**
-What is the difference between a Copy Activity and a Mapping Data Flow? In the VoltGrid pipeline, which one would you use to ingest raw JSON from the API, and which one would you use to clean and type the data into Silver Parquet?
+What does the Lookup Activity return? What is the difference between setting `First row only: Yes` vs `No`, and when would you use each?
 
 ---
 
-**Q2 (Conceptual)**
-What does Data Flow Debug mode do? Why does it take 3–5 minutes to start? Can you run a pipeline with a Data Flow Activity without turning on debug mode?
+**Q2 (Scenario)**
+A Lookup Activity reads a JSON file with 5 rows. You write the expression `@activity('lkp').output.value[4].table_name`. What does index `[4]` return, and what happens if you write `[5]`?
 
 ---
 
-**Q3 (Scenario)**
-Your Bronze payments JSON has an `amount` field stored as a string (`"45.80"`). In the Silver layer, `amount_aud` must be a numeric `DOUBLE`. Which Mapping Data Flow transformation do you use and what is the exact expression?
+**Q3 (Tricky)**
+You use Lookup to read a watermark from an Azure SQL table: `SELECT MAX(updated_at) AS last_run FROM pipeline_audit`. The table is empty (no rows yet). What does `output.firstRow` contain, and how do you handle this in downstream expressions?
 
 ---
 
-**Q4 (Tricky)**
-You add a Filter transformation in a Data Flow with the expression `equals(status, 'active')`. After running, you notice that rows with `status = 'Active'` (capital A) are also being filtered out. Why, and how do you fix it?
+**Q4 (Conceptual)**
+What is a metadata-driven pipeline? How does the Lookup Activity enable it? Give a concrete example with the tables.json config file.
 
 ---
 
-**Q5 (Conceptual)**
-Name four Mapping Data Flow transformations and describe what each one does in one sentence. Give a VoltGrid-specific example for at least two of them.
+## Delete
+
+**Q5 (Warm-up)**
+You add a Delete Activity pointing to a file that does not exist. Does the activity fail or succeed? What does the Output tab show?
 
 ---
 
 **Q6 (Scenario)**
-After adding a Data Flow Activity to the pipeline, the first Debug run takes 6 minutes even though the data is only 500 rows. A student asks "why is it so slow?" What do you tell them?
+You want to delete all files inside the folder `bronze/landing/payments/` but keep the folder itself. Which Delete Activity setting do you configure and what value do you set?
 
 ---
 
 **Q7 (Tricky)**
-A Data Flow has two sources: Bronze payments JSON and a small reference table from Azure SQL (lookup for payment method descriptions). The join produces no rows even though both sources have data. What are two likely causes?
+A colleague says "we can just overwrite files on the next run instead of deleting them — the Copy Activity will replace the existing file." What is the risk of this approach in ADLS Gen2, and when would Delete be the safer choice?
 
 ---
 
 **Q8 (Conceptual)**
-What is the difference between the **Lookup** transformation inside a Mapping Data Flow and the **Lookup Activity** in a pipeline? When would you use each?
+What is the purpose of the "Enable logging" setting on a Delete Activity? Where does the log go, and what does it contain?
 
 ---
 
----
-
-## Databricks Notebook Activity
+## Script
 
 **Q9 (Warm-up)**
-What does the Databricks Notebook Activity do? What is the minimum setup required before you can add it to a pipeline?
+What is the difference between Script Activity and Stored Procedure Activity? When would you choose Script over Stored Procedure?
 
 ---
 
-**Q10 (Conceptual)**
-You have a choice between Mapping Data Flow and Databricks Notebook Activity for the Silver layer transform. List two scenarios where you would choose Databricks over Data Flow.
-
----
-
-**Q11 (Scenario)**
-You pass `run_date = @variables('v_ingestion_date')` as a base parameter to a Databricks notebook. Inside the notebook, write the Python line that reads this parameter value.
-
----
-
-**Q12 (Tricky)**
-A Databricks Notebook Activity fails with the error "Cluster not found." The cluster ID is hardcoded in the linked service. What went wrong, and what is the recommended fix to avoid this in production?
-
----
-
-**Q13 (Scenario)**
-The Databricks Notebook Activity in Monitor shows status Succeeded with `runId: 12345`. But when you check the Silver container in ADLS, no Parquet file was written. What are two reasons this could happen, and where do you look to diagnose?
-
----
-
----
-
-## Stored Procedure Activity
-
-**Q14 (Warm-up)**
-What does the Stored Procedure Activity do? What types of databases does it support?
-
----
-
-**Q15 (Conceptual)**
-Why would you use a Stored Procedure Activity to write an audit record instead of using a Copy Activity to insert a row into Azure SQL?
-
----
-
-**Q16 (Scenario)**
-You call `usp_log_pipeline_run` from ADF after the copy. The stored procedure has a parameter `@rows_copied INT`. You pass the value using:
+**Q10 (Scenario)**
+You use a Script Activity with type `Query` and the SQL:
+```sql
+SELECT COUNT(*) AS total FROM payments WHERE status = 'completed'
 ```
-@activity('act_copy_payments').output.rowsCopied
+Write the ADF expression to reference the count value in a downstream activity.
+
+---
+
+**Q11 (Tricky)**
+You write a Script Activity with this SQL using dynamic content:
 ```
-The ADF parameter type must be set to `Int32`. What happens if you set the type to `String` instead?
+TRUNCATE TABLE @{variables('v_schema')}.payments
+```
+A student says this will cause a SQL injection risk. Are they right? What is the safer approach?
 
 ---
 
-**Q17 (Tricky)**
-The Stored Procedure Activity returns `returnCode: 0`. A student says "the procedure ran successfully and inserted the row." Another student says "returnCode 0 just means the procedure was called — it doesn't confirm the INSERT happened." Who is right and how would you verify the INSERT?
+**Q12 (Conceptual)**
+Can a Script Activity return a result that the next activity uses? If yes, show the expression syntax. If no, explain what to use instead.
 
 ---
 
-**Q18 (Scenario)**
-You want to update a `watermark` table in Azure SQL with the last successful run timestamp after every pipeline run. The table has one row per pipeline name. Write the SQL logic (not ADF config) that would correctly upsert the watermark row.
+## Wait
+
+**Q13 (Warm-up)**
+What does the Wait Activity do? What is the maximum wait time allowed in ADF?
 
 ---
 
----
-
-## Validation Activity
-
-**Q19 (Warm-up)**
-What does the Validation Activity do? How does it differ from Get Metadata + If Condition for checking file existence?
+**Q14 (Scenario)**
+You place a 60-second Wait inside a ForEach that loops over 10 items in parallel (batch count = 10). How much total wait time does this add to the pipeline? Explain your answer.
 
 ---
 
-**Q20 (Conceptual)**
-The Validation Activity has three settings: Timeout, Sleep, and Minimum size. Explain what each controls and give a real-world value for each in the VoltGrid context.
+**Q15 (Tricky)**
+A colleague suggests: "instead of a Wait, we should use a Until loop that checks a condition every 5 seconds." For simple rate limiting (pause N seconds between calls), which is better and why?
+
+---
+
+## WebHook
+
+**Q16 (Warm-up)**
+Explain the difference between Web Activity and WebHook Activity. Which one pauses the pipeline while waiting for a response?
+
+---
+
+**Q17 (Scenario)**
+A WebHook Activity has `Timeout = 0.00:30:00`. The external service takes 35 minutes to complete and send the callback. What happens to the pipeline?
+
+---
+
+**Q18 (Tricky)**
+In the WebHook Activity body, you reference `@activity('act_webhook').output.callBackUri`. Why must this be included in the body, and what happens if you forget to include it?
+
+---
+
+**Q19 (Conceptual)**
+An external service POSTs back to the ADF callback URL with `{ "statusCode": "500", "error": "processing failed" }`. What does the WebHook Activity report in Monitor?
+
+---
+
+## Filter
+
+**Q20 (Warm-up)**
+What does the Filter Activity do? What does `@activity('act_filter').output.filterCount` return?
 
 ---
 
 **Q21 (Scenario)**
-A Validation Activity has `Timeout = 0.00:05:00` and `Sleep = 60`. The Bronze file arrives 4 minutes and 30 seconds after the pipeline starts. Does the pipeline succeed or fail? Explain why.
+A Lookup returns 8 rows. A Filter with condition `@greater(item().size, 1000000)` is applied. After filtering, `filterCount = 3`. How many items does the downstream ForEach process?
 
 ---
 
 **Q22 (Tricky)**
-The Validation Activity succeeds (file found, size > minimum), but the next Mapping Data Flow fails because it reads 0 rows from the Bronze file. How is this possible and what is the root cause?
+You apply a Filter with condition `@equals(item().status, 'active')`. Two rows have `status = 'Active'` (capital A). Are these rows kept or dropped? What is the fix?
 
 ---
 
-**Q23 (Scenario)**
-You have two upstream teams: Team A drops `payments.json` and Team B drops `sessions.json`. Your pipeline must wait for both files before starting the Silver transform. Design the ADF activity flow to handle this — name every activity and its type.
+## ForEach
+
+**Q23 (Warm-up)**
+What is the difference between `Is Sequential: true` and `Is Sequential: false` in a ForEach Activity? What is the maximum batch count allowed?
 
 ---
 
----
-
-## Azure Function Activity
-
-**Q24 (Warm-up)**
-What is the difference between a Web Activity and an Azure Function Activity? Give one scenario where you would use each.
+**Q24 (Scenario)**
+A ForEach iterates over `["payments", "sessions", "customers"]`. Inside the ForEach, a Web Activity uses the expression `@item()`. What does `@item()` return during the second iteration?
 
 ---
 
-**Q25 (Conceptual)**
-How does ADF authenticate to an Azure Function when using the Azure Function Activity? Where should the function key be stored, and why?
+**Q25 (Tricky)**
+A ForEach with `Is Sequential: false, Batch count: 5` contains an Append Variable activity that appends `@item().table` to `v_processed`. After the ForEach, `v_processed` has only 3 items instead of 5. What likely happened and why?
 
 ---
 
-**Q26 (Scenario)**
-You want the Azure Function Activity to fire only when `act_copy_payments` fails. Which dependency condition do you use, and what colour is the dependency arrow in the ADF canvas?
+**Q26 (Conceptual)**
+Can you nest a ForEach inside another ForEach in ADF? What limitation must you be aware of?
 
 ---
 
-**Q27 (Tricky)**
-The Azure Function Activity in Monitor shows status Succeeded (HTTP 200). But no failure alert was received. What are two reasons the Function might have returned 200 without sending the alert, and where do you check?
+## Switch
+
+**Q27 (Warm-up)**
+What is the difference between If Condition and Switch Activity? Give a scenario where Switch is clearly the better choice.
 
 ---
 
 **Q28 (Scenario)**
-You want to send a Teams notification after every successful pipeline run (not just on failure). Describe the exact wiring: which activity does the Function Activity depend on, what dependency condition, and what body JSON would you send?
+A Switch Activity has cases for `"dev"`, `"staging"`, and `"prod"`. The pipeline is triggered with `p_env = "Prod"` (capital P). Which branch runs?
 
 ---
 
----
-
-## Mixed / Senior
-
-**Q29 (System design)**
-Design a complete end-to-end daily pipeline for the VoltGrid payments endpoint that: (1) authenticates via Key Vault, (2) copies Bronze JSON to ADLS, (3) waits for the file to confirm it landed, (4) runs a Mapping Data Flow to produce Silver Parquet, (5) logs the run to Azure SQL, and (6) sends a Teams alert on failure via Azure Function. List every activity name, its type, and one key configuration setting.
+**Q29 (Tricky)**
+You have a Switch with 3 cases and a Default. The expression evaluates to `"dev"`. Can the Default branch also run in the same execution? Explain.
 
 ---
 
-**Q30 (Tricky)**
-A student argues: "We can replace the Validation Activity with a Get Metadata + If Condition + Until loop — they both poll for a file." Is this true? What are the advantages and disadvantages of each approach?
+## Until
+
+**Q30 (Scenario + Tricky)**
+An Until loop has expression `@greaterOrEquals(int(variables('v_count')), 5)`. The inner canvas has only one Set Variable: `v_count = @string(add(int(variables('v_count')), 1))`. A student says this will fail at runtime. Are they right, and if so, why? Write the correct implementation using two variables.
 
 ---

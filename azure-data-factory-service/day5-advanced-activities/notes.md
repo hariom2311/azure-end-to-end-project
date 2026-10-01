@@ -1,613 +1,606 @@
-# Day 5 — ADF Advanced Activities
+# Day 5 — Remaining ADF Activities: Concept & Usage
 
-> **Prerequisite:** Day 4 completed. `pl_bronze_api_payments` is running and copying VoltGrid payments to the Bronze layer.
-> **Goal:** Cover the remaining ADF activity categories — Move & Transform (Mapping Data Flow), Databricks Notebook, Stored Procedure, Validation, and Azure Function — and wire them into the VoltGrid lakehouse pipeline.
-
----
-
-## Where We Are in the Lakehouse
-
-```
-Day 2–4 built:
-  VoltGrid API → [ADF] → ADLS Gen2 Bronze  (raw JSON, partitioned by date)
-
-Day 5 adds:
-  Bronze JSON → [Mapping Data Flow] → ADLS Gen2 Silver  (clean Parquet, typed columns)
-  Bronze JSON → [Databricks Notebook] → ADLS Gen2 Silver (alternative: Spark)
-  Silver land → [Validation Activity] → confirm file arrived before next step
-  Each run   → [Stored Procedure] → Azure SQL audit log (rows, status, run_date)
-  On failure  → [Azure Function] → email alert or custom logic
-```
+> **Goal:** Understand the remaining activities from the General and Iteration & Conditionals categories that were listed but not explained in detail in Day 4.
+> **No API required** — all examples use simple inline data, ADLS files, or Azure SQL so you can test without any external service.
 
 ---
 
-## Part 1: Move & Transform — Mapping Data Flow
+## Activities Covered Today
 
-### 1.1 What is Mapping Data Flow?
-
-Mapping Data Flow (MDF) is ADF's visual, code-free data transformation engine. You build a transformation graph in the ADF Studio UI — no Spark code required — and ADF compiles it to Spark and runs it on a managed cluster.
+From the ADF Activities panel:
 
 ```
-Data Flow canvas
-  Source → Transformations → Sink
+General (remaining)
+  ├── Lookup          ← read a config table or file
+  ├── Delete          ← remove files from storage
+  ├── Script          ← run arbitrary SQL on Azure SQL / Synapse
+  ├── Wait            ← pause for N seconds
+  └── WebHook         ← call a URL and wait for an async callback
 
-Transformations available:
-  Filter        → remove rows (WHERE clause)
-  Select        → pick/rename columns (SELECT)
-  Derived Column → add/compute new columns (new expressions)
-  Aggregate     → GROUP BY with SUM, COUNT, AVG
-  Join          → LEFT/INNER/FULL join two streams
-  Lookup (MDF)  → enrich rows from a reference dataset
-  Sort          → ORDER BY
-  Flatten       → unnest JSON arrays into rows
-  Cast          → change column data types
-  Conditional Split → route rows to different sinks based on condition
-  Sink          → write output (ADLS, SQL, etc.)
+Iteration & Conditionals (remaining)
+  ├── Filter          ← reduce an array to matching items
+  ├── ForEach         ← loop over an array
+  ├── Switch          ← multi-branch routing
+  └── Until           ← loop until condition is true
 ```
-
-**MDF vs Copy Activity:**
-
-| | Copy Activity | Mapping Data Flow |
-|---|---|---|
-| Purpose | Move data as-is | Transform data |
-| Transforms | None (only basic column mapping) | Full Spark transformation graph |
-| Code required | No | No (visual) |
-| Compute | Azure IR | Spark cluster (3–5 min warm-up) |
-| Best for | Raw ingestion (API → Bronze) | Bronze → Silver cleaning |
 
 ---
 
-### 1.2 Data Flow — Key Concepts
-
-**Source:** Where data flows in from. Can be a dataset (ADLS JSON, Parquet, Azure SQL, etc.).
-
-**Sink:** Where the transformed data goes. Configured separately from the ADF dataset but uses the same linked services.
-
-**Debug mode:** Turn on the Data Flow Debug slider at the top of the studio. This starts a Spark cluster (takes ~3 min). In debug mode, you can preview data at each transformation step — very useful for developing transforms.
-
-**Integration Runtime:** Data Flows always use Azure Integration Runtime — not Self-hosted IR. The default AutoResolveIntegrationRuntime works for ADLS Gen2.
-
-**Data Flow vs Data Flow Activity:**
-- **Data Flow** is the transformation graph — the visual canvas you design
-- **Data Flow Activity** is the ADF activity that runs the Data Flow from inside a pipeline — it is what connects your pipeline to the transformation logic
+## Part 1: General Activities
 
 ---
 
-### 1.3 Build a Silver-Layer Data Flow for Payments
+### 1.1 Lookup Activity
 
-#### What the Bronze payments JSON looks like (raw from API)
+**What it does:**
+Reads rows from a dataset and returns them as a JSON array that the pipeline can use. Think of it as loading a small config table or file into memory so downstream activities can loop over it or reference values from it.
 
+**Supported sources:** Azure SQL, ADLS Gen2 (JSON / CSV / Parquet), Cosmos DB, REST, and more.
+
+**Key setting — First row only:**
+- `Yes` → returns one object: `{ "firstRow": { ... } }` — use when you want a single config value
+- `No` → returns all rows: `{ "count": N, "value": [ {...}, {...} ] }` — use with ForEach
+
+**Simple example — load a list of table names from a JSON file:**
+
+Config file (`bronze/config/tables.json`) uploaded to ADLS:
 ```json
 [
-  {
-    "id": 101,
-    "session_id": "S-2001",
-    "amount": "45.80",
-    "currency": "AUD",
-    "payment_method": "credit_card",
-    "status": "completed",
-    "created_at": "2026-09-28T07:23:11Z",
-    "updated_at": "2026-09-28T07:23:45Z"
-  }
+  { "table": "payments",  "active": true  },
+  { "table": "sessions",  "active": true  },
+  { "table": "customers", "active": false }
 ]
 ```
 
-#### What the Silver payments Parquet should look like (clean, typed, partitioned)
-
 ```
-id              INT
-session_id      STRING
-amount_aud      DOUBLE        ← renamed + cast from string
-payment_method  STRING
-status          STRING
-created_date    DATE          ← extracted from created_at timestamp
-ingestion_date  DATE          ← partition column (today's date)
-```
+Lookup Activity
+  Dataset:        ds_tables_config   (points to tables.json)
+  First row only: No
 
-Rows with `status = 'failed'` are written to a separate error sink. Active payments go to the main Silver sink.
-
----
-
-### 1.4 Step-by-Step: Create the Payments Data Flow
-
-#### Step A — Create the Data Flow
-
-1. **Author** → **Data flows** → **+** → **New data flow**
-2. Name: `df_silver_payments`
-3. Turn on **Data Flow Debug** (top of canvas) — Spark cluster starts (~3 min)
-
-#### Step B — Add Source
-
-1. Click **Add Source** on the canvas
-2. **Source settings** tab:
-   - **Output stream name:** `src_bronze_payments`
-   - **Source type:** Dataset
-   - **Dataset:** `ds_bronze_payments_sink` (the same ADLS dataset used as sink in Day 2)
-   - *(The Bronze folder contains all the raw JSON files)*
-3. **Projection** tab → **Import schema** → ADF infers the columns from the JSON file
-4. Click **Data preview** tab → verify rows appear
-
-#### Step C — Add Filter (remove failed payments)
-
-1. Click the **+** after `src_bronze_payments` → **Filter**
-2. **Output stream name:** `flt_active`
-3. **Filter on** → **Add dynamic content**:
-   ```
-   notEquals(status, 'failed')
-   ```
-4. **Data preview** → confirm `status = 'failed'` rows are gone
-
-#### Step D — Add Derived Column (clean and compute columns)
-
-1. Click **+** after `flt_active` → **Derived Column**
-2. **Output stream name:** `drc_clean`
-3. **Columns** → add each transformation:
-
-   | Column name | Expression |
-   |---|---|
-   | `amount_aud` | `toDouble(amount)` |
-   | `created_date` | `toDate(created_at, 'yyyy-MM-dd\'T\'HH:mm:ss\'Z\'')` |
-   | `ingestion_date` | `currentDate()` |
-
-4. **Data preview** → verify `amount_aud` is a number, `created_date` is a date
-
-#### Step E — Add Select (keep only needed columns, rename)
-
-1. Click **+** after `drc_clean` → **Select**
-2. **Output stream name:** `sel_final`
-3. Keep columns: `id`, `session_id`, `amount_aud`, `payment_method`, `status`, `created_date`, `ingestion_date`
-4. Remove: `amount` (replaced by `amount_aud`), `currency`, `updated_at`, `created_at`
-
-#### Step F — Add Aggregate (optional — row count per date)
-
-1. Click **+** after `sel_final` → **Aggregate**
-2. **Output stream name:** `agg_summary`
-3. **Group by:** `created_date`
-4. **Aggregates:**
-   - `total_payments` = `count(id)`
-   - `total_amount_aud` = `sum(amount_aud)`
-
-> This stream goes to a separate summary sink. The `sel_final` stream continues to the main sink.
-
-#### Step G — Add Silver Sink
-
-1. Click **+** after `sel_final` → **Sink**
-2. **Output stream name:** `sink_silver`
-3. **Sink type:** Dataset → create new dataset:
-   - **+ New dataset** → **Azure Data Lake Storage Gen2** → **Parquet**
-   - Name: `ds_silver_payments_sink`
-   - Linked service: `ls_adls_bronze` (or a silver linked service if you have one)
-   - File path: `silver` / `api/payments`
-4. **Settings** tab:
-   - **File name option:** `Output to single file` → `payments.parquet` (for demo; in production use partitioning)
-   - **Partition option:** `Set partitioning` → by `ingestion_date`
-5. **Publish all**
-
----
-
-### 1.5 Wire Data Flow into a Pipeline
-
-A Data Flow is not automatically triggered — you run it via a **Data Flow Activity** inside a pipeline.
-
-1. **Author** → **Pipelines** → open `pl_bronze_api_payments` (or create `pl_silver_payments`)
-2. Activities panel → **Move & Transform** → drag **Data flow** to canvas
-3. Rename to `act_silver_payments_transform`
-4. **Settings tab:**
-   - **Data flow:** `df_silver_payments`
-   - **Run on (Azure IR):** AutoResolveIntegrationRuntime
-   - **Compute type:** General purpose
-   - **Core count:** 8 (minimum for non-debug runs)
-5. **Wire it** after `act_copy_payments` (Bronze must be written before Silver transform runs):
-   ```
-   act_copy_payments → act_silver_payments_transform
-   ```
-6. **Publish all** → **Debug**
-7. Monitor → click `act_silver_payments_transform` → observe Spark cluster start + transformation run
-
-**Monitor output:**
-```json
+Output:
 {
-  "runStatus": {
-    "metrics": {
-      "sink_silver": { "rowsWritten": 95, "time": 42 }
-    }
-  }
+  "count": 3,
+  "value": [
+    { "table": "payments",  "active": true  },
+    { "table": "sessions",  "active": true  },
+    { "table": "customers", "active": false }
+  ]
 }
 ```
 
----
-
-## Part 2: Databricks Notebook Activity
-
-### 2.1 What It Does
-
-The Databricks Notebook Activity runs an Azure Databricks notebook from inside an ADF pipeline. It is the standard way to trigger Spark-based transformations (Bronze → Silver → Gold) when your team uses Databricks for heavy processing.
-
+**How to reference the output:**
 ```
-ADF Pipeline
-  act_copy_payments (Copy Activity — writes Bronze JSON)
-       │
-  act_run_silver_nb (Databricks Notebook Activity)
-       │
-       ▼
-  Azure Databricks
-    Notebook: /VoltGrid/silver/process_payments
-    Reads:    bronze/api/payments/ingestion_date=2026-10-01/*.json
-    Writes:   silver/api/payments/ingestion_date=2026-10-01/part-00000.parquet
+All rows:          @activity('lkp_tables').output.value
+Row count:         @activity('lkp_tables').output.count
+First row:         @activity('lkp_tables').output.firstRow
+Row at index 1:    @activity('lkp_tables').output.value[1].table
 ```
 
----
-
-### 2.2 Setup — Linked Service for Databricks
-
-Before adding the activity, create a linked service that connects ADF to your Databricks workspace.
-
-1. **Manage** → **Linked services** → **+ New** → search **Azure Databricks**
-2. Name: `ls_databricks`
-3. **Azure subscription:** select your subscription
-4. **Databricks workspace:** select your workspace
-5. **Select cluster:** choose between:
-   - **Existing interactive cluster** — reuses a running cluster (faster, costs more when idle)
-   - **New job cluster** — spins up a cluster just for this job, terminates after (recommended for production)
-6. **Authentication:** select **Access token** → store the token in Key Vault → reference with:
-   - **AKV linked service:** `ls_keyvault`
-   - **Secret name:** `databricks-access-token`
-7. **Test connection** → Succeeded → **Create**
+**When to use:**
+- Load endpoint configs, table lists, or environment settings from a file — then pass to ForEach
+- Read the last successful watermark from a SQL table before running an incremental load
+- Read a single config value (e.g., base URL, page size) using First row only: Yes
 
 ---
 
-### 2.3 Add Databricks Notebook Activity to Pipeline
+### 1.2 Delete Activity
 
-1. Open `pl_bronze_api_payments` → Activities panel → **Databricks** → drag **Notebook** to canvas
-2. Rename to `act_run_silver_payments`
-3. **Wire it:** `act_copy_payments` → `act_run_silver_payments` (On Success)
-4. **Azure Databricks tab:**
-   - **Databricks linked service:** `ls_databricks`
-5. **Settings tab:**
-   - **Notebook path:** `/VoltGrid/silver/process_payments`
-   - **Base parameters** — pass pipeline values to the notebook:
-     | Key | Value |
-     |---|---|
-     | `run_date` | `@variables('v_ingestion_date')` |
-     | `token` | `@variables('v_token')` |
-     | `source_path` | `@concat('bronze/api/payments/ingestion_date=', variables('v_ingestion_date'), '/')` |
-6. **Publish all** → **Debug**
+**What it does:**
+Deletes files or folders from ADLS Gen2, Azure Blob Storage, or a file system. Used to clean up processed files, remove old partitions, or archive data.
 
-**In the Databricks notebook**, these parameters are accessed as:
+**Key settings:**
+- **Dataset:** points to the file(s) or folder to delete
+- **Recursive:** `true` deletes the folder and all its contents; `false` deletes only the specified file
+- **Enable logging:** writes a log of what was deleted to an ADLS path — useful for audit
 
-```python
-# Python (Databricks)
-run_date    = dbutils.widgets.get("run_date")
-source_path = dbutils.widgets.get("source_path")
+**Simple example — delete a processed landing file:**
 
-df = spark.read.json(f"abfss://bronze@youraccount.dfs.core.windows.net/{source_path}")
-df_clean = df.filter(df.status != "failed")
-df_clean.write.mode("overwrite").parquet(
-    f"abfss://silver@youraccount.dfs.core.windows.net/api/payments/ingestion_date={run_date}/"
-)
+```
+Pipeline flow:
+  act_copy_to_bronze    (Copy Activity — moves landing/payments.csv to Bronze)
+       │ On Success
+  act_delete_landing    (Delete Activity — removes landing/payments.csv)
+
+Delete Activity settings:
+  Dataset:   ds_landing_payments   (points to landing/payments.csv)
+  Recursive: false
 ```
 
-**Monitor:** click `act_run_silver_payments` → **Output** tab → Databricks job run ID → follow the link directly to the Databricks run page.
+**Output in Monitor:**
+```json
+{ "filesDeleted": 1, "filesSkipped": 0, "dataRead": 0 }
+```
+
+If the file doesn't exist: `filesDeleted: 0, filesSkipped: 1` — Delete **does not fail** on missing files.
+
+**Example — delete an entire date partition folder:**
+```
+Dataset path:  bronze/api/payments/ingestion_date=2026-09-01/
+Recursive:     true
+
+Output: { "filesDeleted": 5, "filesSkipped": 0 }  ← deleted 5 files inside the folder
+```
+
+**When to use:**
+- After copying a landing file to Bronze, delete it from landing so it isn't processed twice
+- Clean up temp files created during a pipeline run
+- Remove old date partitions as part of a retention policy
+
+**Important:** ADLS Gen2 deletion is irreversible unless soft delete is enabled on the storage account. Always test on non-critical files first.
 
 ---
 
-### 2.4 Databricks Activity vs Mapping Data Flow
+### 1.3 Script Activity
 
-| | Databricks Notebook | Mapping Data Flow |
+**What it does:**
+Runs arbitrary SQL statements directly on Azure SQL Database, Azure Synapse Analytics (dedicated SQL pool), or SQL Server. Unlike Stored Procedure Activity (which calls a pre-defined procedure), Script Activity lets you write inline SQL — DDL, DML, or queries — directly in the pipeline settings.
+
+**Supported targets:** Azure SQL Database, Azure SQL Managed Instance, Synapse Dedicated SQL Pool, SQL Server (via Self-hosted IR)
+
+**Key settings:**
+- **Linked service:** your Azure SQL linked service
+- **Script type:** `Query` (returns rows) or `NonQuery` (INSERT / UPDATE / DELETE / DDL — returns rows affected)
+- **Scripts:** the SQL text — can use ADF dynamic content expressions
+
+**When to choose Script over Stored Procedure:**
+- You want to write quick inline SQL without creating a stored procedure in the database
+- DDL operations: `CREATE TABLE`, `TRUNCATE TABLE`, `ALTER TABLE`
+- One-off cleanup or maintenance SQL inside a pipeline
+
+**Example 1 — truncate a staging table before loading:**
+```
+Script Activity
+  Linked service: ls_azure_sql
+  Script type:    NonQuery
+  Script:         TRUNCATE TABLE stg_payments;
+```
+
+**Example 2 — insert an audit row with dynamic content:**
+```
+Script Activity
+  Linked service: ls_azure_sql
+  Script type:    NonQuery
+  Script:
+    INSERT INTO pipeline_audit (pipeline_name, run_date, status)
+    VALUES (
+      '@{pipeline().pipelineName}',
+      '@{variables('v_run_date')}',
+      'started'
+    );
+```
+
+**Example 3 — query and return a watermark value (Script type: Query):**
+```
+Script Activity
+  Script type: Query
+  Script:      SELECT MAX(updated_at) AS last_run FROM pipeline_audit
+               WHERE pipeline_name = 'pl_bronze_api_payments'
+
+Output:
+{
+  "resultSets": [
+    [ { "last_run": "2026-09-30T08:00:00" } ]
+  ]
+}
+
+Reference downstream:
+  @activity('act_get_watermark').output.resultSets[0][0].last_run
+```
+
+**Script Activity vs Stored Procedure Activity:**
+
+| | Script Activity | Stored Procedure Activity |
 |---|---|---|
-| Code | Python/Scala/SQL notebook | Visual canvas, no code |
-| Cluster | Your Databricks workspace | ADF-managed Spark (AutoResolve IR) |
-| Control | Full — any Spark operation | Limited to built-in transformations |
-| Debugging | Databricks UI | ADF data preview (debug mode) |
-| Team | Data engineers who know Spark | Anyone comfortable with ADF UI |
-| Cost | Databricks + ADF | ADF only |
-| Use when | Complex logic, ML, Delta Lake | Standard ETL: filter, join, aggregate |
+| SQL location | Inline in ADF pipeline | Pre-defined in the database |
+| Flexibility | Write any SQL ad hoc | Reuse pre-tested procedure |
+| Returning values | Query type returns resultSets | Via OUTPUT parameters |
+| Best for | Quick inline SQL, DDL, one-off ops | Reusable logic, complex upserts |
 
 ---
 
-## Part 3: Stored Procedure Activity
+### 1.4 Wait Activity
 
-### 3.1 What It Does
+**What it does:**
+Pauses the pipeline execution for a fixed number of seconds before the next activity starts. No data is moved or processed — it simply sleeps.
 
-Calls a stored procedure in Azure SQL Database (or SQL Managed Instance). Commonly used to:
-- Write an audit log after each pipeline run
-- Update a watermark table (last successful run timestamp)
-- Trigger a database-side post-processing job
+**Key setting:**
+- **Wait time in seconds:** integer, max 604800 (7 days)
 
----
+**Simple examples:**
 
-### 3.2 Setup — Linked Service for Azure SQL
+```
+Example 1 — pause 5 seconds between two Copy Activities:
+  act_copy_page_1  →  Wait (5s)  →  act_copy_page_2
 
-1. **Manage** → **Linked services** → **+ New** → **Azure SQL Database**
-2. Name: `ls_azure_sql`
-3. **Server:** your Azure SQL server name
-4. **Database:** `ev_ops_db` (or your audit database)
-5. **Authentication:** SQL authentication or Managed Identity
-6. **Test connection** → Create
+Example 2 — pause 30 seconds inside a ForEach to respect API rate limits:
+  ForEach (loop over endpoints)
+    └─ act_copy_endpoint  →  Wait (30s)
+```
 
----
+**When to use:**
+- Rate limiting — the target API allows only N requests per minute, so add a pause between calls
+- Eventual consistency — an upstream write takes a few seconds to become visible to a downstream read
+- Debugging — artificially slow a pipeline to observe intermediate Monitor states
 
-### 3.3 Create the Audit Table and Stored Procedure
+**What Wait does NOT do:**
+- It does not poll for a condition — use Validation Activity for that
+- It does not adapt to load — the wait is always exactly N seconds regardless of what else is happening
 
-Run this in your Azure SQL database:
-
-```sql
--- Audit table
-CREATE TABLE pipeline_audit (
-    id              INT IDENTITY PRIMARY KEY,
-    pipeline_name   VARCHAR(200),
-    run_date        DATE,
-    rows_copied     INT,
-    status          VARCHAR(50),
-    run_timestamp   DATETIME DEFAULT GETDATE()
-);
-
--- Stored procedure called by ADF
-CREATE PROCEDURE usp_log_pipeline_run
-    @pipeline_name  VARCHAR(200),
-    @run_date       DATE,
-    @rows_copied    INT,
-    @status         VARCHAR(50)
-AS
-BEGIN
-    INSERT INTO pipeline_audit (pipeline_name, run_date, rows_copied, status)
-    VALUES (@pipeline_name, @run_date, @rows_copied, @status);
-END;
+**Wait in Monitor:**
+```
+act_wait_between_pages   Succeeded   Duration: 5s
 ```
 
 ---
 
-### 3.4 Add Stored Procedure Activity to Pipeline
+### 1.5 WebHook Activity
 
-1. Open `pl_bronze_api_payments` → Activities panel → **General** → drag **Stored procedure** to canvas
-2. Rename to `act_log_audit`
-3. **Wire it:** `act_copy_payments` → `act_log_audit` (On Success)
-4. **Settings tab:**
-   - **Linked service:** `ls_azure_sql`
-   - **Stored procedure name:** `usp_log_pipeline_run`
-   - **Stored procedure parameters** → **+ New** for each:
+**What it does:**
+Calls an HTTP endpoint and then **pauses the pipeline**, waiting for the external system to call back an ADF callback URL with a success or failure signal. The pipeline resumes only after receiving the callback (or times out).
 
-     | Name | Type | Value |
-     |---|---|---|
-     | `pipeline_name` | String | `@pipeline().pipelineName` |
-     | `run_date` | String | `@variables('v_ingestion_date')` |
-     | `rows_copied` | Int32 | `@activity('act_copy_payments').output.rowsCopied` |
-     | `status` | String | `success` |
+This is fundamentally different from Web Activity, which fires an HTTP call and moves on immediately with whatever the HTTP response was.
 
-5. **Publish all** → **Debug**
-6. Monitor → click `act_log_audit` → **Output** tab → `{"returnCode": 0}` = procedure ran successfully
-7. Query Azure SQL to verify: `SELECT * FROM pipeline_audit ORDER BY run_timestamp DESC`
+**The two-step flow:**
 
-**Result in the audit table:**
 ```
-id | pipeline_name            | run_date   | rows_copied | status  | run_timestamp
----+--------------------------+------------+-------------+---------+---------------------
-1  | pl_bronze_api_payments   | 2026-10-01 | 100         | success | 2026-10-01 08:23:11
+Pipeline
+  ↓
+WebHook Activity fires → POST to your external URL
+  ↓ (pipeline PAUSED — waiting)
+External system does its work (could take minutes or hours)
+  ↓
+External system POSTs back to ADF callback URL with { "Output": {...} }
+  ↓
+Pipeline RESUMES → next activity runs
 ```
 
-**Why use Stored Procedure instead of inserting directly from Copy Activity?**
-- Copy Activity can only write to a dataset — it cannot run SQL logic
-- The stored procedure can do complex upserts, lookups, and conditionals that Copy Activity cannot
-- Keeping audit logic in SQL means it can be tested independently of ADF
+**Key settings:**
+- **URL:** the endpoint ADF calls to start the external job
+- **Method:** POST (only POST is supported)
+- **Body:** JSON payload sent to the external system — must include `@activity('WebHook1').output.callBackUri` so the external system knows where to call back
+- **Authentication:** None, Basic, Client Certificate, or MSI
+- **Timeout:** max time to wait for the callback. Format: `D.HH:MM:SS`. If no callback arrives within this time, the activity fails.
 
----
+**Simple example — trigger a long-running data quality job:**
 
-## Part 4: Validation Activity
+```
+WebHook Activity settings:
+  URL:    https://your-service.com/api/start-quality-check
+  Method: POST
+  Body:
+    {
+      "table": "payments",
+      "callback_url": "@{activity('WebHook1').output.callBackUri}"
+    }
+  Timeout: 0.01:00:00  (1 hour)
 
-### 4.1 What It Does
+Pipeline pauses here.
 
-Validation Activity pauses the pipeline and polls for a file or folder in ADLS Gen2. It keeps polling until:
-- The file appears → pipeline continues (Succeeded)
-- The timeout is reached → pipeline fails with a timeout error
+External service does quality check (could take 20 minutes).
+External service POSTs back to callBackUri:
+  { "statusCode": "200", "Output": { "rows_checked": 500, "errors": 0 } }
 
-Think of it as a file-arrival trigger within a pipeline — useful when:
-- An upstream team drops a file that your pipeline must wait for
-- A Databricks job writes a `_SUCCESS` marker file that signals completion
-- You want to confirm Bronze data landed before starting Silver processing
-
----
-
-### 4.2 Add Validation Activity to Pipeline
-
-#### Scenario: Wait for the Bronze payments file before starting Silver transform
-
-1. Create a dataset pointing to the expected Bronze output file:
-   - **Author** → **Datasets** → **+ New dataset** → **Azure Data Lake Storage Gen2** → **JSON**
-   - Name: `ds_bronze_payments_check`
-   - Linked service: `ls_adls_bronze`
-   - File path: Container `bronze`, Directory → **Add dynamic content**: `api/payments/ingestion_date=@{dataset().p_run_date}`, File: `payments.json`
-   - **Parameters** tab → add `p_run_date` (String)
-   - **Publish all**
-
-2. Open `pl_bronze_api_payments` → Activities panel → **General** → drag **Validation** to canvas
-3. Rename to `act_wait_for_bronze`
-4. **Wire it:** `act_copy_payments` → `act_wait_for_bronze` → `act_silver_payments_transform`
-5. **Settings tab:**
-   - **Dataset:** `ds_bronze_payments_check`
-   - **Dataset properties:** `p_run_date` = `@variables('v_ingestion_date')`
-   - **Timeout:** `0.00:10:00` (10 minutes — if file not there in 10 min, fail)
-   - **Sleep:** `30` (check every 30 seconds)
-   - **Minimum size:** `1024` (file must be at least 1KB — avoids accepting an empty file)
-6. **Publish all** → **Debug**
-
-**Monitor — three outcomes:**
-
-| Outcome | What Monitor shows |
-|---|---|
-| File appears within timeout | `act_wait_for_bronze` = Succeeded, downstream continues |
-| File never appears | `act_wait_for_bronze` = Failed (timeout) — downstream Skipped |
-| File appears but size < 1KB | `act_wait_for_bronze` = Failed (minimum size not met) |
-
-**Validation Activity settings explained:**
-
-| Setting | What it means |
-|---|---|
-| Timeout | Max wait time. Format: `D.HH:MM:SS`. `0.00:10:00` = 10 minutes |
-| Sleep | Interval between each poll attempt (seconds) |
-| Minimum size | File must be at least this many bytes to be considered valid |
-
----
-
-## Part 5: Azure Function Activity
-
-### 5.1 What It Does
-
-Azure Function Activity calls an Azure Function (HTTP-triggered) from a pipeline. You write any custom logic in the Function (Python, C#, JavaScript) — ADF just calls it via HTTP and passes parameters.
-
-**Common uses:**
-- Send a failure alert email (via SendGrid or Logic App)
-- Validate data quality rules that are too complex for ADF expressions
-- Trigger an external system or third-party API that needs custom auth
-- Write a custom audit record to Cosmos DB or another non-SQL store
-
----
-
-### 5.2 Setup — Linked Service for Azure Function
-
-1. **Manage** → **Linked services** → **+ New** → **Azure Function**
-2. Name: `ls_azure_function`
-3. **Function App URL:** your Azure Function App base URL (e.g. `https://ev-alerts.azurewebsites.net`)
-4. **Function key:** store the function's host key in Key Vault → reference:
-   - **AKV linked service:** `ls_keyvault`
-   - **Secret name:** `function-host-key`
-5. **Test connection** → Create
-
----
-
-### 5.3 Add Azure Function Activity to Pipeline
-
-#### Scenario: On pipeline failure, call an Azure Function to send a failure email
-
-1. Open `pl_bronze_api_payments` → Activities panel → **Azure** → drag **Azure function** to canvas
-2. Rename to `act_alert_on_failure`
-3. **Wire it:** draw a dependency from `act_copy_payments` → `act_alert_on_failure` with **On Failure** (red arrow)
-   - Click the dependency arrow → change condition to **Failed**
-4. **Settings tab:**
-   - **Linked service:** `ls_azure_function`
-   - **Function name:** `SendPipelineAlert`
-   - **Method:** POST
-   - **Body** → **Add dynamic content**:
-     ```json
-     @concat('{',
-       '"pipeline":"', pipeline().pipelineName, '",',
-       '"run_date":"', variables('v_ingestion_date'), '",',
-       '"run_id":"', pipeline().RunId, '",',
-       '"message":"Bronze copy failed for payments endpoint"',
-     '}')
-     ```
-5. **Publish all** → **Debug**
-
-**How the Azure Function receives the call:**
-
-```python
-# Azure Function (Python)
-import azure.functions as func
-import json, logging
-
-def main(req: func.HttpRequest) -> func.HttpResponse:
-    body = req.get_json()
-    pipeline = body['pipeline']
-    run_date = body['run_date']
-    message  = body['message']
-
-    logging.info(f"Alert: {pipeline} failed on {run_date}: {message}")
-    # Send email via SendGrid or Teams webhook here
-    return func.HttpResponse("Alert sent", status_code=200)
+Pipeline resumes → next activity can reference:
+  @activity('WebHook1').output.rows_checked  → 500
 ```
 
-**Monitor — what to verify:**
-- `act_alert_on_failure` is wired with **On Failure** dependency — it only runs when `act_copy_payments` fails
-- To test: deliberately break the copy source URL → Debug → Copy fails → Function activity fires → check Function App logs in Azure Portal
+**WebHook vs Web Activity:**
 
----
-
-### 5.4 Azure Function vs Web Activity
-
-| | Web Activity | Azure Function Activity |
+| | Web Activity | WebHook Activity |
 |---|---|---|
-| Target | Any public HTTP endpoint | Azure Function specifically |
-| Auth | Supports MSI, Basic, Client Cert | Function key (stored in Key Vault) |
-| Custom code | Not applicable | Yes — full code in the Function |
-| Linked service | Not required | Required (`ls_azure_function`) |
-| Use when | Calling Key Vault, REST APIs, webhooks | Need custom server-side logic |
+| Waits for response | Immediate HTTP response | Waits for async callback |
+| Use when | Short synchronous calls (Key Vault, login) | Long-running async external jobs |
+| Pipeline paused? | No — continues after HTTP response | Yes — paused until callback or timeout |
+| Callback URL | Not applicable | External system must call back to ADF |
+
+**When to use:**
+- Trigger a long-running external job (quality check, ML training, file processing service) and wait for it to complete
+- Any scenario where the external system needs minutes or hours and will notify ADF when done
 
 ---
 
-## Part 6: Full Day 5 Pipeline — End-to-End
-
-Combining all Day 5 activities into one orchestrated flow:
-
-```
-pl_ev_daily_ingestion  (Day 5 orchestrator)
-
-┌──────────────────────────────────────────────────────────────────────────┐
-│                                                                          │
-│  [act_get_username] ──┐                                                  │
-│  [act_get_password] ──┴──► [act_api_login] ──► [act_set_token]          │
-│                                                       │                  │
-│                                             [act_set_ingestion_date]     │
-│                                                       │                  │
-│                                             [act_copy_payments]  ◄── Copy Activity (Bronze)
-│                                              │         │                 │
-│                                         On Fail   On Success             │
-│                                              │         │                 │
-│                              [act_alert_on_failure]    │                 │
-│                              Azure Function            │                 │
-│                              (sends email)             │                 │
-│                                                        │                 │
-│                                             [act_wait_for_bronze]        │
-│                                             Validation Activity          │
-│                                             (poll until file appears)    │
-│                                                        │                 │
-│                                             [act_silver_transform]       │
-│                                             Data Flow OR Databricks NB   │
-│                                                        │                 │
-│                                             [act_log_audit]              │
-│                                             Stored Procedure             │
-│                                             (insert into pipeline_audit) │
-└──────────────────────────────────────────────────────────────────────────┘
-```
-
-**Activities used in Day 5:**
-- Data Flow Activity — Bronze JSON → Silver Parquet (visual ETL)
-- Databricks Notebook Activity — alternative Spark-based Silver transform
-- Stored Procedure Activity — audit log after every run
-- Validation Activity — confirm Bronze file exists before Silver starts
-- Azure Function Activity — failure alert via HTTP
+## Part 2: Iteration & Conditionals Activities
 
 ---
 
-## Activity Categories Recap — All 5 Days
+### 2.1 Filter Activity
+
+**What it does:**
+Takes an array and returns a subset — only items where the condition is `true`. Exactly like a `WHERE` clause applied to an in-memory array.
+
+**Key settings:**
+- **Items:** the input array — usually from a Lookup output or a hardcoded array
+- **Condition:** an expression evaluated for each item — `true` keeps it, `false` drops it
+- Inside the condition, `@item()` refers to the current element being evaluated
+
+**Simple example — keep only active tables:**
 
 ```
-ADF Activities Panel
-├── General                   ← Day 4 (10 activities)
-│   Copy Data, Web, Set Variable, Append Variable, Execute Pipeline,
-│   Get Metadata, Delete, Lookup, Wait, Fail
-│   + Stored Procedure, Validation   ← Day 5
-│
-├── Iteration & Conditionals  ← Day 4 (5 activities)
-│   ForEach, If Condition, Switch, Until, Filter
-│
-├── Move & Transform          ← Day 5
-│   Data Flow (Mapping Data Flow)
-│
-├── Azure                     ← Day 5
-│   Databricks Notebook, Azure Function
-│
-└── (Others: HDInsight, Synapse, Azure Batch, Azure ML, etc.)
+Input array (from Lookup):
+[
+  { "table": "payments",  "active": true  },
+  { "table": "sessions",  "active": true  },
+  { "table": "customers", "active": false }
+]
+
+Filter Activity
+  Items:     @activity('lkp_tables').output.value
+  Condition: @equals(item().active, true)
+
+Output:
+{
+  "value": [
+    { "table": "payments", "active": true },
+    { "table": "sessions", "active": true }
+  ],
+  "filterCount": 2
+}
+```
+
+**Another example — filter files larger than 1MB:**
+```
+Input: [{ "name": "big.json", "size": 2048000 }, { "name": "small.json", "size": 512 }]
+Condition: @greater(item().size, 1000000)
+Output: [{ "name": "big.json", "size": 2048000 }]
+```
+
+**Referencing Filter output downstream:**
+```
+@activity('act_filter_active').output.value          → the filtered array
+@activity('act_filter_active').output.filterCount    → how many items passed
+```
+
+**When to use:**
+- Remove inactive entries from a config list before passing to ForEach
+- Skip already-processed files (filter out files where `status = 'done'`)
+- Select only records matching a condition for special handling
+
+---
+
+### 2.2 ForEach Activity
+
+**What it does:**
+Loops over an array and runs a set of inner activities for each element — like a `for` loop in code. The inner activities run inside a separate canvas (you click into the ForEach to build the inner flow).
+
+**Key settings:**
+
+| Setting | What it controls |
+|---|---|
+| Items | The array to iterate — from Lookup, Filter, or a hardcoded `["a","b","c"]` |
+| Is Sequential | `true` = one at a time in order. `false` = parallel |
+| Batch count | Max parallel items when Sequential = false. Range: 1–50 |
+
+**Inside ForEach, reference the current element:**
+```
+@item()              → the whole current object
+@item().table        → a field of the current object
+@item().endpoint     → another field
+```
+
+**Simple example — loop over a hardcoded list:**
+
+```
+ForEach Activity
+  Items:         ["payments", "sessions", "customers"]
+  Sequential:    true
+
+  Inner canvas:
+    Web Activity
+      URL:   @concat('https://example.com/api/', item())
+      Method: GET
+```
+
+Iteration 1: calls `https://example.com/api/payments`
+Iteration 2: calls `https://example.com/api/sessions`
+Iteration 3: calls `https://example.com/api/customers`
+
+**Parallel vs Sequential — visual:**
+
+```
+Sequential (batch=1):           Parallel (batch=3):
+  item1 → done                    item1 ─┐
+  item2 → done                    item2 ─┼─ all run at same time
+  item3 → done                    item3 ─┘
+  Total = T1 + T2 + T3            Total = max(T1, T2, T3)
+```
+
+**Use Sequential when:**
+- Items must be processed in order (page 1 before page 2)
+- Target system allows only 1 concurrent connection
+
+**Use Parallel (batch count > 1) when:**
+- Items are independent of each other
+- You want to reduce total run time
+
+**Inner canvas note:** Variables declared at the pipeline level are shared — but Append Variable inside a parallel ForEach can have race conditions (two iterations appending at the same time). Use sequential if you need to collect results into a variable safely.
+
+---
+
+### 2.3 Switch Activity
+
+**What it does:**
+Evaluates a string expression and runs the matching case branch. Like an `if-else if-else` ladder or a `switch/case` statement in code. Each case is a separate inner canvas with its own activities.
+
+**Key settings:**
+- **On:** the expression to evaluate — must return a string
+- **Cases:** named branches — the case value is matched against the expression result
+- **Default:** the branch that runs if no case matches
+
+**Simple example — route by environment name:**
+
+```
+Pipeline parameter: p_env  (String, default "dev")
+
+Switch Activity
+  On: @pipeline().parameters.p_env
+
+  Case "dev":
+    Set Variable → v_base_url = "https://dev.example.com"
+
+  Case "staging":
+    Set Variable → v_base_url = "https://staging.example.com"
+
+  Case "prod":
+    Set Variable → v_base_url = "https://prod.example.com"
+
+  Default:
+    Fail Activity → Message: "Unknown environment: @{pipeline().parameters.p_env}"
+                    Error code: BAD_ENV
+```
+
+- Debug with `p_env = dev` → `v_base_url = https://dev.example.com`
+- Debug with `p_env = uat` → Default fires → pipeline fails with `BAD_ENV`
+
+**Another example — route by file type:**
+```
+Switch on: @pipeline().parameters.p_file_type
+
+  Case "csv":   Copy Activity with CSV dataset
+  Case "json":  Copy Activity with JSON dataset
+  Case "parquet": Copy Activity with Parquet dataset
+  Default:      Fail → "Unsupported file type"
+```
+
+**Switch vs If Condition:**
+
+| | If Condition | Switch |
+|---|---|---|
+| Number of branches | 2 (True / False) | N (one per case + Default) |
+| Expression type | Boolean (`true`/`false`) | String (matched against case values) |
+| Use when | Binary decision | 3+ options on the same value |
+
+---
+
+### 2.4 Until Activity
+
+**What it does:**
+Repeats a set of inner activities until a boolean condition becomes `true`. Like a `do...while` loop — the inner activities always run at least once before the condition is checked.
+
+**Key settings:**
+- **Expression:** checked after each iteration — when `true`, the loop stops
+- **Timeout:** max time the loop can run (default 7 days) — format `D.HH:MM:SS`
+
+**Simple example — retry until success:**
+
+```
+Pipeline variables:
+  v_success  (Boolean, default false)
+  v_attempts (String,  default "0")
+  v_temp     (String)
+
+Until Activity
+  Expression: @equals(variables('v_success'), true)
+  Timeout:    0.00:10:00  (stop after 10 minutes if never succeeds)
+
+  Inner canvas:
+    Web Activity → act_call_api
+      URL: https://example.com/api/status
+      Method: GET
+
+    If Condition → act_check_result
+      Expression: @equals(activity('act_call_api').output.status, 'ready')
+
+      True branch (API is ready → mark success):
+        Set Variable → v_success = true
+
+      False branch (not ready yet → increment counter):
+        Set Variable → v_temp     = @string(add(int(variables('v_attempts')), 1))
+        Set Variable → v_attempts = @variables('v_temp')
+```
+
+**Why two Set Variable activities for the counter?**
+ADF does not allow a variable to read and write itself in the same expression. `v_attempts = add(variables('v_attempts'), 1)` throws a runtime error. The workaround:
+1. Write the new value to a temp variable: `v_temp = add(variables('v_attempts'), 1)`
+2. Copy temp to the real counter: `v_attempts = @variables('v_temp')`
+
+**Iteration flow visual:**
+
+```
+Start → Inner activities run → check condition
+  false → Inner activities run again → check condition
+  false → Inner activities run again → check condition
+  true  → Loop exits → next activity in pipeline
+```
+
+**Until vs ForEach:**
+
+| | ForEach | Until |
+|---|---|---|
+| Know the list upfront? | Yes — pass the array | No — loop until condition |
+| Fixed number of iterations? | Yes | No — depends on when condition is met |
+| Pagination (unknown total pages) | Cannot | Use Until |
+| Loop over a known endpoint list | Use ForEach | Awkward |
+
+**When to use:**
+- Paginate an API when you don't know the total pages upfront — loop until the page returns 0 rows
+- Poll an external system until it reports `status = 'ready'`
+- Retry logic — loop until success or max attempts reached
+
+---
+
+## Part 3: How These Activities Connect
+
+A realistic pipeline using all eight Day 5 activities together — no external API needed, just ADLS Gen2 and Azure SQL:
+
+```
+pl_demo_day5  (standalone demo pipeline)
+
+┌─────────────────────────────────────────────────────────────┐
+│                                                             │
+│  [act_lookup_tables]                                        │
+│  Lookup — reads tables.json from ADLS                       │
+│  Output: [{table:"payments",active:true}, ...]              │
+│                 │                                           │
+│         [act_filter_active]                                 │
+│         Filter — keeps only active:true rows                │
+│                 │                                           │
+│   [act_route_env]  ← Switch on p_env parameter             │
+│   dev  → Set Variable: v_schema = "stg"                    │
+│   prod → Set Variable: v_schema = "prod"                    │
+│   Default → Fail                                            │
+│                 │                                           │
+│   [act_loop_tables]  ← ForEach over filtered array         │
+│   ┌─────────────────────────────────────────────┐          │
+│   │ Inner canvas (once per table):              │          │
+│   │                                             │          │
+│   │  [act_truncate_stg]                         │          │
+│   │  Script — TRUNCATE TABLE stg.@{item().table}│          │
+│   │                                             │          │
+│   │  [act_wait_brief]                           │          │
+│   │  Wait — 2 seconds                           │          │
+│   │                                             │          │
+│   │  [act_copy_to_stg]                          │          │
+│   │  Copy — ADLS file → Azure SQL stg table     │          │
+│   └─────────────────────────────────────────────┘          │
+│                 │                                           │
+│   [act_poll_until_ready]  ← Until loop                     │
+│   Loop until SQL table row count > 0                        │
+│   Polls every 10 seconds, max 5 minutes                     │
+│                 │                                           │
+│   [act_cleanup_landing]  ← Delete                          │
+│   Delete — removes processed ADLS files                     │
+│                 │                                           │
+│   [act_notify_webhook]  ← WebHook                          │
+│   Calls external quality-check service                      │
+│   Waits for callback before pipeline ends                   │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Quick Reference — When to Use Each Day 5 Activity
+## Quick Reference — All Day 5 Activities
 
 ```
-I need to...                                             Use this
-───────────────────────────────────────────────────────────────────────
-Clean / transform / join data visually (no code)    →  Mapping Data Flow
-Run a Databricks/Spark notebook from a pipeline     →  Databricks Notebook
-Write an audit log to Azure SQL after each run      →  Stored Procedure
-Wait until a file appears before continuing         →  Validation
-Custom logic: email alert, external API call        →  Azure Function
+Activity      When to use
+────────────────────────────────────────────────────────────────────────
+Lookup        Load a config list or single value from a file/table
+Delete        Remove processed files or old partitions from storage
+Script        Run inline SQL (DDL, DML, SELECT) without a stored procedure
+Wait          Pause N seconds — rate limiting, buffers, debugging
+WebHook       Fire an async job and wait for it to call back before continuing
+Filter        Reduce an array to items matching a condition
+ForEach       Loop over a known array — sequential or parallel
+Switch        Multi-branch routing based on a string value (3+ cases)
+Until         Loop until a condition is true — unknown iteration count
 ```
