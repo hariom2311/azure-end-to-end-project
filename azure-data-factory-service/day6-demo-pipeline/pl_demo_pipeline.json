@@ -1,0 +1,303 @@
+{
+    "name": "pl_demo_pipeline",
+    "properties": {
+        "activities": [
+            {
+                "name": "Set Run ID",
+                "type": "SetVariable",
+                "dependsOn": [],
+                "policy": {
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "variableName": "v_run_id",
+                    "value": {
+                        "value": "@pipeline().RunId",
+                        "type": "Expression"
+                    }
+                }
+            },
+            {
+                "name": "Filter Items",
+                "type": "Filter",
+                "dependsOn": [
+                    {
+                        "activity": "Set Run ID",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "items": {
+                        "value": "@createArray('Apple','Banana','Mango','Orange')",
+                        "type": "Expression"
+                    },
+                    "condition": {
+                        "value": "@not(equals(item(), 'Banana'))",
+                        "type": "Expression"
+                    }
+                }
+            },
+            {
+                "name": "ForEach Item",
+                "type": "ForEach",
+                "dependsOn": [
+                    {
+                        "activity": "Filter Items",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "items": {
+                        "value": "@activity('Filter Items').output.value",
+                        "type": "Expression"
+                    },
+                    "isSequential": true,
+                    "activities": [
+                        {
+                            "name": "Append Item",
+                            "type": "AppendVariable",
+                            "dependsOn": [],
+                            "userProperties": [],
+                            "typeProperties": {
+                                "variableName": "v_items_array",
+                                "value": {
+                                    "value": "@item()",
+                                    "type": "Expression"
+                                }
+                            }
+                        }
+                    ]
+                }
+            },
+            {
+                "name": "Init Until Counter",
+                "type": "SetVariable",
+                "dependsOn": [
+                    {
+                        "activity": "ForEach Item",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "variableName": "v_until_counter",
+                    "value": {
+                        "value": "0",
+                        "type": "Expression"
+                    }
+                }
+            },
+            {
+                "name": "Until 3 Items",
+                "type": "Until",
+                "dependsOn": [
+                    {
+                        "activity": "Init Until Counter",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "expression": {
+                        "value": "@greaterOrEquals(int(variables('v_until_counter')), 3)",
+                        "type": "Expression"
+                    },
+                    "activities": [
+                        {
+                            "name": "Append Until Value",
+                            "type": "AppendVariable",
+                            "dependsOn": [],
+                            "userProperties": [],
+                            "typeProperties": {
+                                "variableName": "v_until_array",
+                                "value": {
+                                    "value": "@concat('Iteration-', variables('v_until_counter'))",
+                                    "type": "Expression"
+                                }
+                            }
+                        },
+                        {
+                            "name": "Set Temp Counter",
+                            "type": "SetVariable",
+                            "dependsOn": [
+                                {
+                                    "activity": "Append Until Value",
+                                    "dependencyConditions": [
+                                        "Succeeded"
+                                    ]
+                                }
+                            ],
+                            "policy": {
+                                "secureOutput": false,
+                                "secureInput": false
+                            },
+                            "userProperties": [],
+                            "typeProperties": {
+                                "variableName": "v_temp_counter",
+                                "value": {
+                                    "value": "@string(add(int(variables('v_until_counter')), 1))",
+                                    "type": "Expression"
+                                }
+                            }
+                        },
+                        {
+                            "name": "Increment Counter",
+                            "type": "SetVariable",
+                            "dependsOn": [
+                                {
+                                    "activity": "Set Temp Counter",
+                                    "dependencyConditions": [
+                                        "Succeeded"
+                                    ]
+                                }
+                            ],
+                            "policy": {
+                                "secureOutput": false,
+                                "secureInput": false
+                            },
+                            "userProperties": [],
+                            "typeProperties": {
+                                "variableName": "v_until_counter",
+                                "value": {
+                                    "value": "@variables('v_temp_counter')",
+                                    "type": "Expression"
+                                }
+                            }
+                        }
+                    ],
+                    "timeout": "0.01:00:00"
+                }
+            },
+            {
+                "name": "Switch Environment",
+                "type": "Switch",
+                "dependsOn": [
+                    {
+                        "activity": "Until 3 Items",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "on": {
+                        "value": "@variables('v_environment')",
+                        "type": "Expression"
+                    },
+                    "cases": [
+                        {
+                            "value": "dev",
+                            "activities": [
+                                {
+                                    "name": "Dev Case",
+                                    "type": "SetVariable",
+                                    "dependsOn": [],
+                                    "policy": {
+                                        "secureOutput": false,
+                                        "secureInput": false
+                                    },
+                                    "userProperties": [],
+                                    "typeProperties": {
+                                        "variableName": "v_switch_result",
+                                        "value": {
+                                            "value": "Development selected",
+                                            "type": "Expression"
+                                        }
+                                    }
+                                }
+                            ]
+                        },
+                        {
+                            "value": "prod",
+                            "activities": [
+                                {
+                                    "name": "Prod Case",
+                                    "type": "SetVariable",
+                                    "dependsOn": [],
+                                    "policy": {
+                                        "secureOutput": false,
+                                        "secureInput": false
+                                    },
+                                    "userProperties": [],
+                                    "typeProperties": {
+                                        "variableName": "v_switch_result",
+                                        "value": {
+                                            "value": "Production selected",
+                                            "type": "Expression"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    ],
+                    "defaultActivities": [
+                        {
+                            "name": "Default Case",
+                            "type": "SetVariable",
+                            "dependsOn": [],
+                            "policy": {
+                                "secureOutput": false,
+                                "secureInput": false
+                            },
+                            "userProperties": [],
+                            "typeProperties": {
+                                "variableName": "v_switch_result",
+                                "value": {
+                                    "value": "Unknown environment",
+                                    "type": "Expression"
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        ],
+        "variables": {
+            "v_run_id": {
+                "type": "String"
+            },
+            "v_items_array": {
+                "type": "Array",
+                "defaultValue": []
+            },
+            "v_until_array": {
+                "type": "Array",
+                "defaultValue": []
+            },
+            "v_until_counter": {
+                "type": "String",
+                "defaultValue": "0"
+            },
+            "v_temp_counter": {
+                "type": "String",
+                "defaultValue": "0"
+            },
+            "v_environment": {
+                "type": "String",
+                "defaultValue": "dev"
+            },
+            "v_switch_result": {
+                "type": "String"
+            }
+        },
+        "annotations": []
+    },
+    "type": "Microsoft.DataFactory/factories/pipelines"
+}
