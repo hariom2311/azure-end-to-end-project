@@ -484,29 +484,7 @@ Without policy:                With policy:
    | Unity Catalog | On | Centralised governance |
    | DBFS browser | Off in prod | Security — direct DBFS access bypasses Unity Catalog |
 
-### 8.2 Git Integration (Repos)
-
-Connect Databricks Repos to your Git provider so notebooks are version-controlled.
-
-1. **Settings** → **Linked accounts** → **Git provider** → **Azure DevOps Services** or **GitHub**
-2. Generate a personal access token (PAT) in your Git provider
-3. Enter the PAT in Databricks → **Save**
-
-Now in **Repos** → **+ Add Repo** → paste your repo URL → Databricks clones it.
-
-```
-Repo structure (VoltGrid):
-  azure-ev-end-to-end-project/
-  ├── databricks/
-  │   ├── bronze/
-  │   │   └── ingest_payments.py
-  │   ├── silver/
-  │   │   └── transform_payments.py
-  │   └── gold/
-  │       └── agg_revenue.py
-```
-
-### 8.3 Secrets — Databricks Secret Scope
+### 8.2 Secrets — Databricks Secret Scope
 
 Instead of hardcoding credentials in notebooks, store them in secret scopes.
 
@@ -540,7 +518,7 @@ username = dbutils.secrets.get(scope="voltgrid-kv", key="voltgrid-username")
 password = dbutils.secrets.get(scope="voltgrid-kv", key="voltgrid-password")
 ```
 
-### 8.4 ADLS Gen2 Access — Service Principal Mount
+### 8.3 ADLS Gen2 Access — Service Principal Mount
 
 To read/write ADLS Gen2 from Databricks notebooks, configure access.
 
