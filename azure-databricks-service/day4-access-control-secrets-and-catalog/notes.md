@@ -118,9 +118,161 @@ Azure Resources needed:
 | `sp-client-secret` | Client secret of the Service Principal |
 | `sp-tenant-id` | Azure AD Tenant ID |
 
-If these do not exist in your Key Vault yet — add them:
-1. Azure Portal → Key Vaults → `key-vault-session-ded` → **Secrets** → **+ Generate/Import**
-2. Add each secret by name and value
+---
+
+## Part 2A: Create the Service Principal and Store Secrets in Key Vault
+
+This is a one-time admin setup. Do it before any other step in this day.
+
+### Step 1 — Create an App Registration (Service Principal) in Azure AD
+
+1. Go to **portal.azure.com**
+2. Search **Azure Active Directory** → click it
+3. Left sidebar → **App registrations** → **+ New registration**
+4. Fill in:
+
+   | Field | Value |
+   |---|---|
+   | Name | `sp-databricks-dev` |
+   | Supported account types | `Accounts in this organizational directory only` |
+   | Redirect URI | leave blank |
+
+5. Click **Register**
+6. You land on the app overview page. **Copy and save these two values:**
+
+   | Value | Where to find it | Key Vault secret name |
+   |---|---|---|
+   | **Application (client) ID** | Overview page → Application (client) ID field | `sp-client-id` |
+   | **Directory (tenant) ID** | Overview page → Directory (tenant) ID field | `sp-tenant-id` |
+
+   > Keep this page open — you will come back to it in Step 2.
+
+### Step 2 — Create a Client Secret
+
+1. Still on the app registration page → left sidebar → **Certificates & secrets**
+2. Click **+ New client secret**
+3. Fill in:
+
+   | Field | Value |
+   |---|---|
+   | Description | `databricks-dev-secret` |
+   | Expires | `12 months` (or your policy) |
+
+4. Click **Add**
+5. **Immediately copy the secret Value** — it is shown only once. After you leave this page it is hidden forever.
+
+   | Value | Key Vault secret name |
+   |---|---|
+   | The secret **Value** (long random string) | `sp-client-secret` |
+
+   > Do NOT copy the Secret ID — copy the **Value** column, which is the actual secret string.
+
+### Step 3 — Grant the Service Principal Access to Both Storage Accounts
+
+The SP needs `Storage Blob Data Contributor` on both `stadlsdev001` and `stblobdev001`.
+
+**For stadlsdev001:**
+
+1. Azure Portal → **Storage accounts** → `stadlsdev001`
+2. Left sidebar → **Access Control (IAM)**
+3. Click **+ Add** → **Add role assignment**
+4. **Role** tab → search `Storage Blob Data Contributor` → select it → **Next**
+5. **Members** tab → **Assign access to: User, group, or service principal** → **+ Select members**
+6. Search `sp-databricks-dev` → select it → **Select**
+7. Click **Review + assign** → **Review + assign**
+
+**Repeat the same steps for stblobdev001:**
+
+1. Azure Portal → **Storage accounts** → `stblobdev001`
+2. Left sidebar → **Access Control (IAM)** → **+ Add** → **Add role assignment**
+3. Role: `Storage Blob Data Contributor` → Members: `sp-databricks-dev`
+4. Click **Review + assign** → **Review + assign**
+
+> Role assignment takes 1–5 minutes to propagate in Azure.
+
+### Step 4 — Grant the Service Principal Access to Key Vault
+
+Databricks needs to read secrets from the Key Vault. Give the SP `Key Vault Secrets User` role.
+
+1. Azure Portal → **Key vaults** → `key-vault-session-ded`
+2. Left sidebar → **Access Control (IAM)** → **+ Add** → **Add role assignment**
+3. Role: `Key Vault Secrets User` → Members: `sp-databricks-dev`
+4. Click **Review + assign** → **Review + assign**
+
+> Alternative if your Key Vault uses Access Policies instead of RBAC:
+> Left sidebar → **Access policies** → **+ Create** → Secret permissions: `Get`, `List` → Principal: `sp-databricks-dev` → **Create**
+
+### Step 5 — Store the Three Values as Secrets in Key Vault
+
+Now store the Client ID, Client Secret, and Tenant ID in Key Vault so Databricks can read them.
+
+1. Azure Portal → **Key vaults** → `key-vault-session-ded`
+2. Left sidebar → **Secrets** → **+ Generate/Import**
+
+**Secret 1 — Client ID:**
+
+| Field | Value |
+|---|---|
+| Upload options | `Manual` |
+| Name | `sp-client-id` |
+| Secret value | paste the Application (client) ID you copied in Step 1 |
+
+Click **Create**
+
+**Secret 2 — Client Secret:**
+
+Click **+ Generate/Import** again:
+
+| Field | Value |
+|---|---|
+| Upload options | `Manual` |
+| Name | `sp-client-secret` |
+| Secret value | paste the client secret Value you copied in Step 2 |
+
+Click **Create**
+
+**Secret 3 — Tenant ID:**
+
+Click **+ Generate/Import** again:
+
+| Field | Value |
+|---|---|
+| Upload options | `Manual` |
+| Name | `sp-tenant-id` |
+| Secret value | paste the Directory (tenant) ID you copied in Step 1 |
+
+Click **Create**
+
+**Verify all three secrets exist:**
+
+Key Vault → **Secrets** → you should see:
+```
+sp-client-id       Enabled
+sp-client-secret   Enabled
+sp-tenant-id       Enabled
+```
+
+### Summary — What You Have After Part 2A
+
+```
+Azure AD
+  └── App Registration: sp-databricks-dev
+        ├── Client ID     → copied to Key Vault secret: sp-client-id
+        ├── Client Secret → copied to Key Vault secret: sp-client-secret
+        └── Tenant ID     → copied to Key Vault secret: sp-tenant-id
+
+RBAC assignments:
+  ├── stadlsdev001 → Storage Blob Data Contributor → sp-databricks-dev
+  ├── stblobdev001 → Storage Blob Data Contributor → sp-databricks-dev
+  └── key-vault-session-ded → Key Vault Secrets User → sp-databricks-dev
+
+Key Vault: key-vault-session-ded
+  ├── sp-client-id      (value: Application client ID)
+  ├── sp-client-secret  (value: client secret string)
+  └── sp-tenant-id      (value: Azure AD tenant ID)
+```
+
+All the steps below (secret scope, storage credential, external location) use these three secrets.
 
 ---
 
