@@ -1,44 +1,47 @@
 # Day 3 — Practice Exercises: Notebooks, Jobs & Workflows
 
-> **Goal:** Create a notebook with simple Spark code, wrap it in a Databricks Job, build a multi-task pipeline, and pass parameters between a job and a notebook.
-> All exercises use the VoltGrid naming convention.
+> **Goal:** Explore the Databricks workspace, create notebooks with simple code, and build jobs — no external storage, no linked services, no project setup required.
+> Everything runs on a fresh Databricks cluster with built-in data only.
 
 ---
 
 ## Before You Start
 
 You need:
-- The `voltgrid-dev-shared` cluster from Day 2 (create it if not done)
-- Access to the Databricks workspace (`dbw-ev-dev`)
-- The `Shared/voltgrid` folder in the workspace (create it if missing)
+- An Azure Databricks workspace (any workspace, any cluster)
+- A running cluster attached to your notebook (All-Purpose, any size)
+- Nothing else — all exercises use inline data created inside the notebook
 
 ---
 
-## Exercise 1 — Explore the Workspace Sections
+## Exercise 1 — Explore the Workspace Sidebar
 
-**Goal:** Navigate every section of the workspace sidebar so you know what is where.
+**Goal:** Navigate every section of the workspace so you know what each one does.
 
 ### Steps
 
-1. Open your Databricks workspace URL
+1. Open your Databricks workspace → look at the **left sidebar**
 
-2. Click each item on the left sidebar and note what you see:
-   - **Home** — your recently opened notebooks, quick create buttons
-   - **Workspace** — folder tree (Shared + Users)
-   - **Data** — catalog browser (if Unity Catalog is enabled)
-   - **Compute** — your `voltgrid-dev-shared` cluster from Day 2
-   - **Workflows** — (currently empty — we will fill this in exercises 4–6)
-   - **Settings** — workspace settings, admin console, access tokens
+2. Click **Home** → note: recently opened items, quick create buttons
 
-3. In **Workspace** → right-click **Shared** → **Create** → **Folder**
-   - Name: `voltgrid`
+3. Click **Workspace** → expand **Shared** and **Users/your-email** — this is the folder tree where notebooks live
 
-4. In **Settings** → **Developer** → **Access tokens** → **Generate new token**
-   - Name: `day3-test-token`
-   - Lifetime: 7 days
-   - Copy the token value (paste it into a notepad temporarily — we will use it in a later exercise)
+4. Click **Data** (or Catalog) → browse available databases or catalogs (may be empty in a fresh workspace — that is fine)
 
-**What to verify:** You can navigate to every section and the `Shared/voltgrid` folder exists.
+5. Click **Compute** → you should see your running cluster here
+
+6. Click **Workflows** → this is where jobs will appear after Exercise 4
+
+7. Click **Settings** (gear icon at bottom-left):
+   - Go to **Developer** → **Access tokens** → **Generate new token**
+   - Name: `day3-explore-token`, Lifetime: 7 days
+   - Copy and save the token value (used later for CLI/API — for now just note it exists)
+   - Click **Done**
+
+8. Back in **Workspace** → right-click **Shared** → **Create** → **Folder**
+   - Name the folder: `day3-practice`
+
+**What to verify:** You can navigate all sections without errors. The `Shared/day3-practice` folder is visible in the tree.
 
 ---
 
@@ -48,395 +51,469 @@ You need:
 
 ### Steps
 
-1. **Workspace** → right-click `Shared/voltgrid` → **Create** → **Notebook**
-   - Name: `ex2_first_notebook`
+1. **Workspace** → right-click `Shared/day3-practice` → **Create** → **Notebook**
+   - Name: `notebook_basics`
    - Default language: `Python`
-   - Attach to: `voltgrid-dev-shared`
+   - Attach to: your running cluster
    - Click **Create**
 
-2. **Cell 1** — Run a markdown header:
+2. **Cell 1** — Markdown header:
    ```python
    %md
-   # Exercise 2 — First Notebook
-   Testing basic Spark commands and SQL magic.
+   # My First Databricks Notebook
+   Exploring basic Spark commands — no external data needed.
    ```
-   Run: `Shift + Enter`
+   Press `Shift + Enter` — the cell renders as a formatted heading.
 
-3. **Cell 2** — Check Spark version:
+3. **Cell 2** — Check Spark is running:
    ```python
-   print(f"Spark version: {spark.version}")
-   print(f"Python version: {spark.conf.get('spark.databricks.python.worker.reuse', 'n/a')}")
-   print("Cluster connected successfully!")
+   print("Spark version:", spark.version)
+   print("Hello from Databricks!")
    ```
-   Run: `Shift + Enter`
-   Expected: `Spark version: 3.5.x`
+   Expected output: `Spark version: 3.5.x`
 
-4. **Cell 3** — Create a small DataFrame:
+4. **Cell 3** — Create a small DataFrame from a Python list:
    ```python
    data = [
-       (1, "Alice",  "Engineering",  95000),
-       (2, "Bob",    "Marketing",    72000),
-       (3, "Carol",  "Engineering",  98000),
-       (4, "David",  "HR",           65000),
-       (5, "Eve",    "Marketing",    80000),
+       (1, "Alice", 30, "Engineering"),
+       (2, "Bob",   25, "Marketing"),
+       (3, "Carol", 35, "Engineering"),
+       (4, "David", 28, "HR"),
+       (5, "Eve",   32, "Marketing"),
    ]
-   columns = ["id", "name", "department", "salary"]
+   columns = ["id", "name", "age", "department"]
 
    df = spark.createDataFrame(data, columns)
    df.show()
    ```
 
-5. **Cell 4** — Register as temp view and query with SQL:
+5. **Cell 4** — Print the schema:
+   ```python
+   df.printSchema()
+   ```
+
+6. **Cell 5** — Register as a temp view and query with SQL:
    ```python
    df.createOrReplaceTempView("employees")
    ```
 
-6. **Cell 5** — SQL magic cell:
+7. **Cell 6** — SQL magic cell:
    ```sql
    %sql
-   SELECT department, COUNT(*) AS headcount, AVG(salary) AS avg_salary
+   SELECT department, COUNT(*) AS headcount, AVG(age) AS avg_age
    FROM employees
    GROUP BY department
-   ORDER BY avg_salary DESC
+   ORDER BY headcount DESC
    ```
 
-7. **Cell 6** — Shell command:
+8. **Cell 7** — Shell magic to see the driver hostname:
    ```sh
    %sh
-   echo "Driver hostname: $(hostname)"
-   echo "Current user: $(whoami)"
+   echo "Driver node: $(hostname)"
    ```
 
-8. **Cell 7** — List DBFS root:
+9. Click **Run All** in the toolbar.
+
+**What to verify:** All cells show a green check. The SQL cell shows a table grouped by department. No errors anywhere.
+
+---
+
+## Exercise 3 — Try All Magic Commands
+
+**Goal:** Use `%md`, `%sql`, `%sh`, `%fs`, and `%pip` in separate cells.
+
+### Steps
+
+1. In `Shared/day3-practice`, create a new notebook: `magic_commands`
+
+2. **Cell 1** — Markdown:
+   ```python
+   %md
+   ## Magic Commands Demo
+   Each cell below uses a different `%` prefix to switch the language or tool.
+   ```
+
+3. **Cell 2** — Python (default):
+   ```python
+   numbers = [1, 2, 3, 4, 5]
+   total = sum(numbers)
+   print("Sum:", total)
+   ```
+
+4. **Cell 3** — SQL:
+   ```sql
+   %sql
+   SELECT 1 + 1 AS two, 'hello' AS greeting, current_date() AS today
+   ```
+
+5. **Cell 4** — Shell:
+   ```sh
+   %sh
+   echo "Disk space on driver:"
+   df -h /
+   ```
+
+6. **Cell 5** — DBFS listing:
    ```python
    %fs ls dbfs:/
    ```
+   This lists the root of the Databricks File System. You will see folders like `FileStore`, `user`, `tmp`.
 
-9. Click **Run All** in the toolbar
+7. **Cell 6** — Install a library for this session:
+   ```python
+   %pip install faker
+   ```
+   Wait for it to finish, then in the next cell:
 
-**What to verify:** All 7 cells run without errors. The SQL cell shows a table with department averages.
+8. **Cell 7** — Use the installed library:
+   ```python
+   from faker import Faker
+   fake = Faker()
+
+   for _ in range(5):
+       print(fake.name(), "|", fake.email(), "|", fake.city())
+   ```
+   This prints 5 randomly generated fake names, emails, and cities.
+
+9. **Run All**
+
+**What to verify:** Every cell runs. The `%fs` cell shows DBFS folders. The faker cell prints 5 rows of fake data.
 
 ---
 
-## Exercise 3 — Use dbutils and Widgets
+## Exercise 4 — Use dbutils
 
-**Goal:** Use `dbutils.fs`, `dbutils.secrets`, and notebook widgets.
+**Goal:** Practice the most common `dbutils` functions.
 
 ### Steps
 
-1. Open `ex2_first_notebook` → add new cells at the bottom (click + below the last cell)
+1. Create a new notebook: `dbutils_explore`
 
-2. **New Cell** — test dbutils.fs:
+2. **Cell 1** — Write a file to DBFS:
    ```python
-   # List DBFS /tmp directory
-   files = dbutils.fs.ls("dbfs:/tmp/")
-   for f in files:
-       print(f.name, f.size)
+   dbutils.fs.put("dbfs:/tmp/day3_test.txt", "Hello from dbutils!", overwrite=True)
+   print("File written.")
    ```
 
-3. **New Cell** — write a small file to DBFS and read it back:
+3. **Cell 2** — Read it back:
    ```python
-   # Write text to DBFS
-   dbutils.fs.put("dbfs:/tmp/voltgrid_test.txt",
-                  "Hello from Day 3 exercise!", overwrite=True)
-
-   # Read it back
-   content = dbutils.fs.head("dbfs:/tmp/voltgrid_test.txt")
+   content = dbutils.fs.head("dbfs:/tmp/day3_test.txt")
    print("File content:", content)
    ```
 
-4. **New Cell** — add a widget to parameterise the notebook:
+4. **Cell 3** — List the tmp folder to confirm the file exists:
    ```python
-   # This creates a text box at the top of the notebook
-   dbutils.widgets.text("run_env", "dev", "Run Environment")
-   run_env = dbutils.widgets.get("run_env")
-   print(f"Running in environment: {run_env}")
+   files = dbutils.fs.ls("dbfs:/tmp/")
+   for f in files:
+       print(f.name, "-", f.size, "bytes")
    ```
-   After running this cell: a widget text box appears at the top of the notebook. Change the value to `staging` in the box and re-run the cell — `run_env` changes.
 
-5. **New Cell** — test notebook exit value:
+5. **Cell 4** — Add a widget (creates a text box at the top of the notebook):
    ```python
-   result_message = f"Exercise 3 completed in {run_env}"
-   dbutils.notebook.exit(result_message)
+   dbutils.widgets.text("city", "Mumbai", "Your City")
+   city = dbutils.widgets.get("city")
+   print(f"Selected city: {city}")
    ```
-   In manual runs, `dbutils.notebook.exit` just prints the value. In a job run, this value is captured in the job run output.
+   After running: a text box appears at the top. Change `Mumbai` to any city and re-run Cell 4 — the output changes.
 
-6. **Run All** (from Cell 1 so widgets are initialised before they are read)
+6. **Cell 5** — Dropdown widget:
+   ```python
+   dbutils.widgets.dropdown("colour", "Blue", ["Red", "Green", "Blue", "Yellow"], "Favourite Colour")
+   colour = dbutils.widgets.get("colour")
+   print(f"You chose: {colour}")
+   ```
 
-**What to verify:**
-- File `voltgrid_test.txt` is created and read back correctly
-- Widget text box appears at the top of the notebook
-- Exit value prints at the bottom
+7. **Cell 6** — Exit value:
+   ```python
+   dbutils.notebook.exit(f"Done! City={city}, Colour={colour}")
+   ```
+   This prints the exit string below the cell. In a job run, this value is captured in the run output.
+
+8. **Cell 7** — Clean up the test file:
+   ```python
+   dbutils.fs.rm("dbfs:/tmp/day3_test.txt")
+   print("File deleted.")
+   ```
+
+9. **Run All**
+
+**What to verify:** File is written, read back, listed, then deleted. Two widget boxes appear at the top of the notebook. Exit value prints at the end.
 
 ---
 
-## Exercise 4 — Create a Single-Task Job
+## Exercise 5 — Create a Single-Task Job
 
-**Goal:** Schedule `ex2_first_notebook` to run automatically.
+**Goal:** Schedule `notebook_basics` to run automatically.
 
 ### Steps
 
-1. **Workflows** (left sidebar) → **+ Create job**
+1. **Workflows** → **+ Create job**
 
-2. Name the job: click `Untitled` at the top → type `voltgrid_ex4_daily_job`
+2. Click the name `Untitled` at the top → type: `job_notebook_basics`
 
 3. Configure the task:
+
    | Field | Value |
    |---|---|
-   | Task name | `run_first_notebook` |
+   | Task name | `run_basics` |
    | Type | `Notebook` |
    | Source | `Workspace` |
-   | Path | Browse to `Shared/voltgrid/ex2_first_notebook` |
+   | Path | Browse to `Shared/day3-practice/notebook_basics` |
    | Cluster | `New job cluster` |
 
-4. Configure the job cluster (click **Edit** next to cluster):
+4. Configure the job cluster (click **Edit** next to the cluster):
+
    | Field | Value |
    |---|---|
-   | Runtime | `15.4 LTS` |
+   | Databricks runtime | `15.4 LTS` (or latest LTS) |
    | Worker type | `Standard_D4s_v3` |
    | Workers | `1` |
+
    Click **Confirm**
 
 5. Add a schedule:
-   - Click **Add trigger**
-   - Type: `Scheduled`
-   - Schedule: `Every day at 08:00 AM`
+   - Click **Add trigger** → Type: `Scheduled`
+   - Every day at `09:00 AM`
    - Timezone: `UTC`
    - Click **Save**
 
 6. Click **Create** (or **Save job**)
 
-7. Click **Run now** to trigger a test run immediately
+7. Click **Run now** to test immediately — do not wait for the schedule
 
-8. Watch the run:
-   - **Workflows** → `voltgrid_ex4_daily_job` → **Runs** tab
-   - Click the run row to open the run detail
-   - Wait for the task status to turn green (Succeeded)
-   - Click the task → **Logs** tab → you should see all cell outputs
+8. Go to the **Runs** tab → wait for the run to appear → click the run row → click the task → open **Logs** tab
 
-**What to verify:** Run shows SUCCEEDED status. The Logs tab shows output from all cells including `Spark version: 3.5.x` and the SQL result table.
+**What to verify:** Run shows **SUCCEEDED**. The Logs tab shows the Spark version print and the SQL department table output from all cells in `notebook_basics`.
 
 ---
 
-## Exercise 5 — Add Notifications and Retries
+## Exercise 6 — Configure Retries and Notifications
 
-**Goal:** Configure the job to send email alerts and retry on failure.
+**Goal:** Add retry logic and email alerts to the job.
 
 ### Steps
 
-1. Open `voltgrid_ex4_daily_job` → **Edit** (top right)
+1. Open `job_notebook_basics` → click **Edit**
 
-2. **Notifications** section → **Add notification**:
-   - On failure → email: your email address
-   - Click **Save**
+2. Click the task `run_basics` to open task settings on the right
 
-3. Click the task `run_first_notebook` to expand the task settings
-
-4. Find **Retries** (in the task panel):
+3. Find **Retries** → set:
    - Max retries: `2`
    - Retry interval: `2 minutes`
-   - Click **Save**
 
-5. **Run now** again → the run should still succeed (no failure to test retries, but the config is in place)
+4. Scroll down to **Notifications** → **Add notification**:
+   - Trigger: `On failure`
+   - Email: your email address
+   - Click **Add**
 
-6. To simulate a failure: open `ex2_first_notebook` → add a new last cell:
-   ```python
-   raise Exception("Simulated failure for retry test")
-   ```
-   Save the notebook → go back to the job → **Run now**
+5. **Save** the job
 
-   The job will fail → wait 2 minutes → Databricks retries → fails again → retries → fails → marks as FAILED (after 2 retries exhausted).
+6. To see retries in action — temporarily break the notebook:
+   - Open `notebook_basics` → add a new cell at the very end:
+     ```python
+     raise Exception("Intentional failure to test retries")
+     ```
+   - Go back to the job → **Run now**
+   - Watch the **Runs** tab — you will see the run fail, wait 2 min, fail again, wait 2 min, fail again → marked **FAILED** (3 total attempts)
 
-7. **Important:** Remove the exception cell from `ex2_first_notebook` when done:
-   - Open the notebook → click the exception cell → press `DD` to delete it
+7. **Important — remove the broken cell:**
+   - Open `notebook_basics` → click the exception cell → press `DD` to delete it
+   - **Run now** again → confirm it succeeds
 
-**What to verify:** The **Runs** tab shows a FAILED run with 3 attempts (1 original + 2 retries). Each attempt is listed separately.
+**What to verify:** The failed run shows 3 attempts in the run history. After removing the exception cell, a fresh run succeeds.
 
 ---
 
-## Exercise 6 — Create a Multi-Task Pipeline Job
+## Exercise 7 — Create a Multi-Task Pipeline Job
 
-**Goal:** Build a 3-task pipeline job where each task depends on the previous one.
+**Goal:** Build a 3-task job where each notebook passes a result to the next.
 
 ### Steps
 
-#### Prepare: Create 3 notebooks
+#### Prepare three simple notebooks
 
-1. In `Shared/voltgrid`, create 3 notebooks:
-   - `bronze_notebook`
-   - `silver_notebook`
-   - `gold_notebook`
+1. In `Shared/day3-practice`, create notebook: `task_one`
 
-2. **bronze_notebook** — paste this content (replace any default cell):
+   Paste this content (replace any existing cells):
    ```python
    %md
-   ## Bronze Layer — Ingest
+   ## Task One — Generate Numbers
    ```
    ```python
-   print("Bronze: Starting data ingestion...")
-
-   data = [(i, f"payment_{i}", round(100 + i * 10.5, 2)) for i in range(1, 11)]
-   bronze_df = spark.createDataFrame(data, ["id", "ref", "amount"])
-   bronze_df.createOrReplaceTempView("bronze_payments")
-
-   print(f"Bronze: Ingested {bronze_df.count()} records")
-   dbutils.notebook.exit("Bronze completed")
+   numbers = list(range(1, 11))   # [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+   print(f"Task One: generated {len(numbers)} numbers")
+   print("Numbers:", numbers)
+   dbutils.notebook.exit("Task One done")
    ```
 
-3. **silver_notebook** — paste:
+2. Create notebook: `task_two`
    ```python
    %md
-   ## Silver Layer — Transform
+   ## Task Two — Filter and Square
    ```
    ```python
-   print("Silver: Starting transformation...")
-
-   # In a real job this reads from Delta — for demo we recreate the data
-   data = [(i, f"payment_{i}", round(100 + i * 10.5, 2)) for i in range(1, 11)]
-   bronze_df = spark.createDataFrame(data, ["id", "ref", "amount"])
-
-   # Simple transform: add a status column
-   from pyspark.sql.functions import when, col
-   silver_df = bronze_df.withColumn(
-       "status",
-       when(col("amount") > 150, "high").otherwise("normal")
-   )
-   silver_df.show()
-   print(f"Silver: Transformed {silver_df.count()} records")
-   dbutils.notebook.exit("Silver completed")
+   numbers = list(range(1, 11))
+   even_numbers = [n for n in numbers if n % 2 == 0]
+   squared = [n ** 2 for n in even_numbers]
+   print(f"Task Two: even numbers = {even_numbers}")
+   print(f"Task Two: squared = {squared}")
+   dbutils.notebook.exit("Task Two done")
    ```
 
-4. **gold_notebook** — paste:
+3. Create notebook: `task_three`
    ```python
    %md
-   ## Gold Layer — Aggregate
+   ## Task Three — Summary
    ```
    ```python
-   print("Gold: Starting aggregation...")
+   numbers = list(range(1, 11))
+   total = sum(numbers)
+   average = total / len(numbers)
+   maximum = max(numbers)
+   minimum = min(numbers)
 
-   data = [(i, f"payment_{i}", round(100 + i * 10.5, 2)) for i in range(1, 11)]
-   bronze_df = spark.createDataFrame(data, ["id", "ref", "amount"])
-
-   from pyspark.sql.functions import when, col, count, sum as _sum, avg
-   silver_df = bronze_df.withColumn(
-       "status",
-       when(col("amount") > 150, "high").otherwise("normal")
-   )
-
-   gold_df = silver_df.groupBy("status").agg(
-       count("id").alias("total_payments"),
-       _sum("amount").alias("total_amount"),
-       avg("amount").alias("avg_amount")
-   )
-   gold_df.show()
-   print("Gold: Aggregation complete")
-   dbutils.notebook.exit("Gold completed")
+   print("Task Three: Summary Report")
+   print(f"  Total   : {total}")
+   print(f"  Average : {average}")
+   print(f"  Max     : {maximum}")
+   print(f"  Min     : {minimum}")
+   dbutils.notebook.exit("Task Three done")
    ```
 
-#### Create the multi-task job
+#### Create the job
 
-5. **Workflows** → **+ Create job**
+4. **Workflows** → **+ Create job**
 
-6. Name: `voltgrid_pipeline_daily`
+5. Name: `job_three_tasks`
 
-7. **Task 1:**
+6. **Task 1:**
+
    | Field | Value |
    |---|---|
-   | Task name | `bronze_ingest` |
+   | Task name | `task_one` |
    | Type | `Notebook` |
-   | Path | `Shared/voltgrid/bronze_notebook` |
+   | Path | `Shared/day3-practice/task_one` |
    | Cluster | New job cluster, D4s_v3, 1 worker, DBR 15.4 LTS |
 
-8. **Add Task 2:** click **+ Add task**
+7. **Add Task 2:** click **+ Add task**
+
    | Field | Value |
    |---|---|
-   | Task name | `silver_transform` |
+   | Task name | `task_two` |
    | Type | `Notebook` |
-   | Path | `Shared/voltgrid/silver_notebook` |
-   | Depends on | `bronze_ingest` |
+   | Path | `Shared/day3-practice/task_two` |
+   | Depends on | `task_one` |
    | Cluster | New job cluster, same config |
 
-9. **Add Task 3:** click **+ Add task**
+8. **Add Task 3:** click **+ Add task**
+
    | Field | Value |
    |---|---|
-   | Task name | `gold_aggregation` |
+   | Task name | `task_three` |
    | Type | `Notebook` |
-   | Path | `Shared/voltgrid/gold_notebook` |
-   | Depends on | `silver_transform` |
+   | Path | `Shared/day3-practice/task_three` |
+   | Depends on | `task_two` |
    | Cluster | New job cluster, same config |
 
-10. Verify the DAG view shows: `bronze_ingest → silver_transform → gold_aggregation`
+9. Verify the visual DAG: `task_one → task_two → task_three`
 
-11. Add schedule: daily at 01:00 AM UTC
+10. **Save job** → **Run now**
 
-12. Click **Save job**
+11. Monitor → **Runs** tab → click the run → watch all 3 tasks turn green one by one
 
-13. **Run now**
-
-14. Monitor: **Runs** tab → click the run → you see all 3 tasks in the DAG. Watch them turn green one by one.
+12. Click each task → **Logs** tab → see each notebook's print output
 
 **What to verify:**
-- All 3 tasks complete with SUCCEEDED status
-- Each task shows its `dbutils.notebook.exit(...)` value in the output
-- Tasks run in order: bronze → silver → gold (silver does not start until bronze is done)
+- All 3 tasks show SUCCEEDED
+- Each task's Logs tab shows its own printed output
+- `task_two` did not start until `task_one` finished (check start times in the run detail)
+- Each task ran on its own separate cluster (cluster IDs are different)
 
 ---
 
-## Exercise 7 — Pass Parameters from Job to Notebook
+## Exercise 8 — Pass Parameters from Job to Notebook
 
-**Goal:** Configure the job to pass `run_date` and `environment` parameters into a notebook via widgets.
+**Goal:** Configure a job to inject parameters into a notebook via widgets.
 
 ### Steps
 
-1. Open `bronze_notebook` → add a cell **at the very top** (before other cells):
+1. Create a new notebook: `param_notebook`
+
    ```python
-   dbutils.widgets.text("run_date",    "2024-01-17", "Run Date")
-   dbutils.widgets.text("environment", "dev",         "Environment")
-
-   run_date = dbutils.widgets.get("run_date")
-   environment = dbutils.widgets.get("environment")
-
-   print(f"Job run date: {run_date}")
-   print(f"Environment: {environment}")
+   # Cell 1 — define widgets first (always before get)
+   dbutils.widgets.text("name",    "World",    "Your Name")
+   dbutils.widgets.text("country", "India",    "Country")
+   dbutils.widgets.text("number",  "5",        "How Many Lines")
    ```
 
-2. Open `voltgrid_pipeline_daily` job → click **Edit**
+   ```python
+   # Cell 2 — read the widget values
+   name    = dbutils.widgets.get("name")
+   country = dbutils.widgets.get("country")
+   number  = int(dbutils.widgets.get("number"))
 
-3. Click the `bronze_ingest` task → find **Parameters** section → **Add parameter**:
+   print(f"Hello, {name} from {country}!")
+   for i in range(1, number + 1):
+       print(f"  Line {i} of {number}")
+
+   dbutils.notebook.exit(f"Ran {number} lines for {name}")
+   ```
+
+2. Run the notebook manually first — change the widget values in the UI and re-run Cell 2 to see the output change.
+
+3. **Workflows** → **+ Create job** → name: `job_with_params`
+
+4. Task:
+
+   | Field | Value |
+   |---|---|
+   | Task name | `run_param_notebook` |
+   | Type | `Notebook` |
+   | Path | `Shared/day3-practice/param_notebook` |
+   | Cluster | New job cluster, D4s_v3, 1 worker, DBR 15.4 LTS |
+
+5. In the task settings → **Parameters** → **Add parameter**:
+
    | Key | Value |
    |---|---|
-   | `run_date` | `{{job.start_time.iso_date}}` |
-   | `environment` | `prod` |
+   | `name` | `VoltGrid Student` |
+   | `country` | `Australia` |
+   | `number` | `3` |
 
-4. **Save** the job
+6. **Save** → **Run now**
 
-5. **Run now** → open the run → click `bronze_ingest` task → **Logs**
+7. Open the run → click the task → **Logs** tab
 
-   You should see at the top:
+   Expected output:
    ```
-   Job run date: 2024-01-17
-   Environment: prod
+   Hello, VoltGrid Student from Australia!
+     Line 1 of 3
+     Line 2 of 3
+     Line 3 of 3
    ```
 
-**What to verify:** The parameters are injected by the job and printed in the notebook output. Changing the value in the job config changes what the notebook sees.
+8. Go back to the job → **Edit** → change `number` to `7` → **Save** → **Run now** — the output now shows 7 lines.
+
+**What to verify:** The job-supplied values override the widget defaults. Changing parameters in the job config changes the notebook output without touching the notebook code.
 
 ---
 
-## Final Architecture — VoltGrid Day 3 Setup
+## Final Summary — What You Created
 
 ```
-Workspace: dbw-ev-dev
-  │
-  ├── Shared/voltgrid/
-  │     ├── ex2_first_notebook      ← Exercise 2 (general Spark practice)
-  │     ├── bronze_notebook         ← Exercise 6 Task 1
-  │     ├── silver_notebook         ← Exercise 6 Task 2
-  │     └── gold_notebook           ← Exercise 6 Task 3
-  │
-  └── Workflows (Jobs):
-        ├── voltgrid_ex4_daily_job         ← single-task, daily 08:00 UTC
-        └── voltgrid_pipeline_daily        ← 3-task pipeline, daily 01:00 UTC
-              bronze_ingest → silver_transform → gold_aggregation
+Workspace: Shared/day3-practice/
+  ├── notebook_basics       ← Exercise 2 (DataFrame, SQL magic, shell)
+  ├── magic_commands        ← Exercise 3 (all magic commands + faker)
+  ├── dbutils_explore       ← Exercise 4 (fs, widgets, exit)
+  ├── task_one              ← Exercise 7 Task 1
+  ├── task_two              ← Exercise 7 Task 2
+  ├── task_three            ← Exercise 7 Task 3
+  └── param_notebook        ← Exercise 8 (widgets + job parameters)
+
+Workflows (Jobs):
+  ├── job_notebook_basics   ← Exercise 5 (single task, daily schedule)
+  ├── job_three_tasks       ← Exercise 7 (3-task pipeline DAG)
+  └── job_with_params       ← Exercise 8 (parameter injection)
 ```
 
 ---
@@ -445,13 +522,13 @@ Workspace: dbw-ev-dev
 
 | Task | How to verify |
 |---|---|
-| Workspace folder created | Workspace → Shared → voltgrid folder visible |
-| Notebook runs all cells | Run All → all cells show green check |
-| SQL magic works | %sql cell shows a result table |
-| Widget created | Text box appears at top of notebook |
-| dbutils.fs works | File written to DBFS and read back |
-| Single-task job runs | Workflows → job → Runs tab → SUCCEEDED |
-| Retries configured | Job task settings → Retries = 2 |
-| Multi-task job DAG | Job canvas shows 3 connected task boxes |
-| Tasks run in order | bronze → silver → gold in the run timeline |
-| Parameters passed | Bronze notebook output shows run_date and environment values |
+| Workspace folder created | Workspace → Shared → day3-practice folder visible |
+| Notebook runs all cells | Run All → every cell shows green check |
+| SQL magic works | %sql cell returns a result table |
+| %pip install works | `faker` installed, fake names printed |
+| dbutils.fs write/read | File created and read back from dbfs:/tmp/ |
+| Widget text box appears | Text box visible at top of notebook after widget cell runs |
+| Single-task job runs | Workflows → job_notebook_basics → Runs → SUCCEEDED |
+| Retry config visible | Task settings → Retries = 2, interval = 2 min |
+| 3-task DAG job runs | job_three_tasks → all 3 tasks SUCCEEDED in order |
+| Parameters injected | job_with_params → Logs show job-supplied values, not defaults |
