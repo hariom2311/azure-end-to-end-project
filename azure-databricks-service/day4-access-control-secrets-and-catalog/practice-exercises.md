@@ -78,9 +78,15 @@ print("Length of client ID:", len(client_id))   # prints the actual length
 
 ---
 
-## Exercise 2 — Connect to ADLS Gen2 (stadlsdev001) Using Secrets
+## Exercise 2 — Verify Storage Access via Unity Catalog
 
-**Goal:** Use the Key Vault secrets to authenticate to `stadlsdev001` and list files.
+**Goal:** Confirm that Unity Catalog's External Location gives the notebook access to `stadlsdev001` — with zero auth code in the notebook.
+
+> **Prerequisite:** Admin must have completed these steps first (notes.md Part 5):
+> 1. Created Storage Credential `sp-stadls-credential` (Service Principal details in Unity Catalog)
+> 2. Created External Location `ext-loc-stadls` → `abfss://bronze@stadlsdev001.dfs.core.windows.net/`
+>
+> If not done yet — ask your admin. Without the External Location, this exercise will fail with an access error.
 
 ### Steps
 
@@ -88,62 +94,69 @@ print("Length of client ID:", len(client_id))   # prints the actual length
 
 `Shared/day4-practice/ex2_adls_connect`
 
-**Step 2 — Configure Spark with Service Principal credentials**
+**Step 2 — Test access using Unity Catalog (no auth code needed)**
 
 ```python
-# Cell 1 — read credentials from Key Vault
-client_id     = dbutils.secrets.get(scope="kv-scope", key="sp-client-id")
-client_secret = dbutils.secrets.get(scope="kv-scope", key="sp-client-secret")
-tenant_id     = dbutils.secrets.get(scope="kv-scope", key="sp-tenant-id")
+# Cell 1 — Unity Catalog handles auth — just use the path directly
+# No spark.conf.set(), no dbutils.secrets.get() for storage access
 
-print("Credentials loaded (values are hidden)")
-```
-
-```python
-# Cell 2 — configure ADLS access for stadlsdev001
-storage_account = "stadlsdev001"
-
-spark.conf.set(
-    f"fs.azure.account.auth.type.{storage_account}.dfs.core.windows.net",
-    "OAuth"
-)
-spark.conf.set(
-    f"fs.azure.account.oauth.provider.type.{storage_account}.dfs.core.windows.net",
-    "org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider"
-)
-spark.conf.set(
-    f"fs.azure.account.oauth2.client.id.{storage_account}.dfs.core.windows.net",
-    client_id
-)
-spark.conf.set(
-    f"fs.azure.account.oauth2.client.secret.{storage_account}.dfs.core.windows.net",
-    client_secret
-)
-spark.conf.set(
-    f"fs.azure.account.oauth2.client.endpoint.{storage_account}.dfs.core.windows.net",
-    f"https://login.microsoftonline.com/{tenant_id}/oauth2/token"
-)
-
-print(f"ADLS access configured for: {storage_account}")
-```
-
-**Step 3 — Test the connection**
-
-```python
-# Cell 3 — list root of the bronze container
-container = "bronze"   # change to your container name if different
-path = f"abfss://{container}@{storage_account}.dfs.core.windows.net/"
+path = "abfss://bronze@stadlsdev001.dfs.core.windows.net/"
 
 try:
     files = dbutils.fs.ls(path)
-    print(f"Connection successful — {len(files)} items found in {container}")
+    print(f"Access confirmed — {len(files)} items found")
     for f in files:
         print(f"  {f.name}")
 except Exception as e:
-    print(f"Connection failed: {e}")
+    print(f"Access failed: {e}")
+    print("Ask admin to check: Storage Credential + External Location for stadlsdev001")
 ```
 
-**What to verify:** No `AuthorizationPermissionMismatch` error. Files or folders are listed (even an empty container shows an empty list without error).
+**Step 3 — Also read using Spark directly (same — no config)**
+
+```python
+# Cell 2 — Spark read also works without any spark.conf setup
+# Unity Catalog intercepts the path and injects the Storage Credential automatically
+
+delta_test_path = "abfss://bronze@stadlsdev001.dfs.core.windows.net/"
+
+try:
+    # List via spark (alternative to dbutils.fs)
+    spark_files = spark.read.format("binaryFile").load(delta_test_path)
+    print(f"Spark access confirmed — {spark_files.count()} files visible")
+except Exception as e:
+    print(f"Spark access check: {e}")
+```
+
+**Step 4 — Understand what is happening under the hood**
+
+```python
+# Cell 3 — show what Unity Catalog resolved for this path
+# (This is for learning — not needed in production)
+print("How Unity Catalog handled this access:")
+print("  1. Notebook used path: abfss://bronze@stadlsdev001.dfs.core.windows.net/")
+print("  2. Unity Catalog matched it to External Location: ext-loc-stadls")
+print("  3. Unity Catalog injected Storage Credential: sp-stadls-credential")
+print("  4. Storage Credential authenticated to Azure AD using Service Principal")
+print("  5. Azure AD returned OAuth token — ADLS granted access")
+print("  6. Data returned to notebook — zero credential code written by developer")
+```
+
+**Legacy reference — what the old approach looked like (do NOT use):**
+
+```python
+# ❌ Legacy pattern — shown for reference only, not for use
+# client_id     = dbutils.secrets.get(scope="kv-scope", key="sp-client-id")
+# client_secret = dbutils.secrets.get(scope="kv-scope", key="sp-client-secret")
+# tenant_id     = dbutils.secrets.get(scope="kv-scope", key="sp-tenant-id")
+# spark.conf.set("fs.azure.account.auth.type.stadlsdev001...", "OAuth")
+# spark.conf.set("fs.azure.account.oauth2.client.id...", client_id)
+# spark.conf.set("fs.azure.account.oauth2.client.secret...", client_secret)
+# spark.conf.set("fs.azure.account.oauth2.client.endpoint...", ...)
+# — Unity Catalog replaces ALL of this
+```
+
+**What to verify:** `dbutils.fs.ls()` succeeds with no auth code. Files or folders are listed. If it fails, the External Location is missing — not a notebook problem.
 
 ---
 
@@ -153,15 +166,9 @@ except Exception as e:
 
 ### Steps
 
-> Prerequisites: Unity Catalog enabled, external location `ext-loc-stadls` created by admin (see notes.md Part 5). If not done — ask your admin or skip to the SQL registration step after writing the files manually.
+> Prerequisite: External Location `ext-loc-stadls` must exist (notes.md Part 5). With Unity Catalog, the notebook needs no auth setup — just use the storage path directly.
 
-**Step 1 — Continue in `ex2_adls_connect` or create `ex3_external_table`**
-
-```python
-# Cell 1 — set up ADLS access (copy from Exercise 2 if in a new notebook)
-storage_account = "stadlsdev001"
-# ... (same spark.conf.set calls as Exercise 2 Cell 2)
-```
+**Step 1 — Create notebook `ex3_external_table`**
 
 **Step 2 — Create sample data and write as Delta**
 

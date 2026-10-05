@@ -7,41 +7,87 @@
 
 ---
 
-## Part 1: How Databricks Accesses Azure Storage — The Big Picture
+## Part 1: How Databricks Accesses Azure Storage — Two Approaches
 
-Before touching any UI, understand what "access" means. Databricks needs two things to read from Azure storage:
+Databricks needs two things to read from Azure storage:
 
 ```
 1. Authentication   → prove who Databricks is (Service Principal or Managed Identity)
-2. Authorisation    → the identity has been given permission on the storage account
+2. Authorisation    → that identity has the correct role on the storage account
 ```
 
+There are two approaches to set this up — the **legacy approach** (still works, widely seen in older projects) and the **Unity Catalog approach** (current standard). You need to understand both.
+
+---
+
+### Approach 1 — Legacy: spark.conf.set() per Notebook
+
+> Used before Unity Catalog. Still seen in many projects and documentation. **Do not use for new workspaces with Unity Catalog.**
+
+Each notebook manually sets OAuth credentials in the Spark config before accessing storage:
+
+```python
+# ❌ Legacy — credentials configured inside every notebook
+storage_account = "stadlsdev001"
+spark.conf.set(f"fs.azure.account.auth.type.{storage_account}.dfs.core.windows.net", "OAuth")
+spark.conf.set(f"fs.azure.account.oauth.provider.type.{storage_account}.dfs.core.windows.net",
+               "org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider")
+spark.conf.set(f"fs.azure.account.oauth2.client.id.{storage_account}.dfs.core.windows.net",
+               dbutils.secrets.get(scope="kv-scope", key="sp-client-id"))
+spark.conf.set(f"fs.azure.account.oauth2.client.secret.{storage_account}.dfs.core.windows.net",
+               dbutils.secrets.get(scope="kv-scope", key="sp-client-secret"))
+spark.conf.set(f"fs.azure.account.oauth2.client.endpoint.{storage_account}.dfs.core.windows.net",
+               f"https://login.microsoftonline.com/<tenant-id>/oauth2/token")
+
+# Only then can you read
+df = spark.read.format("delta").load(f"abfss://bronze@{storage_account}.dfs.core.windows.net/data/")
 ```
-Flow when a notebook reads from ADLS:
 
-  Notebook code
-    │  spark.read.format("delta").load("abfss://container@stadlsdev001...")
-    ▼
-  Spark runtime
-    │  "what credential do I use for stadlsdev001?"
-    ▼
-  OAuth token request → Azure AD → returns token for the Service Principal
-    │
-    ▼
-  ADLS Gen2 checks: does this Service Principal have Storage Blob Data Contributor?
-    │  Yes → return data
-    │  No  → AuthorizationPermissionMismatch error
+**Problems with the legacy approach:**
+- Every notebook must repeat these 5 lines per storage account
+- Credentials are visible in cluster Spark config and logs
+- If a secret rotates, every notebook that hardcodes the key name must still be checked
+- No centralised governance — anyone with notebook access can read any path
+
+---
+
+### Approach 2 — Unity Catalog: Storage Credential + External Location
+
+> Current standard. Admin sets up credentials once. Notebooks access storage with no config at all.
+
+```
+Admin sets up (once):
+  Storage Credential  →  holds Service Principal details in Unity Catalog
+        │
+  External Location   →  maps abfss://bronze@stadlsdev001...  to that credential
+        │
+  Grant USAGE + READ FILES on the External Location to data engineers
+
+Developer notebook (no credentials, no spark.conf):
+  ✅ spark.read.format("delta").load("abfss://bronze@stadlsdev001.dfs.core.windows.net/data/")
+  ✅ SELECT * FROM dev_catalog.bronze.sample_people
+  — Unity Catalog resolves the path → finds the external location → injects the credential automatically
 ```
 
-**Three ways to grant access:**
+**Advantages:**
+- Zero credential code in notebooks
+- One credential update propagates to all tables/volumes instantly
+- Full RBAC: grant SELECT on a table without giving access to the raw storage path
+- Complete audit trail: who accessed which table, when
 
-| Method | What it is | When to use |
+**Side-by-side comparison:**
+
+| | Legacy (spark.conf.set) | Unity Catalog |
 |---|---|---|
-| Service Principal + OAuth | An app registration in Azure AD, credentials stored in Key Vault | Production — most secure |
-| Managed Identity | Azure-managed identity attached to the Databricks workspace | Simplest — no secret management |
-| Account Key | Storage account access key | Dev/testing only — avoid in production |
+| Where credentials live | Each notebook + cluster config | Storage Credential (one place) |
+| Who configures auth | Every developer | Admin once |
+| Notebook code for auth | 5+ lines per storage account | Zero lines |
+| Credential rotation | Must update secrets + notebooks | Update Storage Credential only |
+| Governance | None — path-level only | Table/volume/column-level RBAC |
+| Audit logs | Spark logs (noisy) | Unity Catalog audit (clean) |
+| Use in new projects | ❌ Avoid | ✅ Use this |
 
-In this day we use **Service Principal + OAuth via Key Vault** — the production standard.
+**In this day we use the Unity Catalog approach throughout.** The legacy pattern is shown here so you recognise it when you see it in older code or documentation — not to use it.
 
 ---
 
@@ -156,44 +202,56 @@ print("Secrets loaded successfully")
 
 > **Important:** `dbutils.secrets.get()` returns the real string value — you can pass it to Spark config or JDBC URLs. The `[REDACTED]` only appears in notebook output and logs, not in the actual variable value.
 
-### 3.4 Using Secrets in Spark Config (ADLS Access)
+### 3.4 Where Secrets Are Still Used With Unity Catalog
+
+With Unity Catalog, notebooks do **not** use `dbutils.secrets.get()` to access ADLS or Blob Storage — Unity Catalog's Storage Credential handles that transparently. Secrets are still used in two specific places:
+
+**Place 1 — Creating the Storage Credential (admin, done once in UI)**
+
+When an admin creates a Storage Credential in Unity Catalog, they paste the Service Principal values directly into the Unity Catalog UI form. They get those values from Key Vault manually — there is no notebook code involved.
+
+**Place 2 — Non-storage secrets in notebooks (API keys, DB passwords, etc.)**
+
+If a notebook needs an API key, a database password, or any secret that is not a storage credential, it still reads from Key Vault via the secret scope:
 
 ```python
-storage_account = "stadlsdev001"
+# ✅ Still valid — for non-storage secrets like API keys, DB passwords
+api_key    = dbutils.secrets.get(scope="kv-scope", key="voltgrid-api-key")
+db_password = dbutils.secrets.get(scope="kv-scope", key="sql-db-password")
 
-spark.conf.set(
-    f"fs.azure.account.auth.type.{storage_account}.dfs.core.windows.net",
-    "OAuth"
-)
-spark.conf.set(
-    f"fs.azure.account.oauth.provider.type.{storage_account}.dfs.core.windows.net",
-    "org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider"
-)
-spark.conf.set(
-    f"fs.azure.account.oauth2.client.id.{storage_account}.dfs.core.windows.net",
-    dbutils.secrets.get(scope="kv-scope", key="sp-client-id")
-)
-spark.conf.set(
-    f"fs.azure.account.oauth2.client.secret.{storage_account}.dfs.core.windows.net",
-    dbutils.secrets.get(scope="kv-scope", key="sp-client-secret")
-)
-spark.conf.set(
-    f"fs.azure.account.oauth2.client.endpoint.{storage_account}.dfs.core.windows.net",
-    f"https://login.microsoftonline.com/{dbutils.secrets.get(scope='kv-scope', key='sp-tenant-id')}/oauth2/token"
-)
-
-print(f"ADLS access configured for: {storage_account}")
+print("Secrets loaded")
+# Use in code — shown as [REDACTED] in output
 ```
 
-After running this cell, any `spark.read` or `dbutils.fs` call to `stadlsdev001` will authenticate using the Service Principal automatically.
+**What you do NOT need to do with Unity Catalog (legacy pattern — for reference only):**
 
-**Test the connection:**
 ```python
-# List the root of the ADLS container
-files = dbutils.fs.ls(f"abfss://bronze@{storage_account}.dfs.core.windows.net/")
+# ❌ Legacy — do not use this pattern in a Unity Catalog workspace
+# spark.conf.set("fs.azure.account.auth.type.stadlsdev001...", "OAuth")
+# spark.conf.set("fs.azure.account.oauth2.client.id...", client_id)
+# spark.conf.set("fs.azure.account.oauth2.client.secret...", client_secret)
+# spark.conf.set("fs.azure.account.oauth2.client.endpoint...", endpoint)
+# — Unity Catalog replaces ALL of this
+```
+
+**With Unity Catalog, after the admin sets up the Storage Credential and External Location, a notebook accesses storage like this:**
+
+```python
+# ✅ Unity Catalog way — just use the path, no auth code needed
+files = dbutils.fs.ls("abfss://bronze@stadlsdev001.dfs.core.windows.net/")
 for f in files:
     print(f.name)
 ```
+
+Or read a Delta table directly:
+
+```python
+# ✅ Unity Catalog way — read from ADLS path, no spark.conf needed
+df = spark.read.format("delta").load("abfss://bronze@stadlsdev001.dfs.core.windows.net/sample_people/")
+df.show()
+```
+
+Unity Catalog intercepts the path, matches it to the External Location, and injects the Storage Credential automatically.
 
 ---
 
@@ -369,34 +427,41 @@ Inside `dev_catalog`, create two schemas:
 
 An external Delta table points to a Delta-format folder on ADLS. We first write a Delta file to ADLS, then register it as an external table.
 
-### Step 1 — Configure ADLS Access in a Notebook
+> **Prerequisite:** The admin has already created:
+> - Storage Credential `sp-stadls-credential` pointing to the Service Principal
+> - External Location `ext-loc-stadls` pointing to `abfss://bronze@stadlsdev001.dfs.core.windows.net/`
+>
+> With that in place, notebooks need **zero auth config** — just use the path directly.
+
+### Step 1 — Verify Access (Unity Catalog way — no spark.conf needed)
 
 Open a new notebook, attach to your cluster, run:
 
 ```python
-# Configure OAuth access to stadlsdev001
-storage_account = "stadlsdev001"
+# Unity Catalog handles auth automatically — just use the path
+# No spark.conf.set(), no dbutils.secrets.get() for storage access
 
-spark.conf.set(
-    f"fs.azure.account.auth.type.{storage_account}.dfs.core.windows.net", "OAuth"
-)
-spark.conf.set(
-    f"fs.azure.account.oauth.provider.type.{storage_account}.dfs.core.windows.net",
-    "org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider"
-)
-spark.conf.set(
-    f"fs.azure.account.oauth2.client.id.{storage_account}.dfs.core.windows.net",
-    dbutils.secrets.get(scope="kv-scope", key="sp-client-id")
-)
-spark.conf.set(
-    f"fs.azure.account.oauth2.client.secret.{storage_account}.dfs.core.windows.net",
-    dbutils.secrets.get(scope="kv-scope", key="sp-client-secret")
-)
-spark.conf.set(
-    f"fs.azure.account.oauth2.client.endpoint.{storage_account}.dfs.core.windows.net",
-    f"https://login.microsoftonline.com/{dbutils.secrets.get(scope='kv-scope', key='sp-tenant-id')}/oauth2/token"
-)
-print("ADLS access ready")
+path = "abfss://bronze@stadlsdev001.dfs.core.windows.net/"
+
+try:
+    files = dbutils.fs.ls(path)
+    print(f"Access confirmed — {len(files)} items in container")
+    for f in files:
+        print(f.name)
+except Exception as e:
+    print(f"Access failed: {e}")
+    print("Check: External Location ext-loc-stadls exists and covers this path")
+```
+
+If this fails, the admin needs to complete Part 5 (Storage Credential + External Location) first.
+
+**Legacy reference only — what the old approach looked like:**
+```python
+# ❌ Old way — do NOT use with Unity Catalog
+# spark.conf.set("fs.azure.account.auth.type.stadlsdev001...", "OAuth")
+# spark.conf.set("fs.azure.account.oauth2.client.id...", ...)
+# spark.conf.set("fs.azure.account.oauth2.client.secret...", ...)
+# Unity Catalog replaces all of this
 ```
 
 ### Step 2 — Write Sample Data as Delta to ADLS
