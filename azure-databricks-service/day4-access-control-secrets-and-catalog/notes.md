@@ -190,17 +190,70 @@ The SP needs `Storage Blob Data Contributor` on both `stadlsdev001` and `stblobd
 
 > Role assignment takes 1–5 minutes to propagate in Azure.
 
-### Step 4 — Grant the Service Principal Access to Key Vault
+### Step 4 — Grant Key Vault Access to TWO identities
 
-Databricks needs to read secrets from the Key Vault. Give the SP `Key Vault Secrets User` role.
+This is the step most tutorials miss. Two separate identities must have access to Key Vault for `dbutils.secrets` to work:
+
+```
+Identity 1: AzureDatabricks platform app  (appid: 2ff814a6-3304-4ab8-85cb-cd0e6f879c1d)
+  → This is the Databricks control plane itself
+  → When a notebook calls dbutils.secrets.list() or dbutils.secrets.get(),
+    it is THIS app calling Key Vault on behalf of your notebook — not your user account
+  → Without this: PERMISSION_DENIED 403 on every dbutils.secrets call
+
+Identity 2: Your Service Principal  (sp-databricks-dev)
+  → Used by Unity Catalog Storage Credential to access ADLS/Blob storage
+  → Also used by the AKV-backed scope to verify it can reach the vault
+```
+
+**Check your Key Vault permission model first:**
 
 1. Azure Portal → **Key vaults** → `key-vault-session-ded`
-2. Left sidebar → **Access Control (IAM)** → **+ Add** → **Add role assignment**
-3. Role: `Key Vault Secrets User` → Members: `sp-databricks-dev`
-4. Click **Review + assign** → **Review + assign**
+2. Left sidebar → **Access configuration**
+3. Look at **Permission model**:
+   - `Azure role-based access control` → follow Option A below
+   - `Vault access policy` → follow Option B below
 
-> Alternative if your Key Vault uses Access Policies instead of RBAC:
-> Left sidebar → **Access policies** → **+ Create** → Secret permissions: `Get`, `List` → Principal: `sp-databricks-dev` → **Create**
+---
+
+**Option A — Azure RBAC permission model (recommended)**
+
+Do this for **both** identities:
+
+**Grant to AzureDatabricks platform app:**
+1. Key Vault → **Access Control (IAM)** → **+ Add** → **Add role assignment**
+2. **Role** tab → `Key Vault Secrets User` → **Next**
+3. **Members** tab → **+ Select members** → search `AzureDatabricks`
+4. Select `AzureDatabricks` (app ID: `2ff814a6-3304-4ab8-85cb-cd0e6f879c1d`)
+5. Click **Review + assign** → **Review + assign**
+
+**Grant to your Service Principal:**
+1. Key Vault → **Access Control (IAM)** → **+ Add** → **Add role assignment**
+2. **Role** tab → `Key Vault Secrets User` → **Next**
+3. **Members** tab → **+ Select members** → search `sp-databricks-dev`
+4. Select it → **Review + assign** → **Review + assign**
+
+---
+
+**Option B — Vault access policy model (older Key Vaults)**
+
+Do this for **both** identities:
+
+**Grant to AzureDatabricks platform app:**
+1. Key Vault → **Access policies** → **+ Create**
+2. **Permissions** tab → Secret permissions: tick `Get` and `List`
+3. **Principal** tab → search `AzureDatabricks` → select `AzureDatabricks` (appid: `2ff814a6-...`)
+4. Click **Next** → **Next** → **Create**
+
+**Grant to your Service Principal:**
+1. Key Vault → **Access policies** → **+ Create**
+2. **Permissions** tab → Secret permissions: tick `Get` and `List`
+3. **Principal** tab → search `sp-databricks-dev` → select it
+4. Click **Next** → **Next** → **Create**
+
+---
+
+> **Wait 2–5 minutes** after adding both assignments before testing in Databricks. Azure RBAC changes take time to propagate.
 
 ### Step 5 — Store the Three Values as Secrets in Key Vault
 
