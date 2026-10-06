@@ -41,17 +41,12 @@ Azure Databricks Account (accounts.azuredatabricks.net)
 
 ### 2.1 What the "Create a new credential" form looks like
 
-When you click **Create credential** in the Workspace UI, you see:
+When you click **Create credential** in the Workspace UI, you see two radio button options at the top:
 
 ```
 Create a new credential
 ─────────────────────────────────────────────────────
-  ● Storage Credential    ○ Service Credential
-
-  Credential Type*
-  ┌─────────────────────────────────┐
-  │ Azure Managed Identity      ▼  │   ← default selection
-  └─────────────────────────────────┘
+  ○ Storage Credential    ● Service Credential
 
   Credential name*
   ┌──────────────────────────────────────┐
@@ -76,7 +71,18 @@ Create a new credential
                          [ Cancel ]  [ Create ]
 ```
 
-The **Credential Type defaults to `Azure Managed Identity`** — this means you authenticate using the **Azure Databricks Access Connector** (a managed identity resource in Azure), NOT a Service Principal with a client secret.
+**Both radio buttons (Storage Credential and Service Credential) show the same fields:**
+- **Access connector ID** — the Azure resource ID of the Access Connector
+- **User assigned managed identity ID** — optional, only if using a user-assigned MI instead of system-assigned
+
+**There is NO client ID / client secret / tenant ID field anywhere in this UI.** On Azure, Unity Catalog credentials always use **Managed Identity via Access Connector** — not a Service Principal password.
+
+| Radio Button | Purpose | Auth method |
+|---|---|---|
+| Storage Credential | Access ADLS/Blob storage → used for External Locations | Access Connector (Managed Identity) |
+| Service Credential | Access cloud services (Azure OpenAI, etc.) | Access Connector (Managed Identity) |
+
+**For creating External Locations to access stadlsdev001 and stblobdev001 → select `Storage Credential`.**
 
 ---
 
