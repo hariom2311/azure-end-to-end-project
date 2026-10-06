@@ -17,8 +17,8 @@ Before touching any UI, understand what you are going to create and why.
 ```
 Azure Databricks Account (accounts.azuredatabricks.net)
   └── Unity Catalog Metastore  (one per Azure region — already exists)
-        ├── Storage Credential: sp-stadls-credential   ← holds SP identity for stadlsdev001
-        ├── Storage Credential: sp-stblob-credential   ← holds SP identity for stblobdev001
+        ├── Storage Credential: mi-stadls-credential   ← Managed Identity for stadlsdev001
+        ├── Storage Credential: mi-stblob-credential   ← Managed Identity for stblobdev001
         ├── External Location:  ext-loc-stadls          ← maps abfss://bronze@stadlsdev001...
         ├── External Location:  ext-loc-stblob          ← maps abfss://files@stblobdev001...
         └── Catalog: dev_catalog
@@ -39,96 +39,226 @@ Azure Databricks Account (accounts.azuredatabricks.net)
 
 ## Part 2: Create Storage Credentials
 
-A storage credential holds the Service Principal details — Client ID, Client Secret, Tenant ID — so Unity Catalog can authenticate to Azure storage on your behalf.
+### 2.1 What the "Create a new credential" form looks like
 
-**You need two credentials** — one per storage account (or one shared if the same SP has access to both).
+When you click **Create credential** in the Workspace UI, you see:
 
-### 2.1 Where to Create Storage Credentials
+```
+Create a new credential
+─────────────────────────────────────────────────────
+  ● Storage Credential    ○ Service Credential
 
-There are two places you can create a storage credential:
+  Credential Type*
+  ┌─────────────────────────────────┐
+  │ Azure Managed Identity      ▼  │   ← default selection
+  └─────────────────────────────────┘
 
-**Option A — Databricks Account Console (recommended for admins)**
-1. Open a browser and navigate to `https://accounts.azuredatabricks.net`
-2. Sign in with your Azure account
-3. Left sidebar → click **Catalog**
-4. Top tab bar → click **External locations**
-5. Left sub-tab → click **Credentials**
-6. Click **+ Add a credential** (top right)
+  Credential name*
+  ┌──────────────────────────────────────┐
+  │                                      │
+  └──────────────────────────────────────┘
 
-**Option B — Workspace UI**
-1. Open your Databricks workspace: `https://adb-<workspace-id>.azuredatabricks.net`
-2. Left sidebar → click **Catalog** (grid icon)
-3. Left panel → click **External Data** (folder icon with a chain)
-4. Click **Credentials** tab at the top
-5. Click **Create credential** (top right)
+  Access connector ID  Learn more *
+  ┌──────────────────────────────────────┐
+  │                                      │
+  └──────────────────────────────────────┘
 
-Both options open the same form. Use whichever you have access to.
+  User assigned managed identity ID (optional)
+  ┌──────────────────────────────────────┐
+  │                                      │
+  └──────────────────────────────────────┘
+
+  Comment
+  ┌──────────────────────────────────────┐
+  │                                      │
+  └──────────────────────────────────────┘
+
+                         [ Cancel ]  [ Create ]
+```
+
+The **Credential Type defaults to `Azure Managed Identity`** — this means you authenticate using the **Azure Databricks Access Connector** (a managed identity resource in Azure), NOT a Service Principal with a client secret.
 
 ---
 
-### 2.2 Create Credential for stadlsdev001
+### 2.2 What is an Access Connector?
 
-Fill in the form exactly as shown:
+An **Azure Databricks Access Connector** is an Azure resource (like a VM or storage account) that has a **system-assigned managed identity**. You grant this managed identity access to your storage account, then give its resource ID to Unity Catalog as the credential.
+
+```
+Flow:
+  Unity Catalog
+    → uses Access Connector's managed identity
+    → managed identity has "Storage Blob Data Contributor" on stadlsdev001
+    → access granted — no password, no secret, no rotation needed
+```
+
+**Why Managed Identity is preferred over Service Principal:**
+- No client secret to rotate or leak
+- Azure manages the identity automatically
+- Access Connector resource lives in your Azure subscription
+
+---
+
+### 2.3 Step 1 — Create the Access Connector in Azure Portal (do this first)
+
+Before creating the credential in Databricks, you need an **Azure Databricks Access Connector** resource in Azure.
+
+1. Open **Azure Portal** → search `Access Connector for Azure Databricks` in the top search bar
+2. Click **+ Create**
+3. Fill in:
+
+   | Field | Value |
+   |---|---|
+   | Subscription | your subscription |
+   | Resource group | `data-engineering-daily-grp` |
+   | Name | `ac-databricks-dev` |
+   | Region | same region as your Databricks workspace |
+
+4. Click **Review + create** → **Create**
+5. Wait for deployment to complete (~1 minute)
+6. Click **Go to resource**
+7. On the Access Connector overview page, copy the **Resource ID** — it looks like:
+   ```
+   /subscriptions/81dd57e1-876a-4fcc-8778-e06f68c13228/resourceGroups/data-engineering-daily-grp/providers/Microsoft.Databricks/accessConnectors/ac-databricks-dev
+   ```
+   You need this for the Databricks credential form.
+
+---
+
+### 2.4 Step 2 — Grant the Access Connector Access to Storage Accounts
+
+The Access Connector's managed identity must have `Storage Blob Data Contributor` role on each storage account.
+
+**For stadlsdev001:**
+1. Azure Portal → **Storage accounts** → `stadlsdev001`
+2. Left menu → **Access Control (IAM)**
+3. Click **+ Add** → **Add role assignment**
+4. **Role tab:** search `Storage Blob Data Contributor` → select it → **Next**
+5. **Members tab:**
+   - Assign access to: `Managed identity`
+   - Click **+ Select members**
+   - Managed identity type: `Access Connector for Azure Databricks`
+   - Select: `ac-databricks-dev`
+   - Click **Select** → **Next** → **Review + assign**
+
+**For stblobdev001** — repeat the exact same steps:
+1. Azure Portal → **Storage accounts** → `stblobdev001`
+2. Left menu → **Access Control (IAM)**
+3. Click **+ Add** → **Add role assignment**
+4. Role: `Storage Blob Data Contributor`
+5. Managed identity: `ac-databricks-dev`
+6. Click **Review + assign**
+
+> Wait 1–2 minutes after role assignment before testing — Azure RBAC propagation takes time.
+
+---
+
+### 2.5 Step 3 — Create the Storage Credential in Databricks (for stadlsdev001)
+
+Now go back to Databricks:
+
+1. Left sidebar → **Catalog** (grid icon)
+2. Left panel → **External Data**
+3. Click **Credentials** tab
+4. Click **Create credential** (top right)
+
+The form opens. Fill in exactly:
 
 | Field | Value |
 |---|---|
-| Credential name | `sp-stadls-credential` |
-| Authentication type | `Azure Service Principal` |
-| Directory (tenant) ID | `c8fe40ce-7c95-4958-8992-21dfb0ea6c3c` |
-| Application (client) ID | `e7bedfb8-e1c8-4b5f-89a2-ad9be09a7ac1` |
-| Client secret | (the value from Key Vault secret `sp-client-secret`) |
-
-> **Where to find these values:**
-> - Tenant ID and Client ID → Azure Portal → **Azure Active Directory** → **App registrations** → search `sp-databricks-dev` → **Overview** tab
-> - Client Secret → Azure Portal → **Key vaults** → `kv-ev-intelligence-dev` → **Secrets** → `sp-client-secret` → click the secret → **Show Secret Value**
+| Radio button | `Storage Credential` (left option — already selected) |
+| Credential Type | `Azure Managed Identity` (already selected by default — leave it) |
+| Credential name | `mi-stadls-credential` |
+| Access connector ID | paste the full Resource ID copied in Step 2.3 |
+| User assigned managed identity ID | leave blank (we are using system-assigned) |
+| Comment | `Managed identity credential for stadlsdev001` |
 
 Click **Create**.
 
-You will see `sp-stadls-credential` appear in the Credentials list.
+You will see `mi-stadls-credential` appear in the Credentials list.
 
 ---
 
-### 2.3 Create Credential for stblobdev001
+### 2.6 Step 4 — Create the Storage Credential for stblobdev001
 
-If the same Service Principal has access to both storage accounts (which it does in this project — it has `Storage Blob Data Contributor` on both), you can either:
-- Reuse `sp-stadls-credential` for the Blob External Location (one credential, two locations)
-- Create a separate credential with the same SP details
-
-For clarity, create a separate credential:
+Click **Create credential** again. Fill in:
 
 | Field | Value |
 |---|---|
-| Credential name | `sp-stblob-credential` |
-| Authentication type | `Azure Service Principal` |
-| Directory (tenant) ID | `c8fe40ce-7c95-4958-8992-21dfb0ea6c3c` |
-| Application (client) ID | `e7bedfb8-e1c8-4b5f-89a2-ad9be09a7ac1` |
-| Client secret | (same value as above — same SP) |
+| Radio button | `Storage Credential` |
+| Credential Type | `Azure Managed Identity` |
+| Credential name | `mi-stblob-credential` |
+| Access connector ID | same Resource ID as above (same Access Connector) |
+| User assigned managed identity ID | leave blank |
+| Comment | `Managed identity credential for stblobdev001` |
 
 Click **Create**.
 
+> One Access Connector can be used for multiple credentials pointing to different storage accounts — as long as the managed identity has been granted access to each storage account (which we did in Step 2.4).
+
 ---
 
-### 2.4 Verify Both Credentials Exist
+### 2.7 Verify Both Credentials Exist
 
-In the Credentials list, you should see:
+Credentials list should show:
 ```
-sp-stadls-credential   Azure Service Principal   Created by: you
-sp-stblob-credential   Azure Service Principal   Created by: you
+mi-stadls-credential   Azure Managed Identity   Created by: you
+mi-stblob-credential   Azure Managed Identity   Created by: you
 ```
 
-If you see an error "You do not have permission to create credentials" — you need **Account Admin** or **Metastore Admin** role in Databricks. Contact your workspace admin.
+If you see `You do not have permission to create credentials` — you need **Metastore Admin** or **Account Admin** role in Databricks.
 
 ---
 
 ## Part 3: Create External Locations
 
-An external location maps a storage path prefix to a storage credential. Unity Catalog checks external locations when any notebook tries to read or write an `abfss://` path.
+### 3.1 What the "Create a new external location" form looks like
 
-**Rule:** The `abfss://` path in your table or volume LOCATION must be covered by (start with the URL of) an external location.
+```
+Create a new external location
+─────────────────────────────────────────────────────
+  External location name*
+  ┌──────────────────────────────────────┐
+  │                                      │
+  └──────────────────────────────────────┘
 
-### 3.1 Open External Locations
+  Storage type*
+  ┌─────────────────────────────────────┐
+  │ Azure Data Lake Storage         ▼  │  ← default
+  └─────────────────────────────────────┘
 
-**In the Workspace UI:**
+  URL*  ⓘ
+  Enter the bucket path that you want to use as the external location.
+  Note: This must be an ADLS Gen2 storage account with a hierarchical namespace
+  ┌──────────────────────────────────────────────────────┐ ┌──────────────────┐
+  │  abfss://<container_name>@<storage_account_name>...  │ │ Copy from DBFS ▼ │
+  └──────────────────────────────────────────────────────┘ └──────────────────┘
+
+  Storage credential*  Learn more
+  Provide a storage credential capable of accessing the URL
+  ┌─────────────────────────────────────┐
+  │ Select storage credential       ▼  │
+  └─────────────────────────────────────┘
+
+  Comment
+  ┌──────────────────────────────────────┐
+  │                                      │
+  └──────────────────────────────────────┘
+
+  > Advanced Options
+
+                         [ Cancel ]  [ Create ]
+```
+
+**Key fields:**
+- **Storage type** — leave as `Azure Data Lake Storage` (covers both ADLS Gen2 and Blob with HNS)
+- **URL** — must use `abfss://` format. The form shows the placeholder: `abfss://<container_name>@<storage_account_name>.dfs.core.windows.net/<path>`
+- **Storage credential** — select from the credentials you created in Part 2
+
+---
+
+### 3.2 Open External Locations
+
 1. Left sidebar → **Catalog** (grid icon)
 2. Left panel → **External Data**
 3. Click **External Locations** tab
@@ -136,73 +266,69 @@ An external location maps a storage path prefix to a storage credential. Unity C
 
 ---
 
-### 3.2 Create External Location for stadlsdev001
+### 3.3 Create External Location for stadlsdev001
 
-Fill in the form:
+Fill in the form exactly:
 
 | Field | Value |
 |---|---|
 | External location name | `ext-loc-stadls` |
+| Storage type | `Azure Data Lake Storage` (leave default) |
 | URL | `abfss://bronze@stadlsdev001.dfs.core.windows.net/` |
-| Storage credential | `sp-stadls-credential` |
+| Storage credential | `mi-stadls-credential` (select from dropdown) |
+| Comment | leave blank |
 
-> **Important about the URL:**
-> - `bronze` is the container name inside `stadlsdev001`
-> - The URL ends with `/` — this is the root of the container
-> - Any path that starts with `abfss://bronze@stadlsdev001.dfs.core.windows.net/` is automatically covered
-> - Example covered: `abfss://bronze@stadlsdev001.dfs.core.windows.net/sample_people/`
+> **About the URL field:**
+> - Replace `<container_name>` with `bronze` (the container name in `stadlsdev001`)
+> - Replace `<storage_account_name>` with `stadlsdev001`
+> - Leave `<path>` empty (use root of container) — the URL ends with `.net/`
+> - Final value: `abfss://bronze@stadlsdev001.dfs.core.windows.net/`
 
 Click **Create**.
 
-**Step — Test the connection immediately:**
+**Test the connection immediately:**
 1. In the External Locations list, click `ext-loc-stadls`
 2. Click **Test connection** (top right of the detail page)
 3. Wait 5–10 seconds
 4. You should see: `Connection successful`
 
-If you see an error:
-- `Authentication failed` → the Client Secret in the credential is wrong or expired
-- `Authorization failed` → the Service Principal does not have `Storage Blob Data Contributor` on `stadlsdev001`
-- `Resource not found` → check the container name (`bronze`) — it must exist in the storage account
+**If test fails:**
+- `Authorization failed` → the Access Connector managed identity does not have `Storage Blob Data Contributor` on `stadlsdev001` — check Step 2.4
+- `Resource not found` → the container `bronze` does not exist in `stadlsdev001` — create it first in Azure Portal
+- `Invalid URL format` → check the `abfss://` URL — no typos, no spaces
 
 ---
 
-### 3.3 Create External Location for stblobdev001
+### 3.4 Create External Location for stblobdev001
 
-**Important note about stblobdev001:**
-Azure Blob Storage without Hierarchical Namespace (HNS) uses a flat namespace. The `abfss://` scheme requires HNS to be enabled.
+**Important:** The form says "This must be an ADLS Gen2 storage account with a hierarchical namespace". Check first:
 
-**Check if HNS is enabled on stblobdev001:**
 1. Azure Portal → **Storage accounts** → `stblobdev001`
-2. Left menu → **Overview**
-3. Look for **Hierarchical namespace** in the properties panel
-4. It should show **Enabled**
+2. Left menu → **Overview** → look for **Hierarchical namespace**
+3. If it shows **Enabled** → use `abfss://`
+4. If it shows **Disabled** → HNS is off; you cannot use this storage account with Unity Catalog External Locations directly. You would need to enable HNS (requires recreating the account) or use a different account.
 
-If HNS is NOT enabled:
-- You cannot use `abfss://` for this account
-- Use `wasbs://files@stblobdev001.blob.core.windows.net/` instead in the External Location URL
-- Note: `wasbs://` is the older scheme for plain Blob Storage without HNS
-
-Assuming HNS is enabled, fill in:
+Assuming HNS is enabled, click **+ Create location** and fill in:
 
 | Field | Value |
 |---|---|
 | External location name | `ext-loc-stblob` |
+| Storage type | `Azure Data Lake Storage` (leave default) |
 | URL | `abfss://files@stblobdev001.dfs.core.windows.net/` |
-| Storage credential | `sp-stblob-credential` |
+| Storage credential | `mi-stblob-credential` (select from dropdown) |
 
-> `files` is the container name in `stblobdev001`. If your container has a different name, use that name instead.
+> Replace `files` with the actual container name in `stblobdev001` if it is different.
 
-Click **Create** → Click **Test connection** → `Connection successful`.
+Click **Create** → **Test connection** → `Connection successful`.
 
 ---
 
-### 3.4 Verify Both External Locations
+### 3.5 Verify Both External Locations
 
 External Locations list should show:
 ```
-ext-loc-stadls   abfss://bronze@stadlsdev001.dfs.core.windows.net/   sp-stadls-credential
-ext-loc-stblob   abfss://files@stblobdev001.dfs.core.windows.net/    sp-stblob-credential
+ext-loc-stadls   abfss://bronze@stadlsdev001.dfs.core.windows.net/   mi-stadls-credential
+ext-loc-stblob   abfss://files@stblobdev001.dfs.core.windows.net/    mi-stblob-credential
 ```
 
 ---
