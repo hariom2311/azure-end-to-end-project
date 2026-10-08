@@ -1202,247 +1202,16 @@ print("""
 
 ---
 
-## Part 9: ADF — Running a Databricks Notebook Activity
+---
 
-Azure Data Factory can trigger a Databricks notebook as a step in an ADF pipeline. ADF starts the notebook, waits for it to finish, and captures the exit value.
-
-### 9.1 What You Need
-
-```
-Azure Data Factory (adf-ev-dev)
-  └── Pipeline
-        └── Databricks Notebook Activity
-              ├── Linked Service  → points to Databricks workspace (dbw-ev-dev)
-              ├── Notebook path   → Shared/day6-practice/adf_triggered_notebook
-              ├── Cluster config  → New job cluster (auto-provision on each run)
-              └── Base parameters → key-value pairs the notebook reads as widgets
-```
+> **ADF — Databricks Notebook Activity** has moved to **Day 7**.
+> Day 7 covers all three Linked Service authentication methods (Access Token, System-assigned Managed Identity, User-assigned Managed Identity), cluster options, Base Parameters, runOutput, pipeline dependencies, scheduling, and monitoring.
 
 ---
 
-### 9.2 Step 1 — Create the Notebook in Databricks
+## Part 9: Cluster Access Modes and Notebook Permissions
 
-First create the notebook that ADF will call.
-
-1. **Databricks workspace** → left sidebar → **Workspace**
-2. Navigate to `Shared/day6-practice`
-3. Click **⋮** → **Create** → **Notebook**
-4. Name: `adf_triggered_notebook`
-5. Default language: `Python`
-6. Click **Create**
-7. Attach the notebook to your cluster (just for editing — ADF will use a job cluster)
-
-Add Cell 1:
-
-```python
-# Read parameters that ADF passes in as Base Parameters
-# dbutils.widgets.text("key", "default_value", "label shown in UI")
-
-dbutils.widgets.text("adf_pipeline_name", "unknown", "ADF Pipeline Name")
-dbutils.widgets.text("adf_run_id",        "unknown", "ADF Run ID")
-dbutils.widgets.text("env",               "dev",     "Environment")
-
-pipeline_name = dbutils.widgets.get("adf_pipeline_name")
-run_id        = dbutils.widgets.get("adf_run_id")
-env           = dbutils.widgets.get("env")
-
-print(f"Triggered by: {pipeline_name}")
-print(f"Run ID:       {run_id}")
-print(f"Environment:  {env}")
-```
-
-Add Cell 2:
-
-```python
-# Simulate some processing work
-data = [(i, f"record_{i}", i * 100) for i in range(1, 6)]
-df = spark.createDataFrame(data, ["id", "label", "value"])
-df.show()
-
-row_count = df.count()
-print(f"Processed {row_count} records in {env} environment")
-```
-
-Add Cell 3:
-
-```python
-# Return a result string back to ADF
-# ADF captures this as activity output: runOutput
-result = f"SUCCESS: {row_count} records processed in {env}"
-dbutils.notebook.exit(result)
-```
-
-Note the exact notebook path — you need it in ADF:
-`/Shared/day6-practice/adf_triggered_notebook`
-
----
-
-### 9.3 Step 2 — Create a Databricks Linked Service in ADF
-
-A Linked Service is the connection object in ADF that tells ADF how to reach Databricks.
-
-1. Open **Azure Data Factory Studio**: Azure Portal → **Data factories** → `adf-ev-dev` → **Launch studio**
-2. Left sidebar → click **Manage** (toolbox wrench icon)
-3. Under **Connections** section → click **Linked services**
-4. Click **+ New** (top left)
-5. In the search box type `Databricks` → select **Azure Databricks** → click **Continue**
-
-Fill in the form:
-
-**General section:**
-
-| Field | Value |
-|---|---|
-| Name | `ls_databricks_dev` |
-| Description | `Databricks workspace for dev environment` |
-
-**Connect via integration runtime:**
-- Leave as `AutoResolveIntegrationRuntime` (default)
-
-**Account selection method:**
-- Select `From Azure subscription`
-
-| Field | Value |
-|---|---|
-| Azure subscription | select your subscription |
-| Databricks workspace | `dbw-ev-dev` |
-
-**Select cluster:**
-- Select `New job cluster`
-
-This means ADF will auto-provision a new cluster each time it triggers the notebook. The cluster is deleted after the notebook finishes.
-
-| Field | Value |
-|---|---|
-| Databricks runtime version | `15.4 LTS (Scala 2.12, Spark 3.5.0)` |
-| Worker node type | `Standard_D4s_v3` |
-| Driver node type | `Standard_D4s_v3` (same as worker for small clusters) |
-| Workers | `1` (min for a small job) |
-| Python version | `3` |
-
-**Authentication:**
-
-| Field | Value |
-|---|---|
-| Authentication type | `Access token` |
-| Access token | Paste your Databricks PAT token |
-
-> **Where to get the PAT token:**
-> - Databricks workspace → top right → click your username → **User Settings**
-> - Left menu → **Developer** → **Access tokens**
-> - Click **Generate new token**
-> - Comment: `adf-linked-service`
-> - Lifetime: `90` (days)
-> - Click **Generate**
-> - Copy the token — it is shown only once
-> - Paste it in the ADF Linked Service form
-
-6. Click **Test connection** → wait for `Connection successful`
-7. Click **Apply** (top right)
-
----
-
-### 9.4 Step 3 — Create or Open an ADF Pipeline
-
-1. Left sidebar → **Author** (pencil icon)
-2. Under **Pipelines** → click **+** → **New pipeline**
-3. Name the pipeline: `pl_day6_notebook_demo`
-
----
-
-### 9.5 Step 4 — Add the Databricks Notebook Activity
-
-1. In the pipeline canvas, look at the **Activities** panel on the left
-2. Expand **Databricks** section
-3. Drag **Notebook** onto the canvas
-
-Click the Notebook activity to select it. Configure the three tabs at the bottom:
-
-**General tab:**
-
-| Field | Value |
-|---|---|
-| Name | `Run Day6 Notebook` |
-| Timeout | `00:30:00` (30 minutes) |
-| Retry | `1` |
-
-**Azure Databricks tab:**
-
-| Field | Value |
-|---|---|
-| Databricks linked service | `ls_databricks_dev` (select from dropdown) |
-
-**Settings tab:**
-
-| Field | Value |
-|---|---|
-| Notebook path | `/Shared/day6-practice/adf_triggered_notebook` |
-
-Click **+ New** under **Base parameters** to add each parameter:
-
-| Name | Value |
-|---|---|
-| `adf_pipeline_name` | `@pipeline().Pipeline` |
-| `adf_run_id` | `@pipeline().RunId` |
-| `env` | `dev` |
-
-> `@pipeline().Pipeline` and `@pipeline().RunId` are ADF system variables — they inject the actual pipeline name and run ID automatically at runtime.
-
----
-
-### 9.6 Step 5 — Test the Pipeline (Debug Run)
-
-1. Click **Debug** in the pipeline toolbar (triangle with a bug icon)
-2. A dialog may appear — click **OK** to start
-3. At the bottom, the **Output** tab shows pipeline progress
-4. Watch the `Run Day6 Notebook` activity:
-   - Blue circle = running (waiting for cluster to start, then notebook running)
-   - Green tick = succeeded
-   - Red X = failed
-
-> **Note on timing:** "New job cluster" takes 3–5 minutes to provision before the notebook starts. This is normal. The notebook itself runs in seconds. Total time per ADF run: ~5–8 minutes.
-
-5. When it succeeds, click the **Output** icon (glasses icon) on the activity row
-
-You will see:
-```json
-{
-  "runOutput": "SUCCESS: 5 records processed in dev",
-  "effectiveIntegrationRuntime": "AutoResolveIntegrationRuntime",
-  "executionDuration": 312,
-  "durationInQueue": { ... }
-}
-```
-
-The `runOutput` value is exactly what the notebook returned with `dbutils.notebook.exit(result)`.
-
----
-
-### 9.7 Step 6 — Verify the Run in Databricks
-
-1. Databricks workspace → left sidebar → **Workflows**
-2. Click **Job runs** tab (not the Jobs tab)
-3. You will see a run with source `ADF` — it shows which ADF pipeline triggered it
-4. Click the run → click **Logs** to see all notebook cell outputs
-
----
-
-### 9.8 Step 7 — Add a Dependency (Copy → Notebook)
-
-If you want the notebook to run only after a Copy activity succeeds:
-
-1. In the pipeline canvas, add a **Copy data** activity (from the Activities panel → Move & Transform)
-2. Draw the **green arrow** from the Copy activity → Notebook activity
-   - Green arrow = run Notebook only if Copy **succeeded**
-   - Red arrow = run Notebook only if Copy **failed** (for error handling)
-   - Blue arrow = run regardless of Copy result (always)
-3. If Copy fails, the Notebook activity is skipped and the pipeline shows as failed
-
----
-
-## Part 10: Cluster Access Modes and Notebook Permissions
-
-### 10.1 Cluster Access Modes
+### 9.1 Cluster Access Modes
 
 When you create a cluster, you choose an access mode. This determines what Unity Catalog features are available.
 
@@ -1462,7 +1231,7 @@ When you create a cluster, you choose an access mode. This determines what Unity
 
 ---
 
-### 10.2 Notebook Permissions
+### 9.2 Notebook Permissions
 
 Who can view, run, or edit a notebook is controlled by notebook-level permissions.
 
@@ -1487,7 +1256,7 @@ ADF runs the notebook as the **Service Principal** defined in the Linked Service
 
 ---
 
-## Part 11: Landing Zone Pattern — Full Pipeline Demo
+## Part 10: Landing Zone Pattern — Full Pipeline Demo
 
 This combines everything: files land in a volume (Blob Storage), a notebook reads them, transforms them, and saves as an external Delta table on ADLS.
 
