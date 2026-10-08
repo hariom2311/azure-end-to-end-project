@@ -405,23 +405,97 @@ ext-loc-stblob   abfss://<container>@stblobdev001.dfs.core.windows.net/ mi-stblo
 
 A **catalog** is the top-level namespace in Unity Catalog — like a database server. A **schema** is a database inside a catalog — it holds tables and volumes.
 
-### 4.1 Create the Catalog
+### 4.1 What the "Create a new catalog" form looks like
 
-1. Left sidebar → **Catalog** (grid icon)
-2. In the Catalog Explorer panel, click **+** (Add) at the top
-3. Select **Add a catalog**
+```
+Create a new catalog
+─────────────────────────────────────────────────────────────────
+  Catalog name*
+  ┌──────────────────────────────────────────────────────────┐
+  │ dev_catalog                                              │
+  └──────────────────────────────────────────────────────────┘
 
-Fill in:
+  Type*
+  ┌──────────────────────────────────────────────────────────┐
+  │ Standard                                             ▼  │
+  └──────────────────────────────────────────────────────────┘
+
+  Storage location
+  Cloud storage location used for managed tables and volumes
+  in this catalog. If not specified, it defaults to the
+  metastore root location.
+  ┌────────────────────────────┐  ┌────────────────────┐
+  │ Select external location ▼ │  │ sub/path           │
+  └────────────────────────────┘  └────────────────────┘
+  Create a new external location ↗
+
+                             [ Cancel ]  [ Create ]
+```
+
+**The Storage location field is required in this project** — see the error explanation below.
+
+---
+
+### 4.2 Common Error: "Metastore storage root URL does not exist"
+
+When you click **Create** without filling in the Storage location, you will see:
+
+```
+⚠️ Metastore storage root URL does not exist. Default Storage is
+enabled in your account. You can use the UI to create a new catalog
+using Default Storage, or please provide a storage location for the
+catalog (for example 'CREATE CATALOG myCatalog MANAGED LOCATION
+'<location-path>').
+```
+
+**Why this happens:**
+
+The Unity Catalog Metastore was created without a default root storage account. This is common when Databricks was set up without linking a managed storage account. Because there is no default storage, Databricks does not know where to store internal/managed tables — so you must tell it explicitly.
+
+**Two ways to fix this — choose one:**
+
+---
+
+**Fix Option 1 — UI: Select an External Location as catalog storage**
+
+In the Create catalog form, fill in the Storage location:
 
 | Field | Value |
 |---|---|
 | Catalog name | `dev_catalog` |
 | Type | `Standard` |
-| Storage location | Leave blank (uses Unity Catalog managed storage by default) |
+| Select external location | `ext-loc-stadls` (select from dropdown) |
+| sub/path | `dev_catalog` |
+
+This means internal/managed tables in `dev_catalog` will be stored at:
+`abfss://bronze@stadlsdev001.dfs.core.windows.net/dev_catalog/`
 
 Click **Create**.
 
-> If you see "Catalog already exists" — the catalog was already created. Click `dev_catalog` in the left panel to open it and move to Step 4.2.
+---
+
+**Fix Option 2 — SQL: Run in a notebook (quickest)**
+
+Open any notebook, attach to your cluster, run:
+
+```sql
+%sql
+CREATE CATALOG IF NOT EXISTS dev_catalog
+MANAGED LOCATION 'abfss://bronze@stadlsdev001.dfs.core.windows.net/dev_catalog/'
+```
+
+This is exactly what the error message suggests. The `MANAGED LOCATION` tells Databricks where to store internal/managed tables for this catalog.
+
+**After the catalog is created with either option, verify it exists:**
+
+```sql
+%sql
+SHOW CATALOGS
+```
+
+You should see `dev_catalog` in the list.
+
+> If you see "Catalog already exists" — it was already created. Click `dev_catalog` in the left Catalog Explorer panel and move to Step 4.3.
 
 ---
 
