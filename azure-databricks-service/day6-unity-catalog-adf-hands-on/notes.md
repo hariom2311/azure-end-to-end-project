@@ -256,10 +256,18 @@ Create a new external location
                          [ Cancel ]  [ Create ]
 ```
 
-**Key fields:**
-- **Storage type** — leave as `Azure Data Lake Storage` (covers both ADLS Gen2 and Blob with HNS)
-- **URL** — must use `abfss://` format. The form shows the placeholder: `abfss://<container_name>@<storage_account_name>.dfs.core.windows.net/<path>`
-- **Storage credential** — select from the credentials you created in Part 2
+**Key fields explained:**
+
+| Field | What to do |
+|---|---|
+| External location name | Type a name — no spaces, use hyphens |
+| Storage type | Leave as `Azure Data Lake Storage` (default) |
+| URL | Type the `abfss://` path manually — do NOT use the "Copy from DBFS" dropdown (explained below) |
+| Storage credential | Select from the dropdown — shows credentials you created in Part 2 |
+| Comment | Optional — leave blank |
+
+> **"Copy from DBFS" dropdown — ignore it**
+> When you click the URL field, a dropdown appears showing paths like `/databricks-datasets`, `/Volumes`, `/databricks/mlflow-tracking`, `/databricks/mlflow-registry`, `/databricks-results`, `/Volume`, `/volumes`, `/volume`, `/`. These are internal Databricks filesystem (DBFS) paths — they are NOT Azure storage paths. **Do not select any of them.** Just type the `abfss://` URL directly into the URL field and ignore the dropdown.
 
 ---
 
@@ -274,7 +282,19 @@ Create a new external location
 
 ### 3.3 Create External Location for stadlsdev001
 
-Fill in the form exactly:
+The URL field shows a placeholder: `abfss://<container_name>@<storage_account_name>.dfs.core.windows.net/<path>`
+
+**How to fill in the URL — replace each part:**
+
+```
+abfss://<container_name>@<storage_account_name>.dfs.core.windows.net/<path>
+         ↓                  ↓                                          ↓
+        bronze           stadlsdev001                              (leave empty)
+
+Result: abfss://bronze@stadlsdev001.dfs.core.windows.net/
+```
+
+Fill in the full form:
 
 | Field | Value |
 |---|---|
@@ -284,57 +304,99 @@ Fill in the form exactly:
 | Storage credential | `mi-stadls-credential` (select from dropdown) |
 | Comment | leave blank |
 
-> **About the URL field:**
-> - Replace `<container_name>` with `bronze` (the container name in `stadlsdev001`)
-> - Replace `<storage_account_name>` with `stadlsdev001`
-> - Leave `<path>` empty (use root of container) — the URL ends with `.net/`
-> - Final value: `abfss://bronze@stadlsdev001.dfs.core.windows.net/`
-
 Click **Create**.
-
-**Test the connection immediately:**
-1. In the External Locations list, click `ext-loc-stadls`
-2. Click **Test connection** (top right of the detail page)
-3. Wait 5–10 seconds
-4. You should see: `Connection successful`
-
-**If test fails:**
-- `Authorization failed` → the Access Connector managed identity does not have `Storage Blob Data Contributor` on `stadlsdev001` — check Step 2.4
-- `Resource not found` → the container `bronze` does not exist in `stadlsdev001` — create it first in Azure Portal
-- `Invalid URL format` → check the `abfss://` URL — no typos, no spaces
 
 ---
 
-### 3.4 Create External Location for stblobdev001
+### 3.4 Test the Connection — Understanding the Results
 
-**Important:** The form says "This must be an ADLS Gen2 storage account with a hierarchical namespace". Check first:
+After clicking Create, click **Test connection**. You will see a result like this:
 
+```
+Location Type: Directory
+
+  ✅ Success  - Read
+  ✅ Success  - List
+  ✅ Success  - Write
+  ✅ Success  - Delete
+  ✅ Success  - Path Exists
+  ✅ Success  - Hierarchical Namespace Enabled
+  ❌ Failed   - File Events Resource Provision
+  ❌ Failed   - File Events Resource Teardown
+
+⚠️ File Events Permissions Not Verified
+Your storage credential can read and write to this location,
+but file events permissions could not be verified.
+File events are optional but recommended; they improve
+ingestion performance and reduce cloud storage listing costs.
+```
+
+**What this means:**
+
+| Check | Result | Action needed |
+|---|---|---|
+| Read / List / Write / Delete | ✅ Success | External Location works — notebooks can access the storage |
+| Hierarchical Namespace Enabled | ✅ Success | HNS is on — `abfss://` URI works correctly |
+| File Events Resource Provision | ❌ Failed | **Optional** — no action needed to proceed |
+| File Events Resource Teardown | ❌ Failed | **Optional** — no action needed to proceed |
+
+**The External Location is working correctly.** The File Events failure is a warning, not a blocker. File Events are used for event-driven auto-refresh of tables (like streaming ingestion) — they are NOT needed for regular Delta table reads and writes.
+
+**If you want to fix the File Events warning** (optional — can be done later):
+Assign these additional roles to the Access Connector managed identity on `stadlsdev001`:
+1. `Storage Account Contributor`
+2. `EventGrid EventSubscription Contributor`
+3. `Storage Queue Data Contributor`
+
+Azure Portal → `stadlsdev001` → **Access Control (IAM)** → **+ Add role assignment** → repeat for each role, selecting `ac-databricks-dev` managed identity each time.
+
+**If the core checks (Read/List/Write) are failing instead:**
+- `Authorization failed` → managed identity does not have `Storage Blob Data Contributor` on `stadlsdev001` — re-check Part 2.4
+- `Path not found` → the container `bronze` does not exist — create it in Azure Portal → `stadlsdev001` → **Containers** → **+ Container**
+
+---
+
+### 3.5 Create External Location for stblobdev001
+
+**First — confirm HNS is enabled on stblobdev001:**
 1. Azure Portal → **Storage accounts** → `stblobdev001`
-2. Left menu → **Overview** → look for **Hierarchical namespace**
-3. If it shows **Enabled** → use `abfss://`
-4. If it shows **Disabled** → HNS is off; you cannot use this storage account with Unity Catalog External Locations directly. You would need to enable HNS (requires recreating the account) or use a different account.
+2. Left menu → **Overview**
+3. Look for **Hierarchical namespace** in the Properties panel on the right
+4. Must show **Enabled** — otherwise `abfss://` will not work
 
-Assuming HNS is enabled, click **+ Create location** and fill in:
+**Fill in the URL — replace each part:**
+
+```
+abfss://<container_name>@<storage_account_name>.dfs.core.windows.net/<path>
+         ↓                  ↓                                          ↓
+       (your container)  stblobdev001                              (leave empty)
+
+Example: abfss://files@stblobdev001.dfs.core.windows.net/
+```
+
+> To find the container name: Azure Portal → `stblobdev001` → **Containers** → note the container name listed there. Use that name in the URL.
+
+Fill in the form:
 
 | Field | Value |
 |---|---|
 | External location name | `ext-loc-stblob` |
 | Storage type | `Azure Data Lake Storage` (leave default) |
-| URL | `abfss://files@stblobdev001.dfs.core.windows.net/` |
+| URL | `abfss://<your-container-name>@stblobdev001.dfs.core.windows.net/` |
 | Storage credential | `mi-stblob-credential` (select from dropdown) |
 
-> Replace `files` with the actual container name in `stblobdev001` if it is different.
+Click **Create** → **Test connection**.
 
-Click **Create** → **Test connection** → `Connection successful`.
+Same result expected — Read/List/Write/Delete/HNS will be ✅. File Events may be ❌ (optional warning, not a blocker).
 
 ---
 
-### 3.5 Verify Both External Locations
+### 3.6 Verify Both External Locations
 
 External Locations list should show:
 ```
-ext-loc-stadls   abfss://bronze@stadlsdev001.dfs.core.windows.net/   mi-stadls-credential
-ext-loc-stblob   abfss://files@stblobdev001.dfs.core.windows.net/    mi-stblob-credential
+ext-loc-stadls   abfss://bronze@stadlsdev001.dfs.core.windows.net/      mi-stadls-credential
+ext-loc-stblob   abfss://<container>@stblobdev001.dfs.core.windows.net/ mi-stblob-credential
 ```
 
 ---
