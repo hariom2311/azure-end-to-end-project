@@ -142,8 +142,11 @@ ADF will fail to evaluate the expression `@pipeline().parameters.environment` at
 | Cost | Pay only during the run | Cluster billed hourly even when idle |
 | Isolation | Each run is isolated | Shared — multiple jobs compete for resources |
 | Recommended for | Production scheduled jobs | Development / fast iteration |
+| Auth methods that offer it | System-assigned MI, User-assigned MI | ALL methods (including Access token) |
 
-**New job cluster is recommended for production** because: isolated execution, controlled cost (pay per run), cluster terminates after the job, no resource contention with other notebooks.
+**Critical UI difference:** When you select **Access token** as the authentication method in the ADF Linked Service form, the **"New job cluster"** option does NOT appear. The form shows only **"Existing cluster ID"** — you must paste the ID of a cluster that is already running. The new job cluster option appears only when managed identity authentication is selected.
+
+**New job cluster is recommended for production** because: isolated execution, controlled cost (pay per run), cluster terminates after the job, no resource contention. Use managed identity auth (not access token) to unlock this option.
 
 ---
 
