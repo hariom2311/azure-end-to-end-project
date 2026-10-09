@@ -15,15 +15,6 @@
 
 When you add a Databricks Notebook Activity to an ADF pipeline, ADF needs a **Linked Service** that tells it how to reach the Databricks workspace and how to authenticate.
 
-> **Important — two Databricks connectors exist in ADF:**
->
-> | Connector | Use for |
-> |---|---|
-> | **Azure Databricks** | ✅ Running notebooks, triggering jobs — use this for Day 7 |
-> | **Azure Databricks Delta Lake** | ❌ Reading/writing Delta tables as Copy Activity source/sink only — NOT for notebooks |
->
-> When you search "Databricks" in the New Linked Service form, you will see both. Always pick **Azure Databricks**.
-
 ```
 Azure Data Factory (adf-ev-dev)
   └── Pipeline
@@ -34,7 +25,7 @@ Azure Data Factory (adf-ev-dev)
               │           ├── Option 2: System-assigned managed identity
               │           └── Option 3: User-assigned managed identity
               ├── Notebook path   ← path inside Databricks workspace
-              ├── Cluster config  ← Existing cluster ID (running cluster required)
+              ├── Cluster config  ← New job cluster (auto-provisioned per run)
               └── Base parameters ← key-value pairs passed to notebook as widgets
 ```
 
@@ -42,11 +33,13 @@ Azure Data Factory (adf-ev-dev)
 
 | Method | Best for | Requires |
 |---|---|---|
-| Access token | Quick setup, dev/testing | PAT token from Databricks + a running cluster ID |
+| Access token | Quick setup, dev/testing | PAT token from Databricks |
 | System-assigned managed identity | Production, no secrets to rotate | ADF identity granted Contributor role on Databricks workspace |
 | User-assigned managed identity | Multi-resource reuse, org-wide identity | Custom managed identity assigned to ADF, granted Contributor |
 
-> **Cluster option — all three methods:** The ADF Linked Service form shows **"Existing cluster ID"** for every authentication method. There is no "New job cluster" option in this form. You must always provide the ID of a cluster that is already running in the workspace.
+> **Cluster:** All three methods support **New job cluster** — ADF auto-provisions a fresh cluster per run and terminates it after. This is the recommended production setup. No existing running cluster is required.
+
+> **Finding the Linked Service in ADF:** In the New Linked Service search, type `Databricks` and look under the **Compute** category. Select **Azure Databricks** from there. This is the correct connector for running notebooks.
 
 ---
 
@@ -167,14 +160,7 @@ The token looks like: `dapi<32-character-hex-string>`
 4. Under **Connections** → click **Linked services**
 5. Click **+ New**
 6. In the search box type `Databricks`
-7. The search shows multiple results — pick carefully:
-
-   | Name in list | Use? |
-   |---|---|
-   | **Azure Databricks** | ✅ YES — this is the correct one for running notebooks |
-   | Azure Databricks Delta Lake | ❌ NO — this is for reading Delta tables as a dataset source/sink only |
-
-   Select **Azure Databricks** → click **Continue**
+7. Look under the **Compute** category in the results — select **Azure Databricks** → click **Continue**
 
 Fill in the form:
 
@@ -189,15 +175,13 @@ ls_databricks_pat
 **Authentication method:**
 - Select `Access token` from the dropdown
 
-> The form layout changes based on the authentication method you pick. With Access token selected, you will NOT see a "New job cluster" option. The form shows **"Existing cluster ID"** — you must use a cluster that is already running.
-
 **Account selection method:**
 - Click `From Azure subscription`
 
 | Field | Value |
 |---|---|
 | Azure subscription | select `81dd57e1-876a-4fcc-8778-e06f68c13228` (DataEngineeringDaily) |
-| Databricks workspace | select `ev-project-workspace` (the workspace linked to `dbw-ev-dev`) |
+| Databricks workspace | select `ev-project-workspace` |
 
 After selecting the workspace, the form auto-fills:
 - **Databricks Workspace URL** — shown read-only (e.g. `https://adb-7405612713187126.6.azuredatabricks.net`)
@@ -209,28 +193,23 @@ Two sub-options appear side by side:
 | Option | When to use |
 |---|---|
 | **Access token** (tab) | Paste the PAT token directly into the form |
-| **Azure Key Vault** (tab) | Reference the token stored as a Key Vault secret — do NOT paste it here |
+| **Azure Key Vault** (tab) | Reference the token stored as a Key Vault secret |
 
-For now, click the **Access token** tab and paste your PAT token in the field.
+Click the **Access token** tab and paste your PAT token in the field.
 
-**Existing cluster ID:**
+**Select cluster:**
+- Select `New job cluster`
 
-This field is required when using Access token. ADF will attach the notebook job to this already-running cluster.
-
-To find your cluster ID:
-1. Databricks workspace → left sidebar → **Compute**
-2. Click your all-purpose cluster (e.g. `dev-cluster`)
-3. Look at the browser URL: `.../#setting/clusters/<cluster-id>`
-4. Copy the cluster ID (looks like: `0923-142301-abc12345`)
-5. Paste it into the **Existing cluster ID** field in ADF
+ADF auto-provisions a fresh cluster each time the pipeline runs and terminates it after the notebook finishes. No pre-existing running cluster is needed.
 
 | Field | Value |
 |---|---|
-| Existing cluster ID | paste your cluster ID from step above |
+| Databricks runtime version | `15.4 LTS (Scala 2.12, Spark 3.5.0)` |
+| Worker node type | `Standard_D4s_v3` |
+| Driver node type | `Standard_D4s_v3` |
+| Workers | `1` |
 
-8. Click **Test connection**
-   - Wait for: `Connection successful`
-   - If it fails: check the token, check the cluster ID, make sure the cluster is running
+8. Click **Test connection** → wait for `Connection successful`
 9. Click **Apply**
 
 ---
@@ -264,31 +243,30 @@ The Object ID shown on the form is: `3d986697-f629-478e-a50b-f77716732feb`
 
 ### 4.3 Grant ADF Identity Access to Databricks Workspace
 
-The Databricks workspace IAM **does not have any AzureDatabricks role** in the Azure Portal role assignment UI — searching "AzureDatabricks" or "Contributor" on the Databricks workspace resource returns no results. Azure Portal IAM is not the way to do this.
+Grant the ADF system-assigned managed identity the **Contributor** role on the Databricks workspace resource via Azure Portal IAM:
 
-The correct approach is to add the ADF managed identity as a **Service Principal** directly inside the Databricks workspace UI:
+1. Azure Portal → search `ev-project-workspace` → click the Databricks workspace resource
+2. Left menu → **Access control (IAM)**
+3. Click **+ Add** → **Add role assignment**
+4. **Role tab:**
+   - Click **Job function roles** tab
+   - Search `Contributor`
+   - Select **Contributor** → click **Next**
+5. **Members tab:**
+   - **Assign access to:** `Managed identity`
+   - Click **+ Select members**
+   - **Subscription:** select your subscription
+   - **Managed identity:** `Data factory (V2)`
+   - From the list, select `adf-ev-dev`
+   - Click **Select**
+6. Click **Review + assign** → **Review + assign** again
 
-1. Databricks workspace → bottom-left corner → click **Settings** (gear icon)
-2. In Settings → click **Identity and access**
-3. Click the **Service principals** tab
-4. Click **+ Add service principal**
-5. In the search box, paste the ADF managed identity **Object ID**
-
-   The Object ID is shown on the ADF Linked Service form itself (read-only field: **Managed identity object ID**):
-   ```
-   3d986697-f629-478e-a50b-f77716732feb
-   ```
-6. Select it from the search results → click **Add**
-7. The service principal is now listed — it has **Can use** permission on the workspace by default
-
-This makes ADF's managed identity a recognized principal inside Databricks. It can now attach to clusters and submit notebook runs.
-
-> **Why not Azure Portal IAM?** Databricks workspace access is managed inside Databricks itself (Identity and access), not through standard Azure RBAC roles. The Portal IAM on the Databricks resource only controls Azure-level operations (delete workspace, view billing) — not who can log in and run notebooks.
+Wait 1–2 minutes for the role assignment to propagate before clicking Test connection.
 
 ### 4.4 Create the Linked Service — System-Assigned Managed Identity
 
 1. ADF Studio → **Manage** → **Linked services** → **+ New**
-2. Search `Databricks` → select **Azure Databricks** (NOT Azure Databricks Delta Lake) → **Continue**
+2. Search `Databricks` → under the **Compute** category, select **Azure Databricks** → **Continue**
 
 Fill in the form:
 
@@ -314,39 +292,22 @@ After selecting the workspace, the form auto-fills three read-only fields:
 |---|---|
 | **Databricks Workspace URL** | `https://adb-7405612713187126.6.azuredatabricks.net` |
 | **Managed identity name** | `adf-datalake-dev-ded` (ADF's own system-assigned identity name) |
-| **Managed identity object ID** | `3d986697-f629-478e-a50b-f77716732feb` (use this when granting IAM access) |
+| **Managed identity object ID** | `3d986697-f629-478e-a50b-f77716732feb` (same value used in Step 4.3 IAM) |
 
-There is also a note on the form:
-> *Grant Data Factory service managed identity access to your Azure Databricks Delta Lake.*
+> The form also shows a reminder: *"Grant Data Factory service managed identity access to your Azure Databricks Delta Lake."* This is just Microsoft's internal label — you have already done this in Step 4.3 via Contributor role.
 
-> **Note:** The form says "Delta Lake" in this message but you are using the **Azure Databricks** linked service (not Delta Lake). This wording is just how Microsoft labels it internally — ignore it. The setup steps in 4.3 are correct regardless.
-
-This is the reminder to complete Step 4.3. The form shows you the managed identity name and object ID so you can copy them directly into the IAM role assignment or Databricks service principal search — no need to look them up separately. Complete Step 4.3 first, wait 1–2 minutes, then click Test connection.
-
-**Workspace resource ID:**
-
-This field is auto-filled after you select the workspace:
-```
-/subscriptions/81dd57e1-876a-4fcc-8778-e06f68c13228/resourceGroups/data-engineeri...
-```
-You do not need to edit it.
-
-**Existing cluster ID:**
-
-Paste the ID of a running cluster in your workspace.
-
-To find the cluster ID:
-1. Databricks workspace → left sidebar → **Compute**
-2. Click your all-purpose cluster
-3. Look at the browser URL: `.../#setting/clusters/<cluster-id>`
-4. Copy the cluster ID and paste it here
+**Select cluster:**
+- Select `New job cluster`
 
 | Field | Value |
 |---|---|
-| Existing cluster ID | paste your cluster ID |
+| Databricks runtime version | `15.4 LTS (Scala 2.12, Spark 3.5.0)` |
+| Worker node type | `Standard_D4s_v3` |
+| Driver node type | `Standard_D4s_v3` |
+| Workers | `1` |
 
 3. Click **Test connection** → wait for `Connection successful`
-   - If it fails with `403`: the IAM role assignment (Step 4.3) has not propagated yet — wait 2 minutes and try again
+   - If it fails with `403`: the Contributor role from Step 4.3 has not propagated yet — wait 2 minutes and retry
 4. Click **Apply**
 
 ---
@@ -392,21 +353,25 @@ ADF can now use this identity when making requests.
 
 ### 5.4 Grant the User-Assigned Identity Access to Databricks Workspace
 
-Same approach as Part 4.3 — add the identity as a Service Principal inside Databricks (Azure Portal IAM has no usable Databricks role):
+Grant the user-assigned managed identity the **Contributor** role on the Databricks workspace resource — same approach as Part 4.3:
 
-1. First find the **Object ID** of the user-assigned managed identity:
-   - Azure Portal → search `mi-adf-databricks` → click it → copy the **Object ID** from the Overview page
-2. Databricks workspace → bottom-left → **Settings** (gear icon)
-3. Click **Identity and access**
-4. Click **Service principals** tab → **+ Add service principal**
-5. Paste the Object ID of `mi-adf-databricks` in the search box
-6. Select it from results → click **Add**
-7. It now has **Can use** permission on the workspace by default
+1. Azure Portal → search `ev-project-workspace` → click the Databricks workspace resource
+2. Left menu → **Access control (IAM)**
+3. Click **+ Add** → **Add role assignment**
+4. **Role tab:** search `Contributor` → select **Contributor** → click **Next**
+5. **Members tab:**
+   - **Assign access to:** `Managed identity`
+   - Click **+ Select members**
+   - **Managed identity:** `User-assigned managed identity`
+   - Select `mi-adf-databricks` → click **Select**
+6. Click **Review + assign** → **Review + assign** again
+
+Wait 1–2 minutes for the role assignment to propagate.
 
 ### 5.5 Create the Linked Service — User-Assigned Managed Identity
 
 1. ADF Studio → **Manage** → **Linked services** → **+ New**
-2. Search `Databricks` → select **Azure Databricks** (NOT Azure Databricks Delta Lake) → **Continue**
+2. Search `Databricks` → under the **Compute** category, select **Azure Databricks** → **Continue**
 
 Fill in the form:
 
@@ -424,43 +389,44 @@ ls_databricks_user_mi
 | Field | Value |
 |---|---|
 | Azure subscription | `81dd57e1-876a-4fcc-8778-e06f68c13228` |
-| Databricks workspace | select your workspace (or leave blank and fill Workspace resource ID manually) |
-
-> **Note:** Unlike system-assigned MI, the user-assigned MI form does not auto-fill the Databricks Workspace URL. You must provide the **Workspace resource ID** manually (see below).
+| Databricks workspace | select `ev-project-workspace` |
 
 **Credentials:**
 
-This field links the ADF form to your user-assigned managed identity. A Credential object in ADF wraps the identity. If you do not have one yet:
+A Credential object in ADF wraps the user-assigned managed identity. If you do not have one yet:
 1. Click **+ New** next to the Credentials dropdown
 2. **Name:** `cred-mi-adf-databricks`
 3. **Type:** `User-assigned managed identity`
-4. **Managed identity resource:** select `mi-adf-databricks` from the dropdown
+4. **Managed identity resource:** select `mi-adf-databricks`
 5. Click **Create**
 
 Then select `cred-mi-adf-databricks` from the Credentials dropdown.
 
 **Workspace resource ID:**
 
-This field is NOT auto-filled for user-assigned MI — you must paste it manually.
+This field is NOT auto-filled for user-assigned MI — paste it manually.
 
 To find it:
-1. Azure Portal → search `dbw-ev-dev` → click the Databricks workspace resource
+1. Azure Portal → search `ev-project-workspace` → click the Databricks workspace resource
 2. Left menu → **Properties**
-3. Copy the **Resource ID** — it looks like:
+3. Copy the **Resource ID**:
    ```
    /subscriptions/81dd57e1-876a-4fcc-8778-e06f68c13228/resourceGroups/data-engineering-daily-grp/providers/Microsoft.Databricks/workspaces/ev-project-workspace
    ```
-4. Paste it into the **Workspace resource ID** field in ADF
+4. Paste it into the **Workspace resource ID** field
 
-**Existing cluster ID:**
+**Select cluster:**
+- Select `New job cluster`
 
-Paste the ID of a running cluster (same as other methods):
-1. Databricks workspace → **Compute** → click your cluster
-2. Copy the cluster ID from the browser URL
-3. Paste into **Existing cluster ID**
+| Field | Value |
+|---|---|
+| Databricks runtime version | `15.4 LTS (Scala 2.12, Spark 3.5.0)` |
+| Worker node type | `Standard_D4s_v3` |
+| Driver node type | `Standard_D4s_v3` |
+| Workers | `1` |
 
 3. Click **Test connection** → wait for `Connection successful`
-   - If it fails: check the Credential is linked to the correct managed identity, and that the identity has been added as a Service Principal inside Databricks (Step 5.4)
+   - If it fails with `403`: Contributor role from Step 5.4 has not propagated yet — wait 2 minutes and retry
 4. Click **Apply**
 
 ---
@@ -639,44 +605,34 @@ Fill in:
 
 ---
 
-## Part 10: Cluster — Existing Cluster ID
+## Part 10: New Job Cluster vs Existing Cluster
 
-All three authentication methods in the ADF Linked Service form require an **Existing cluster ID**. There is no "New job cluster" option in the UI. Every ADF Databricks Linked Service must point to a cluster that is already running in your workspace.
+All three auth methods support both cluster options. **New job cluster** is recommended for production.
 
-```
-All auth methods → Existing cluster ID (required)
-  ├── The cluster must be running when ADF triggers the pipeline
-  ├── If the cluster is terminated, the pipeline fails at the notebook activity
-  └── Cluster type can be: All-purpose (multi-user) or Job cluster (single-run)
-```
+| Option | What happens | Startup time | Cost |
+|---|---|---|---|
+| **New job cluster** | ADF creates a fresh cluster per run, terminates after | 3–5 minutes | Pay only during the run |
+| Existing interactive cluster | ADF attaches to a cluster already running | ~10 seconds | Cluster billed hourly even when idle |
 
-### How to Find Your Cluster ID
+### New Job Cluster — How it Works
 
-1. Databricks workspace → left sidebar → **Compute**
-2. Click your cluster
-3. Look at the browser URL: `.../#setting/clusters/<cluster-id>`
-4. The cluster ID looks like: `0923-142301-abc12345`
-5. Copy it and paste into the **Existing cluster ID** field in ADF
+When you select `New job cluster` in the Linked Service form:
+- ADF provisions a cluster automatically when the pipeline runs
+- The notebook executes on that cluster
+- ADF terminates the cluster when the notebook finishes
+- No manual cluster management needed
 
-### Keeping the Cluster Available for ADF
+### Cluster Access Mode for New Job Cluster
 
-| Approach | How |
-|---|---|
-| All-purpose cluster always on | Set cluster to never auto-terminate (Compute → Edit → Auto termination = 0 min). Billed while running even if idle. |
-| Auto-terminate but restart before pipeline | Manually start the cluster in Databricks before the ADF trigger fires. Not reliable for automated schedules. |
-| Databricks Jobs cluster (recommended) | Create a Databricks Job (not ADF) that runs the notebook on a job cluster. ADF triggers the Job via REST API using a Web Activity — cluster lifecycle is managed by Databricks. |
+The new job cluster ADF creates uses **Single User** access mode by default. This is fine — the cluster is dedicated to that one run and terminated after.
 
-### Cluster Access Mode for ADF
-
-When ADF runs as an identity (managed identity or PAT user), the cluster access mode matters:
+For an existing cluster used by multiple ADF runs or users:
 
 | Access Mode | Works with ADF? | Notes |
 |---|---|---|
-| Single User | Yes — if cluster is assigned to the ADF identity | ADF's identity must match the cluster's assigned user |
-| Shared | Yes — multiple identities can use it | Recommended for ADF — no single-user restriction |
+| Single User | Yes — if assigned to the ADF identity | ADF's identity must match the cluster's assigned user |
+| Shared | Yes — any identity can use it | Best for shared/team clusters |
 | No isolation shared | Yes (legacy) | Avoid — no Unity Catalog support |
-
-**Recommended:** Create a **Shared** access mode all-purpose cluster. Any identity (PAT user, managed identity) can attach to it.
 
 ---
 
@@ -743,14 +699,20 @@ dbutils.notebook.exit("value")   Sends a string result back to ADF
 runOutput                        The value from dbutils.notebook.exit(), found
                                  in activity Output JSON → key "runOutput"
 
-Existing cluster ID              The only cluster option in the ADF Databricks
-                                 Linked Service form — all three auth methods
-                                 require a running cluster ID (no new job cluster
-                                 option in the UI)
+New job cluster                  ADF auto-provisions a cluster per run (3–5 min
+                                 startup), terminates it after — all three auth
+                                 methods support this option; recommended for prod
+
+Existing interactive cluster     ADF attaches to an already-running cluster;
+                                 near-instant start but billed even when idle
 
 Workspace resource ID            Azure resource ID of the Databricks workspace —
                                  required field for user-assigned MI auth;
                                  auto-filled for system-assigned MI and access token
+
+Azure Databricks (Compute)       The correct ADF Linked Service connector for
+                                 running notebooks — found under Compute category
+                                 in the New Linked Service search
 
 @pipeline().Pipeline             ADF dynamic expression → current pipeline name
 @pipeline().RunId                ADF dynamic expression → current run's GUID
