@@ -248,51 +248,26 @@ The Object ID shown on the form is: `3d986697-f629-478e-a50b-f77716732feb`
 
 ### 4.3 Grant ADF Identity Access to Databricks Workspace
 
-The Databricks workspace IAM does **not** have a plain "Contributor" role in the dropdown. The role you need is:
+The Databricks workspace IAM **does not have any AzureDatabricks role** in the Azure Portal role assignment UI — searching "AzureDatabricks" or "Contributor" on the Databricks workspace resource returns no results. Azure Portal IAM is not the way to do this.
 
-```
-AzureDatabricks — Can use workspace
-```
+The correct approach is to add the ADF managed identity as a **Service Principal** directly inside the Databricks workspace UI:
 
-If you cannot find that role either, there are **two options**:
+1. Databricks workspace → bottom-left corner → click **Settings** (gear icon)
+2. In Settings → click **Identity and access**
+3. Click the **Service principals** tab
+4. Click **+ Add service principal**
+5. In the search box, paste the ADF managed identity **Object ID**
 
----
+   The Object ID is shown on the ADF Linked Service form itself (read-only field: **Managed identity object ID**):
+   ```
+   3d986697-f629-478e-a50b-f77716732feb
+   ```
+6. Select it from the search results → click **Add**
+7. The service principal is now listed — it has **Can use** permission on the workspace by default
 
-**Option A — Azure Portal IAM (look for the correct role name)**
+This makes ADF's managed identity a recognized principal inside Databricks. It can now attach to clusters and submit notebook runs.
 
-1. Azure Portal → search `ev-project-workspace` (the Databricks resource) → click it
-2. Left menu → **Access control (IAM)**
-3. Click **+ Add** → **Add role assignment**
-4. **Role tab** → search for `AzureDatabricks`
-   - You should see: **AzureDatabricks — Can use workspace**
-   - Select it → click **Next**
-5. **Members tab:**
-   - **Assign access to:** `Managed identity`
-   - Click **+ Select members**
-   - **Managed identity:** `Data factory (V2)`
-   - Select `adf-ev-dev` → click **Select**
-6. Click **Review + assign** → **Review + assign**
-
-> If `AzureDatabricks — Can use workspace` does not appear, try searching `Databricks` or `workspace`. This role name varies slightly by Azure region/tenant.
-
----
-
-**Option B — Add ADF identity as a Databricks workspace user (more reliable)**
-
-This is what the main project uses in practice. Instead of Azure IAM roles, add the ADF managed identity directly as a user inside Databricks:
-
-1. Databricks workspace → left sidebar → **Settings** (gear icon)
-2. Click **Identity and access**
-3. Click **Service principals** tab → **+ Add service principal**
-4. In the search box, paste the ADF managed identity **Object ID**: `3d986697-f629-478e-a50b-f77716732feb`
-5. Select it from the results → click **Add**
-6. Grant it at minimum: **Can use** permission on the workspace
-
-This makes ADF's identity a recognized principal inside Databricks — it can attach to clusters and run notebooks.
-
----
-
-Wait 1–2 minutes after either option before clicking Test connection.
+> **Why not Azure Portal IAM?** Databricks workspace access is managed inside Databricks itself (Identity and access), not through standard Azure RBAC roles. The Portal IAM on the Databricks resource only controls Azure-level operations (delete workspace, view billing) — not who can log in and run notebooks.
 
 ### 4.4 Create the Linked Service — System-Assigned Managed Identity
 
