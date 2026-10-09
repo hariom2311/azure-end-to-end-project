@@ -234,34 +234,65 @@ Azure Data Factory (adf-ev-dev)
         └── Cannot be shared with other resources
 ```
 
-ADF's identity needs the `Contributor` role (or `AzureDatabricks > Can use workspace`) on the Databricks workspace resource.
+ADF's managed identity needs permission to access the Databricks workspace. There are **two things** required — an Azure IAM role AND a Databricks workspace-level permission.
 
 ### 4.2 Find ADF's Managed Identity Object ID
 
+The form auto-fills this after you select the workspace (visible as **Managed identity object ID** on the form). But you can also find it here:
+
 1. Azure Portal → search `adf-ev-dev` → click it
-2. Left menu → **Properties** (under Settings section)
-3. Find **Managed Identity** section
-4. Copy the **Object ID** — you need it in the next step
+2. Left menu → **Properties** (under Settings)
+3. Find **Managed Identity** section → copy the **Object ID**
+
+The Object ID shown on the form is: `3d986697-f629-478e-a50b-f77716732feb`
 
 ### 4.3 Grant ADF Identity Access to Databricks Workspace
 
-1. Azure Portal → search `dbw-ev-dev` → click it
+The Databricks workspace IAM does **not** have a plain "Contributor" role in the dropdown. The role you need is:
+
+```
+AzureDatabricks — Can use workspace
+```
+
+If you cannot find that role either, there are **two options**:
+
+---
+
+**Option A — Azure Portal IAM (look for the correct role name)**
+
+1. Azure Portal → search `ev-project-workspace` (the Databricks resource) → click it
 2. Left menu → **Access control (IAM)**
 3. Click **+ Add** → **Add role assignment**
-4. **Role tab:**
-   - Search for `Contributor`
-   - Select **Contributor**
-   - Click **Next**
+4. **Role tab** → search for `AzureDatabricks`
+   - You should see: **AzureDatabricks — Can use workspace**
+   - Select it → click **Next**
 5. **Members tab:**
    - **Assign access to:** `Managed identity`
    - Click **+ Select members**
-   - **Subscription:** select your subscription
    - **Managed identity:** `Data factory (V2)`
-   - From the list, select `adf-ev-dev`
-   - Click **Select**
-6. Click **Review + assign** → **Review + assign** again
+   - Select `adf-ev-dev` → click **Select**
+6. Click **Review + assign** → **Review + assign**
 
-Wait 1–2 minutes for the role assignment to propagate.
+> If `AzureDatabricks — Can use workspace` does not appear, try searching `Databricks` or `workspace`. This role name varies slightly by Azure region/tenant.
+
+---
+
+**Option B — Add ADF identity as a Databricks workspace user (more reliable)**
+
+This is what the main project uses in practice. Instead of Azure IAM roles, add the ADF managed identity directly as a user inside Databricks:
+
+1. Databricks workspace → left sidebar → **Settings** (gear icon)
+2. Click **Identity and access**
+3. Click **Service principals** tab → **+ Add service principal**
+4. In the search box, paste the ADF managed identity **Object ID**: `3d986697-f629-478e-a50b-f77716732feb`
+5. Select it from the results → click **Add**
+6. Grant it at minimum: **Can use** permission on the workspace
+
+This makes ADF's identity a recognized principal inside Databricks — it can attach to clusters and run notebooks.
+
+---
+
+Wait 1–2 minutes after either option before clicking Test connection.
 
 ### 4.4 Create the Linked Service — System-Assigned Managed Identity
 
@@ -297,7 +328,7 @@ After selecting the workspace, the form auto-fills three read-only fields:
 There is also a note on the form:
 > *Grant Data Factory service managed identity access to your Azure Databricks Delta Lake.*
 
-This is the reminder to complete Step 4.3 (IAM role assignment). If you haven't done it yet, the Test connection will fail.
+This is the reminder to complete Step 4.3. The form shows you the managed identity name and object ID so you can copy them directly into the IAM role assignment or Databricks service principal search — no need to look them up separately. Complete Step 4.3 first, wait 1–2 minutes, then click Test connection.
 
 **Workspace resource ID:**
 
