@@ -122,11 +122,31 @@ This is the simplest method. You generate a Personal Access Token (PAT) in Datab
 3. In the left menu, click **Developer**
 4. Click **Access tokens**
 5. Click **Generate new token**
-6. Fill in the form:
-   - **Comment:** `adf-linked-service`
-   - **Lifetime (days):** `90`
-7. Click **Generate**
-8. **Copy the token immediately** — it is shown only once. If you close this dialog without copying, you must generate a new one.
+
+The **Generate new token** dialog appears with two sections:
+
+**Scope checkboxes** (select which APIs this token can call):
+
+The form shows a scrollable list of scopes. For ADF to trigger notebooks and attach to a cluster, check these scopes:
+
+| Scope | Why needed |
+|---|---|
+| `clusters` | ADF attaches to the existing cluster |
+| `jobs` | ADF submits the notebook as a job run |
+| `command-execution` | ADF executes commands on the cluster |
+
+> **Simplest option for dev/testing:** check **`all APIs (not recommended)`** — the token can call everything. This is marked "not recommended" because it grants full access; use specific scopes in production.
+
+**Comment field** (text box at the bottom of the dialog):
+
+| Field | Value |
+|---|---|
+| Comment | `adf-linked-service` |
+
+> There is no "Lifetime (days)" field visible in the current UI — the token does not expire unless your workspace admin has configured a maximum lifetime policy.
+
+6. After selecting scopes and entering a comment, click **Generate**
+7. **Copy the token immediately** — it is shown only once. If you close this dialog without copying, you must generate a new one.
 
 The token looks like: `dapi<32-character-hex-string>`
 
