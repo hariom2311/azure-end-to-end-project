@@ -15,6 +15,15 @@
 
 When you add a Databricks Notebook Activity to an ADF pipeline, ADF needs a **Linked Service** that tells it how to reach the Databricks workspace and how to authenticate.
 
+> **Important — two Databricks connectors exist in ADF:**
+>
+> | Connector | Use for |
+> |---|---|
+> | **Azure Databricks** | ✅ Running notebooks, triggering jobs — use this for Day 7 |
+> | **Azure Databricks Delta Lake** | ❌ Reading/writing Delta tables as Copy Activity source/sink only — NOT for notebooks |
+>
+> When you search "Databricks" in the New Linked Service form, you will see both. Always pick **Azure Databricks**.
+
 ```
 Azure Data Factory (adf-ev-dev)
   └── Pipeline
@@ -158,7 +167,14 @@ The token looks like: `dapi<32-character-hex-string>`
 4. Under **Connections** → click **Linked services**
 5. Click **+ New**
 6. In the search box type `Databricks`
-7. Select **Azure Databricks** → click **Continue**
+7. The search shows multiple results — pick carefully:
+
+   | Name in list | Use? |
+   |---|---|
+   | **Azure Databricks** | ✅ YES — this is the correct one for running notebooks |
+   | Azure Databricks Delta Lake | ❌ NO — this is for reading Delta tables as a dataset source/sink only |
+
+   Select **Azure Databricks** → click **Continue**
 
 Fill in the form:
 
@@ -272,7 +288,7 @@ This makes ADF's managed identity a recognized principal inside Databricks. It c
 ### 4.4 Create the Linked Service — System-Assigned Managed Identity
 
 1. ADF Studio → **Manage** → **Linked services** → **+ New**
-2. Search `Databricks` → select **Azure Databricks** → **Continue**
+2. Search `Databricks` → select **Azure Databricks** (NOT Azure Databricks Delta Lake) → **Continue**
 
 Fill in the form:
 
@@ -302,6 +318,8 @@ After selecting the workspace, the form auto-fills three read-only fields:
 
 There is also a note on the form:
 > *Grant Data Factory service managed identity access to your Azure Databricks Delta Lake.*
+
+> **Note:** The form says "Delta Lake" in this message but you are using the **Azure Databricks** linked service (not Delta Lake). This wording is just how Microsoft labels it internally — ignore it. The setup steps in 4.3 are correct regardless.
 
 This is the reminder to complete Step 4.3. The form shows you the managed identity name and object ID so you can copy them directly into the IAM role assignment or Databricks service principal search — no need to look them up separately. Complete Step 4.3 first, wait 1–2 minutes, then click Test connection.
 
@@ -374,22 +392,21 @@ ADF can now use this identity when making requests.
 
 ### 5.4 Grant the User-Assigned Identity Access to Databricks Workspace
 
-1. Azure Portal → search `dbw-ev-dev` → click it
-2. Left menu → **Access control (IAM)**
-3. Click **+ Add** → **Add role assignment**
-4. **Role tab:** select `Contributor` → **Next**
-5. **Members tab:**
-   - **Assign access to:** `Managed identity`
-   - Click **+ Select members**
-   - **Managed identity:** `User-assigned managed identity`
-   - Select `mi-adf-databricks`
-   - Click **Select**
-6. Click **Review + assign** → **Review + assign**
+Same approach as Part 4.3 — add the identity as a Service Principal inside Databricks (Azure Portal IAM has no usable Databricks role):
+
+1. First find the **Object ID** of the user-assigned managed identity:
+   - Azure Portal → search `mi-adf-databricks` → click it → copy the **Object ID** from the Overview page
+2. Databricks workspace → bottom-left → **Settings** (gear icon)
+3. Click **Identity and access**
+4. Click **Service principals** tab → **+ Add service principal**
+5. Paste the Object ID of `mi-adf-databricks` in the search box
+6. Select it from results → click **Add**
+7. It now has **Can use** permission on the workspace by default
 
 ### 5.5 Create the Linked Service — User-Assigned Managed Identity
 
 1. ADF Studio → **Manage** → **Linked services** → **+ New**
-2. Search `Databricks` → select **Azure Databricks** → **Continue**
+2. Search `Databricks` → select **Azure Databricks** (NOT Azure Databricks Delta Lake) → **Continue**
 
 Fill in the form:
 
@@ -443,7 +460,7 @@ Paste the ID of a running cluster (same as other methods):
 3. Paste into **Existing cluster ID**
 
 3. Click **Test connection** → wait for `Connection successful`
-   - If it fails: check the Credential is linked to the correct managed identity, and that the identity has Contributor role on the workspace
+   - If it fails: check the Credential is linked to the correct managed identity, and that the identity has been added as a Service Principal inside Databricks (Step 5.4)
 4. Click **Apply**
 
 ---
