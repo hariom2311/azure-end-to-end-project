@@ -135,32 +135,30 @@ ADF will fail to evaluate the expression `@pipeline().parameters.environment` at
 ## Cluster Configuration
 
 **A17**
+The ADF Databricks Linked Service form shows **only "Existing cluster ID"** for all three authentication methods — Access token, System-assigned managed identity, and User-assigned managed identity. There is no "New job cluster" option in the current ADF UI. You must always provide the ID of a cluster that is already running in the workspace.
 
-| | New job cluster | Existing interactive cluster |
-|---|---|---|
-| Startup time | 3–5 minutes per run | ~10 seconds (cluster already running) |
-| Cost | Pay only during the run | Cluster billed hourly even when idle |
-| Isolation | Each run is isolated | Shared — multiple jobs compete for resources |
-| Recommended for | Production scheduled jobs | Development / fast iteration |
-| Auth methods that offer it | System-assigned MI, User-assigned MI | ALL methods (including Access token) |
+| | Existing cluster (what ADF uses) |
+|---|---|
+| Startup time | Near-instant — cluster already running |
+| Cost | Cluster billed while running, even when idle |
+| Isolation | Shared — multiple ADF runs use the same cluster |
+| Cluster must be | Running when the ADF pipeline fires |
 
-**Critical UI difference:** When you select **Access token** as the authentication method in the ADF Linked Service form, the **"New job cluster"** option does NOT appear. The form shows only **"Existing cluster ID"** — you must paste the ID of a cluster that is already running. The new job cluster option appears only when managed identity authentication is selected.
-
-**New job cluster is recommended for production** because: isolated execution, controlled cost (pay per run), cluster terminates after the job, no resource contention. Use managed identity auth (not access token) to unlock this option.
+**Recommended setup:** Create a **Shared** access mode all-purpose cluster in Databricks. Set auto-termination to a reasonable idle window (e.g. 30 min). For scheduled ADF pipelines, ensure the cluster is running before the trigger fires — or disable auto-termination for that cluster.
 
 ---
 
 **A18**
-Running every 5 minutes with `New job cluster` means 5 minutes startup overhead for a cluster that might run a 30-second notebook. That is 5 minutes wasted per run. At 5-min intervals, the cluster is starting a new one before the previous run's cluster is even ready — 12 runs per hour × 5-min startup = effectively the cluster never has idle time, but you're paying for 12 full cluster lifetimes per hour.
+ADF always uses an existing cluster — so running every 5 minutes means 10 pipeline runs per hour all hitting the same cluster. The real problem is cluster resource contention: if the cluster is undersized and multiple runs overlap, they compete for executors. Also, a 5-minute schedule on a 30-second notebook means the cluster must stay running 24/7 to respond in time — high idle cost.
 
-**Fix option 1:** Use `Existing interactive cluster` — instant start, always on, amortize the cost.
-**Fix option 2:** Increase schedule interval to every 1 hour if near-real-time is not needed.
-**Fix option 3:** Redesign the pipeline — accumulate data and process in larger batches less frequently.
+**Fix option 1:** Increase schedule interval to every 1 hour if near-real-time is not required.
+**Fix option 2:** Rightsize the cluster — enable autoscaling so it handles burst runs without wasting resources at idle.
+**Fix option 3:** Redesign — use Databricks Auto Loader or Structured Streaming to process files continuously instead of polling with ADF every 5 minutes.
 
 ---
 
 **A19**
-All 10 ADF runs share the same cluster's memory and CPU. If the cluster is undersized, jobs compete for executors. Spark tasks queue up. Jobs that normally take 2 minutes might take 10–15 minutes because they are waiting for executor slots. There is also a risk of out-of-memory errors if 10 notebooks each load large datasets. For production, use `New job cluster` per ADF run for isolation, or use a `Shared` access mode cluster with proper autoscaling.
+All 10 ADF runs share the same cluster's memory and CPU. If the cluster is undersized, jobs compete for executors. Spark tasks queue up. Jobs that normally take 2 minutes might take 10–15 minutes because they are waiting for executor slots. There is also a risk of out-of-memory errors if 10 notebooks each load large datasets. Solution: enable **autoscaling** on the cluster (Compute → Edit → Enable autoscaling, set min/max workers), or use a **Shared** access mode cluster with session isolation so each notebook's memory is sandboxed.
 
 ---
 

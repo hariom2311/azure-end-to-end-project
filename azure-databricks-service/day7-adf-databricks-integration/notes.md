@@ -25,19 +25,19 @@ Azure Data Factory (adf-ev-dev)
               │           ├── Option 2: System-assigned managed identity
               │           └── Option 3: User-assigned managed identity
               ├── Notebook path   ← path inside Databricks workspace
-              ├── Cluster config  ← existing cluster or new job cluster
+              ├── Cluster config  ← Existing cluster ID (running cluster required)
               └── Base parameters ← key-value pairs passed to notebook as widgets
 ```
 
 **Which method to use:**
 
-| Method | Cluster option available | Best for | Requires |
-|---|---|---|---|
-| Access token | Existing cluster only | Quick setup, dev/testing | PAT token + a running cluster |
-| System-assigned managed identity | New job cluster OR existing | Production, no secrets | ADF identity granted Contributor on Databricks workspace |
-| User-assigned managed identity | New job cluster OR existing | Multi-resource reuse, org-wide | Custom managed identity assigned to ADF, granted Contributor |
+| Method | Best for | Requires |
+|---|---|---|
+| Access token | Quick setup, dev/testing | PAT token from Databricks + a running cluster ID |
+| System-assigned managed identity | Production, no secrets to rotate | ADF identity granted Contributor role on Databricks workspace |
+| User-assigned managed identity | Multi-resource reuse, org-wide identity | Custom managed identity assigned to ADF, granted Contributor |
 
-> **Important UI behaviour:** The ADF Linked Service form shows **"New job cluster"** only when authentication is set to a managed identity method. When **Access token** is selected, the form shows **"Existing cluster ID"** only — you must provide the ID of a cluster that is already running.
+> **Cluster option — all three methods:** The ADF Linked Service form shows **"Existing cluster ID"** for every authentication method. There is no "New job cluster" option in this form. You must always provide the ID of a cluster that is already running in the workspace.
 
 ---
 
@@ -258,35 +258,51 @@ ls_databricks_system_mi
 **Authentication method:**
 - Select `System-assigned managed identity`
 
-> No token or secret field appears. ADF authenticates using its own managed identity automatically.
-
 **Account selection method:**
 - `From Azure subscription`
 
 | Field | Value |
 |---|---|
-| Azure subscription | `81dd57e1-876a-4fcc-8778-e06f68c13228` |
+| Azure subscription | `81dd57e1-876a-4fcc-8778-e06f68c13228` (DataEngineeringDaily) |
 | Databricks workspace | select `ev-project-workspace` |
 
-**Select cluster:**
+After selecting the workspace, the form auto-fills three read-only fields:
 
-With managed identity, you now see TWO cluster options:
-
-| Option | What it does |
+| Read-only field | What it shows |
 |---|---|
-| **New job cluster** | ADF auto-provisions a fresh cluster per run, terminates after. 3–5 min startup. |
-| **Existing interactive cluster** | ADF reuses a cluster already running. Near-instant. |
+| **Databricks Workspace URL** | `https://adb-7405612713187126.6.azuredatabricks.net` |
+| **Managed identity name** | `adf-datalake-dev-ded` (ADF's own system-assigned identity name) |
+| **Managed identity object ID** | `3d986697-f629-478e-a50b-f77716732feb` (use this when granting IAM access) |
 
-Select `New job cluster` for production isolation:
+There is also a note on the form:
+> *Grant Data Factory service managed identity access to your Azure Databricks Delta Lake.*
+
+This is the reminder to complete Step 4.3 (IAM role assignment). If you haven't done it yet, the Test connection will fail.
+
+**Workspace resource ID:**
+
+This field is auto-filled after you select the workspace:
+```
+/subscriptions/81dd57e1-876a-4fcc-8778-e06f68c13228/resourceGroups/data-engineeri...
+```
+You do not need to edit it.
+
+**Existing cluster ID:**
+
+Paste the ID of a running cluster in your workspace.
+
+To find the cluster ID:
+1. Databricks workspace → left sidebar → **Compute**
+2. Click your all-purpose cluster
+3. Look at the browser URL: `.../#setting/clusters/<cluster-id>`
+4. Copy the cluster ID and paste it here
 
 | Field | Value |
 |---|---|
-| Databricks runtime version | `15.4 LTS (Scala 2.12, Spark 3.5.0)` |
-| Worker node type | `Standard_D4s_v3` |
-| Driver node type | `Standard_D4s_v3` |
-| Workers | `1` |
+| Existing cluster ID | paste your cluster ID |
 
 3. Click **Test connection** → wait for `Connection successful`
+   - If it fails with `403`: the IAM role assignment (Step 4.3) has not propagated yet — wait 2 minutes and try again
 4. Click **Apply**
 
 ---
@@ -365,31 +381,43 @@ ls_databricks_user_mi
 | Field | Value |
 |---|---|
 | Azure subscription | `81dd57e1-876a-4fcc-8778-e06f68c13228` |
-| Databricks workspace | select `ev-project-workspace` |
+| Databricks workspace | select your workspace (or leave blank and fill Workspace resource ID manually) |
 
-**Credential:**
+> **Note:** Unlike system-assigned MI, the user-assigned MI form does not auto-fill the Databricks Workspace URL. You must provide the **Workspace resource ID** manually (see below).
 
-A Credential object in ADF wraps the user-assigned managed identity. If you do not have one yet:
-1. Click **+ New** next to the Credential dropdown
-2. Name: `cred-mi-adf-databricks`
-3. **Managed identity resource:** select `mi-adf-databricks`
-4. Click **Create**
+**Credentials:**
 
-Then select `cred-mi-adf-databricks` from the Credential dropdown.
+This field links the ADF form to your user-assigned managed identity. A Credential object in ADF wraps the identity. If you do not have one yet:
+1. Click **+ New** next to the Credentials dropdown
+2. **Name:** `cred-mi-adf-databricks`
+3. **Type:** `User-assigned managed identity`
+4. **Managed identity resource:** select `mi-adf-databricks` from the dropdown
+5. Click **Create**
 
-**Select cluster:**
+Then select `cred-mi-adf-databricks` from the Credentials dropdown.
 
-Same as system-assigned MI — with managed identity you see BOTH cluster options:
+**Workspace resource ID:**
 
-Select `New job cluster`:
+This field is NOT auto-filled for user-assigned MI — you must paste it manually.
 
-| Field | Value |
-|---|---|
-| Databricks runtime version | `15.4 LTS (Scala 2.12, Spark 3.5.0)` |
-| Worker node type | `Standard_D4s_v3` |
-| Workers | `1` |
+To find it:
+1. Azure Portal → search `dbw-ev-dev` → click the Databricks workspace resource
+2. Left menu → **Properties**
+3. Copy the **Resource ID** — it looks like:
+   ```
+   /subscriptions/81dd57e1-876a-4fcc-8778-e06f68c13228/resourceGroups/data-engineering-daily-grp/providers/Microsoft.Databricks/workspaces/ev-project-workspace
+   ```
+4. Paste it into the **Workspace resource ID** field in ADF
+
+**Existing cluster ID:**
+
+Paste the ID of a running cluster (same as other methods):
+1. Databricks workspace → **Compute** → click your cluster
+2. Copy the cluster ID from the browser URL
+3. Paste into **Existing cluster ID**
 
 3. Click **Test connection** → wait for `Connection successful`
+   - If it fails: check the Credential is linked to the correct managed identity, and that the identity has Contributor role on the workspace
 4. Click **Apply**
 
 ---
@@ -568,55 +596,44 @@ Fill in:
 
 ---
 
-## Part 10: Cluster Options — What the UI Shows per Auth Method
+## Part 10: Cluster — Existing Cluster ID
 
-The cluster option available in the Linked Service form depends on which authentication method you chose. This is a key UI difference.
+All three authentication methods in the ADF Linked Service form require an **Existing cluster ID**. There is no "New job cluster" option in the UI. Every ADF Databricks Linked Service must point to a cluster that is already running in your workspace.
 
 ```
-Authentication method      Cluster options available in form
-─────────────────────────────────────────────────────────────
-Access token               Existing cluster ID only
-                           (must paste ID of a running cluster)
-
-System-assigned MI         New job cluster  ← recommended for production
-                           Existing interactive cluster
-
-User-assigned MI           New job cluster  ← recommended for production
-                           Existing interactive cluster
+All auth methods → Existing cluster ID (required)
+  ├── The cluster must be running when ADF triggers the pipeline
+  ├── If the cluster is terminated, the pipeline fails at the notebook activity
+  └── Cluster type can be: All-purpose (multi-user) or Job cluster (single-run)
 ```
 
-### Option A — Existing Cluster ID (only choice with Access token)
+### How to Find Your Cluster ID
 
-When using Access token, the form shows only **Existing cluster ID**.
-
-To find your cluster ID:
 1. Databricks workspace → left sidebar → **Compute**
-2. Click your all-purpose cluster
-3. Look at the browser URL bar: `.../#setting/clusters/<cluster-id>`
+2. Click your cluster
+3. Look at the browser URL: `.../#setting/clusters/<cluster-id>`
 4. The cluster ID looks like: `0923-142301-abc12345`
 5. Copy it and paste into the **Existing cluster ID** field in ADF
 
-The cluster must be **running** when ADF triggers the notebook — if it is terminated, the pipeline fails.
+### Keeping the Cluster Available for ADF
 
-### Option B — New Job Cluster (only with managed identity)
-
-ADF automatically creates a fresh cluster when the pipeline runs, runs the notebook, then terminates the cluster. Every run is isolated.
-
-| Aspect | Detail |
+| Approach | How |
 |---|---|
-| Startup overhead | 3–5 minutes before notebook starts |
-| Cost | Pay only for the duration of the run |
-| Isolation | Each run gets a clean cluster — no leftover state |
-| Recommended for | Production scheduled pipelines |
+| All-purpose cluster always on | Set cluster to never auto-terminate (Compute → Edit → Auto termination = 0 min). Billed while running even if idle. |
+| Auto-terminate but restart before pipeline | Manually start the cluster in Databricks before the ADF trigger fires. Not reliable for automated schedules. |
+| Databricks Jobs cluster (recommended) | Create a Databricks Job (not ADF) that runs the notebook on a job cluster. ADF triggers the Job via REST API using a Web Activity — cluster lifecycle is managed by Databricks. |
 
-### When to use which
+### Cluster Access Mode for ADF
 
-| Scenario | Use |
-|---|---|
-| Development, quick testing | Existing cluster (instant) + Access token or MI |
-| Production scheduled job | New job cluster + managed identity |
-| Team shares one cluster | Existing cluster + Shared access mode |
-| Need isolated runs per pipeline | New job cluster + managed identity |
+When ADF runs as an identity (managed identity or PAT user), the cluster access mode matters:
+
+| Access Mode | Works with ADF? | Notes |
+|---|---|---|
+| Single User | Yes — if cluster is assigned to the ADF identity | ADF's identity must match the cluster's assigned user |
+| Shared | Yes — multiple identities can use it | Recommended for ADF — no single-user restriction |
+| No isolation shared | Yes (legacy) | Avoid — no Unity Catalog support |
+
+**Recommended:** Create a **Shared** access mode all-purpose cluster. Any identity (PAT user, managed identity) can attach to it.
 
 ---
 
@@ -683,12 +700,14 @@ dbutils.notebook.exit("value")   Sends a string result back to ADF
 runOutput                        The value from dbutils.notebook.exit(), found
                                  in activity Output JSON → key "runOutput"
 
-New job cluster                  ADF auto-provisions a cluster per run (3–5 min
-                                 startup, terminated after) — available ONLY with
-                                 managed identity auth, not access token
+Existing cluster ID              The only cluster option in the ADF Databricks
+                                 Linked Service form — all three auth methods
+                                 require a running cluster ID (no new job cluster
+                                 option in the UI)
 
-Existing interactive cluster     ADF reuses a running cluster — available with
-                                 all auth methods; REQUIRED when using access token
+Workspace resource ID            Azure resource ID of the Databricks workspace —
+                                 required field for user-assigned MI auth;
+                                 auto-filled for system-assigned MI and access token
 
 @pipeline().Pipeline             ADF dynamic expression → current pipeline name
 @pipeline().RunId                ADF dynamic expression → current run's GUID
