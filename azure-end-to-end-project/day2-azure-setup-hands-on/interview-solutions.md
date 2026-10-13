@@ -1,280 +1,335 @@
-# Day 1 — Interview Solutions: Kickoff, Architecture, and Azure Setup
+# Day 2 — Interview Solutions: Azure Setup + ADF Bronze Ingestion
 
 ---
 
-## Azure Resources and Setup
+## Azure Resources and ADLS Gen2
 
 **A1**
-A Resource Group is a logical container inside an Azure subscription. It groups related resources — storage, Key Vault, Databricks, ADF — under one name. Reasons to keep one project in one Resource Group:
-- **Lifecycle management:** delete the group → all resources inside are deleted in one operation. No hunting for individual resources to clean up.
-- **Cost visibility:** Azure Cost Management can filter costs by Resource Group — instantly see what this project is spending.
-- **Access control:** you can assign RBAC roles at the group level — one assignment covers all resources inside.
-- **Region scope:** a Resource Group has a default region but resources inside can be in any region.
+Azure Blob Storage is a flat object store — "folders" are simulated with `/` in blob names, no real directory hierarchy. ADLS Gen2 is Blob Storage with **hierarchical namespace (HNS) enabled** — this creates true directories with atomic renames, per-directory ACLs, and better Spark performance.
+
+The single setting that converts a Blob Storage account to ADLS Gen2: **Enable hierarchical namespace = ON** (set at creation time, cannot be changed after). This project requires ADLS Gen2 because:
+- `abfss://` protocol (required for SP OAuth Spark access) only works with HNS-enabled accounts
+- Directory-level operations in Medallion Architecture (OPTIMIZE, VACUUM, MERGE) are faster with true hierarchical directories
+- Per-directory RBAC and POSIX ACLs are available for fine-grained access control
 
 ---
 
 **A2**
+Setting `allowSharedKeyAccess = false` on the storage account enforces that **all access must go through Azure Active Directory (RBAC)**. The storage account keys become non-functional — they still exist but requests authenticated with them are rejected with `SharedKeyDisabled`.
 
-| | Azure Blob Storage | ADLS Gen2 |
-|---|---|---|
-| Folder model | Flat — no real folder hierarchy | Hierarchical namespace (HNS) — real directories |
-| Protocol | `wasbs://` | `abfss://` |
-| Spark performance | Slower for analytics — simulate folders with `/` in names | Faster — directory operations are atomic, metadata efficient |
-| Required for | Simple object storage | Large-scale analytics, Databricks, Spark |
+If a developer runs:
+```bash
+az storage blob list --account-name evdatalakedev --account-key <key>
+```
+They will get: `AuthorizationFailure: This request is not authorized to perform this operation using this permission.`
 
-This project uses **ADLS Gen2** (`evdatalakedev`) for Bronze/Silver/Gold because Spark reads and writes perform better with a true hierarchical file system. `abfss://` is the correct protocol for ADLS Gen2. The instructor's shared storage (`dataenggdailystorage`) is plain Blob Storage — accessed via `wasbs://` + SAS token.
+The correct command uses `--auth-mode login` (Azure AD identity) or `--auth-mode key` is blocked. This is the modern standard — it removes the risk of account key leakage, which would give anyone full read/write/delete access to all containers with no audit trail.
 
 ---
 
 **A3**
-A resource provider is an Azure service namespace that must be registered to your subscription before you can create that type of resource. Example: if `Microsoft.KeyVault` is not registered and you try to create a Key Vault, you get:
+Without hierarchical namespace, the account is plain Blob Storage. When Databricks tries `abfss://bronze@evdatalakedev.dfs.core.windows.net/`, it connects via the ABFS (Azure Blob File System) connector which requires ADLS Gen2. The error will be something like:
 ```
-MissingSubscriptionRegistration: The subscription is not registered to use namespace 'Microsoft.KeyVault'
+StatusCode=403, ErrorCode=FilesystemNotFound — The specified filesystem does not exist.
 ```
-The fix is `az provider register --namespace Microsoft.KeyVault`, then wait ~1 minute for `registrationState` to become `Registered`. This registration is permanent — you only do it once per subscription.
+Or the connector may fail to resolve the DFS endpoint entirely.
+
+**Fix:** HNS cannot be enabled retroactively on an existing account. The engineer must:
+1. Create a new storage account with HNS enabled
+2. Re-create the containers
+3. Delete the old account
+
+This is why enabling HNS at creation time is critical — it is not fixable after the fact.
 
 ---
 
 **A4**
-**Cost difference:**
-- LRS (Locally Redundant Storage): 3 copies in one data centre — cheapest
-- ZRS (Zone Redundant Storage): 3 copies across 3 availability zones in the same region — ~2× the cost of LRS
+`--auth-mode login` tells the Azure CLI to authenticate the container-create request using your **Azure AD user token** (obtained via `az login`). It does not use the storage account key at all.
 
-**Fix:** You cannot change redundancy on an existing storage account from the Portal for all tiers. Options:
-1. Create a new storage account with LRS, migrate data (azcopy), then delete the old account
-2. Some regions allow changing via CLI: `az storage account update --name evdatalakedev --sku Standard_LRS`
+When account key access is disabled, `--auth-mode key` and `--account-key` are rejected at the storage service level. `--auth-mode login` is the only viable option because it uses the same IAM (RBAC) path. The user running the CLI command must have `Storage Blob Data Contributor` (or higher) on the storage account for this to succeed.
 
 ---
 
 **A5**
-Without hierarchical namespace, the storage account is plain Blob Storage. `abfss://` requires ADLS Gen2 with HNS enabled. When Databricks tries to use `abfss://container@account.dfs.core.windows.net/`, the connection will fail with something like `No such file or directory` or `ADLS Gen2 is not enabled on this account`. The fix: the engineer must either (a) delete and recreate the storage account with HNS ON, or (b) switch to `wasbs://` with an access key — but `wasbs://` is the less secure, legacy approach. HNS cannot be enabled on an existing account retroactively.
+Separate containers are the correct design for several reasons:
+
+| Concern | One container (folder-based) | Separate containers |
+|---|---|---|
+| Access control | RBAC applies at storage account level only | RBAC can be scoped to individual containers — give an analyst read on `gold/` only |
+| Lifecycle policies | Hard to apply different retention per layer | Different lifecycle rules per container — bronze to Cool after 30 days, gold stays Hot |
+| Blast radius | A misconfigured pipeline that deletes from the wrong path could touch all layers | A pipeline with access only to `bronze` container cannot touch `silver` |
+| Soft delete | Applies per container | Can enable separately per container |
+
+In this project: ADF only has `Storage Blob Data Contributor` on the whole account — in production you would scope it to just the `bronze` container so ADF cannot accidentally overwrite Silver or Gold.
 
 ---
 
-## Key Vault and Secrets
+## Key Vault — RBAC Model
 
 **A6**
-Azure Key Vault is a cloud-managed vault that stores secrets (passwords, API keys, connection strings) in encrypted form. Only identities with an explicit RBAC role (`Key Vault Secrets User` or `Secrets Officer`) can read from it.
+The legacy model is **Vault access policy** — it has its own permission system separate from Azure IAM. Each Key Vault had an independent access policy list managed inside the Key Vault resource itself.
 
-Why not hardcode credentials in notebooks:
-- If the notebook is committed to git, the credential leaks immediately
-- GitHub's push protection will block the push if it detects a token/secret pattern
-- If a credential is compromised, rotating it in Key Vault fixes every notebook instantly — no code change needed
-- Databricks masks any value read via `dbutils.secrets.get()` as `[REDACTED]` in all logs and outputs — impossible to accidentally print in plaintext
+The RBAC model's key advantages over Vault access policies:
+- **Unified IAM:** Key Vault permissions appear in the same IAM blade as all other Azure resources — one place to audit who has access to what
+- **Standard Azure RBAC roles:** Same `az role assignment` commands, same Conditional Access, same PIM (Privileged Identity Management)
+- **Inheritance:** Roles can be assigned at subscription or resource group level and inherit down to Key Vaults
+- **Audit logs:** All access appears in Azure Activity Log alongside other resource actions
+- **Policy cannot be set per secret:** Vault access policy grants access to all secrets in the vault; RBAC can scope a role to a specific secret via its resource ID
 
 ---
 
 **A7**
-When Key Vault uses the RBAC permission model (not Vault access policies), even the account that created the vault has no permissions by default. Creating a resource does not automatically grant you data-plane access. The engineer missed assigning the `Key Vault Secrets Officer` role to their own account via IAM before trying to set secrets. Fix: Portal → Key Vault → **Access Control (IAM)** → **+ Add role assignment** → role: `Key Vault Secrets Officer` → assign to your account → wait 1–2 minutes.
+With the RBAC permission model, **creating a resource does not grant you data-plane access**. The control-plane action (creating the Key Vault) and the data-plane actions (reading/writing secrets) are governed separately. The engineer must explicitly assign themselves `Key Vault Secrets Officer` via IAM.
+
+Exact fix:
+1. Portal → `kv-ev-intelligence-dev` → **Access Control (IAM)** → **+ Add** → **Add role assignment**
+2. Role: `Key Vault Secrets Officer`
+3. Members: your user account
+4. **Review + assign**
+5. Wait 1–2 minutes for propagation
+6. Retry `az keyvault secret set`
 
 ---
 
 **A8**
-Azure Key Vault has a **soft-delete** feature enabled by default. When you delete a secret, it enters a deleted-but-recoverable state for a retention period (default 90 days). During this period, you cannot create a new secret with the same name — you get the `ObjectIsDeletedButRecoverable` error.
+The pipeline still works — `Key Vault Secrets Officer` includes all the permissions of `Secrets User` plus write/delete/manage. So ADF can read secrets.
 
-**Fix — recover the deleted secret:**
-```cmd
-az keyvault secret recover --vault-name kv-ev-intelligence-dev --name "<secret-name>"
-```
-Then update it to the new value.
+The problem is **over-privileged access** — principle of least privilege violation. With `Secrets Officer`, the ADF Managed Identity can:
+- Create new secrets
+- Update existing secrets
+- Delete secrets
+- Recover soft-deleted secrets
 
-**Or permanently purge it first (if you don't need the old version):**
-```cmd
-az keyvault secret purge --vault-name kv-ev-intelligence-dev --name "<secret-name>"
-```
-Then create fresh with `az keyvault secret set`.
+A pipeline with write access to Key Vault could potentially be exploited (through a compromised ADF pipeline definition) to overwrite credentials — e.g., set `voltgrid-password` to an attacker-controlled value, disrupting the entire platform. ADF only needs to **read** secrets — `Secrets User` is sufficient and safe.
 
 ---
 
 **A9**
-The secret has been read correctly. `[REDACTED]` is Databricks' security feature — when a notebook calls `dbutils.secrets.get()`, the returned string is marked internally as a secret. Any attempt to print it — via `print()`, `display()`, logging — is intercepted by Databricks and replaced with `[REDACTED]`. The variable still holds the real value. Code that uses it (like `spark.conf.set(...)` or `requests.get(headers=...)`) works correctly with the actual secret value. This is by design and expected.
+
+| Role | Can read secret values | Can create/update/delete secrets | Assigned to |
+|---|---|---|---|
+| `Key Vault Secrets Officer` | Yes | Yes | Your user account (needs to manage secrets) |
+| `Key Vault Secrets User` | Yes | No | ADF MI, AzureDatabricks app, Service Principal |
+
+Principle: grant the **minimum privilege needed** for the task. ADF, Databricks, and the SP only need to read secrets at runtime — they should never be able to create or overwrite them.
 
 ---
-
-## Service Principal and RBAC
 
 **A10**
-A Service Principal is a non-human Azure Active Directory (Entra ID) identity — essentially a robot account for applications. Databricks and ADF use it instead of a human account because:
-- A human account's password can change (reset, expiry, employee leaves) — breaks all pipelines
-- A human account's permissions may change — breaks pipelines unexpectedly
-- The SP is dedicated to the application — its permissions are exactly what the application needs, nothing more
-- SP credentials can be rotated without affecting any human accounts
-- If the SP credential is compromised, you rotate just that credential — no impact on humans
+Three specific risks of hardcoding credentials in the ADF pipeline body:
+
+1. **Git exposure:** ADF pipelines can be connected to a Git repository (Azure DevOps or GitHub). If the pipeline JSON is committed, the password appears in plaintext in every commit, pull request, and git history. It cannot be truly removed without force-pushing (destructive) and rotating the credential.
+
+2. **ARM template export:** When you export the resource group as an ARM template (for disaster recovery or deployment), the pipeline JSON is included. Hardcoded secrets appear in the exported template, which engineers may store in SharePoint, email, or other non-secure locations.
+
+3. **ADF Monitor logs:** ADF Monitor captures activity inputs and outputs. A hardcoded password in the POST body appears in the `act_api_login` Input tab in Monitor, which any user with ADF Monitor Reader access can view.
 
 ---
 
+## ADF Managed Identity and Access Control
+
 **A11**
-The `password` (client secret) is shown only once — at the moment of creation. Azure does not store it in retrievable form. If navigated away without copying: **there is no way to retrieve it**. The engineer must go to Portal → **App registrations** → `sp-ev-intelligence-dev` → **Certificates & secrets** → delete the old secret → **+ New client secret** → copy the new value → store it in Key Vault immediately. The `appId` (Client ID) and `tenant` (Tenant ID) are always visible in the app's Overview page and are not affected.
+A System-assigned Managed Identity is automatically created by Azure when you create an ADF instance. Its lifecycle is tied to the ADF resource — deleting ADF deletes the MI.
+
+Differences from a Service Principal:
+
+| | System-assigned MI | Service Principal |
+|---|---|---|
+| Created by | Azure automatically | You create it manually |
+| Credentials | None — Azure handles token issuance | Client ID + Secret (or certificate) |
+| Rotation | Never needed — Azure rotates internally | You must rotate the client secret (expires) |
+| Lifecycle | Tied to the ADF resource | Independent — survives ADF deletion |
+| Use case | One resource authenticating as itself | Cross-resource, cross-service identity |
+
+ADF uses its MI for pipeline execution because it eliminates credential management — no secret to store, rotate, or accidentally expose.
 
 ---
 
 **A12**
-**Extra capability of Owner vs Contributor:**
-`Storage Blob Data Owner` also grants the ability to manage **POSIX ACLs (Access Control Lists)** on individual files and folders in ADLS Gen2. `Storage Blob Data Contributor` can read, write, and delete files — which is all Databricks needs.
+`Storage Blob Data Owner` adds the ability to manage **POSIX ACLs** (Access Control Lists) on individual files and directories in ADLS Gen2. ADF only needs to read from source and write to Bronze — `Storage Blob Data Contributor` (read + write + delete files) is sufficient.
 
-**Risk:** If the SP's credential is ever compromised, an attacker with Owner access could modify file permissions on every file in the storage account, potentially locking out legitimate users or granting themselves access to sensitive data in other containers. `Contributor` limits blast radius to just the files themselves.
+Violated principle: **Principle of Least Privilege** — grant only the minimum permissions required for the task. Using Owner means:
+- If the ADF Managed Identity is ever compromised (e.g., a rogue pipeline definition is deployed), an attacker could change ACLs on every file in the storage account — potentially locking out all other services or granting themselves access to Silver and Gold data.
 
 ---
 
 **A13**
-The most likely cause: the SP was created but the `Storage Blob Data Contributor` role was never assigned to the storage account. The SP has a valid credential (Client ID + Secret) and can authenticate to Azure Entra ID successfully — but once authenticated, it has no authorization on the storage resource, hence 403. Fix: Portal → `evdatalakedev` → **Access Control (IAM)** → **Add role assignment** → `Storage Blob Data Contributor` → assign to the SP → wait 1–2 minutes → retry.
+Most likely cause: **IAM propagation delay**. Azure role assignments typically take 1–2 minutes to propagate. If the pipeline was triggered immediately after assigning the role, the storage service had not yet received the updated permissions. The linked service test connection at that moment happened to be tested from a different data plane node that already received the update, while the actual Copy Activity ran on a different path.
+
+Fix: wait 2 full minutes after assigning any RBAC role before testing or running. If the issue persists, verify the correct scope was assigned — the role must be on the storage account resource, not on the resource group or subscription (though those would work too via inheritance).
 
 ---
 
 **A14**
-- **Application (Client) ID** (`appId`): the SP's identity in Azure Entra ID — used in `spark.conf.set(...)` as the OAuth client identifier when Databricks presents credentials to Entra ID.
-- **Object ID** (`id`): the SP's unique identifier within the Azure resource management system — used when creating role assignments because RBAC works on objects, not applications.
+The `ls_keyvault` linked service authenticates using ADF's **System-assigned Managed Identity**. The chain:
 
-For `az role assignment create --assignee-object-id`, you must use the **Object ID** (from `az ad sp show --id <appId> --query id -o tsv`), not the Application (Client) ID. Using the wrong ID silently assigns the role to nothing or fails with an error.
+1. ADF pipeline activity runs and needs a secret value
+2. ADF requests an OAuth token from **Azure Entra ID** for the scope `https://vault.azure.net` — presenting its Managed Identity credentials (no password; Azure handles this internally)
+3. Entra ID returns a short-lived OAuth bearer token
+4. ADF makes the Key Vault REST API call:
+   ```
+   GET https://kv-ev-intelligence-dev.vault.azure.net/secrets/voltgrid-username/?api-version=7.0
+   Authorization: Bearer <oauth-token>
+   ```
+5. Key Vault checks if the identity (ADF MI) has `Key Vault Secrets User` role → yes → returns `{"value": "voltgrid_demo", ...}`
+6. ADF extracts `.value` from the response
+
+The password never travels over the network directly — only the OAuth token does, and it is short-lived (typically 1 hour).
 
 ---
-
-## Databricks Cluster and Secret Scope
 
 **A15**
-A Secret Scope is a Databricks object that creates a bridge between a Databricks workspace and an Azure Key Vault. Once created, any notebook in the workspace can call `dbutils.secrets.get(scope="kv-ev-scope", key="some-secret")` to read a Key Vault secret.
+The request would **fail with 401 Unauthorized**. Setting `Resource = https://storage.azure.com` tells Azure Entra ID to issue an OAuth token for the **Storage** scope, not the **Key Vault** scope. When this token is sent to `vault.azure.net`, the Key Vault service rejects it — it expects a token issued for the `https://vault.azure.net` audience.
 
-How it works:
-1. You create the scope by providing the Key Vault's Vault URI and Resource ID
-2. Databricks registers this as a named scope (`kv-ev-scope`)
-3. When a notebook calls `dbutils.secrets.get(scope, key)`, Databricks uses the workspace's managed identity (backed by the `AzureDatabricks` enterprise application) to call the Key Vault API and retrieve the secret
-4. The secret value is returned to the notebook but masked in all output as `[REDACTED]`
+Each Azure service validates that the token's audience (`aud` claim) matches its own endpoint. A token for Storage cannot be used to access Key Vault, and vice versa. This is a core OAuth security property — tokens are audience-bound.
 
 ---
 
-**A16**
-**Standard (Shared) mode** is a multi-tenant cluster mode where Databricks restricts certain filesystem operations to protect other users running on the same cluster. `dbutils.fs.mount()` is one of the blocked operations — calling it returns `Method public dbutils.mount() is not whitelisted`.
+## ADF Pipeline Design
 
-**Fix:** Edit the cluster → change Access mode from **Standard** to **Dedicated (Single user)** → confirm → restart the cluster. On Dedicated mode, only one user's workloads run on the cluster, so all `dbutils` methods are available. Alternatively, switch to Method 1 (SP OAuth direct access) which does not use `mount()` at all and works on any cluster mode.
+**A16**
+`act_get_username` and `act_get_password` run in **parallel** because they are independent — neither depends on the other's output. Running them simultaneously saves ~1 second.
+
+The dependency condition: `act_api_login` has TWO incoming dependency arrows, both set to `Succeeded`. ADF evaluates both conditions before starting `act_api_login`:
+- `act_get_username` must be `Succeeded`
+- `act_get_password` must be `Succeeded`
+
+If either fails, `act_api_login` does not start — the pipeline moves to the failed state. This is an implicit AND gate: both must succeed.
 
 ---
 
 **A17**
-The most likely cause: the notebook's Python variables were cleared. Spark config is a session-level setting — it persists as long as the cluster is running. But if the engineer started a new notebook cell without running the earlier cells that set the config and loaded the variables, the Python variable `storage_account` does not exist in the new cell's scope. The fix: run the setup cells (Cell 1 and Cell 2) in order from the top before running any other cells. Using `%run "./00b_connect_storage_no_mount"` as the first cell in any notebook auto-runs the setup.
+The Key Vault REST API response for a secret is:
+```json
+{
+  "value": "voltgrid_demo",
+  "id": "https://kv-ev-intelligence-dev.vault.azure.net/secrets/voltgrid-username/abc123",
+  "attributes": { "enabled": true, "created": ..., "updated": ... },
+  "contentType": null
+}
+```
+
+`activity('act_get_username').output` is the full parsed JSON object above. `.output.value` accesses the `value` field — which contains the actual secret string `"voltgrid_demo"`.
+
+The expression `@concat(...)` builds a valid JSON string body:
+```json
+{"username":"voltgrid_demo","password":"EVcharge@AU2025"}
+```
 
 ---
 
 **A18**
-**Dedicated mode** means only one user's code runs on the cluster — your account. This is required for:
-- `dbutils.fs.mount()` — which this project uses in the legacy notebook
-- Full filesystem visibility — other users' mounted paths are not visible
-- Unrestricted `dbutils` access
+To verify what the activity actually returned, go to **Monitor** → **Pipeline runs** → click the run → **Activity runs** → click `act_api_login` → **Output** tab.
 
-**Shared mode** is Databricks' default for collaborative clusters. It isolates users at the session level to prevent one user from reading another user's data. As part of this isolation, it blocks `dbutils.fs.mount()` — because a mount in Shared mode would expose the mounted path to ALL users on the cluster, violating the isolation guarantee.
+The output tab shows the raw JSON response from the login endpoint:
+```json
+{
+  "token": "abc123def456..."
+}
+```
+
+The correct key is `token`. If `act_set_token` used `@activity('act_api_login').output.auth_token` (wrong key), `v_token` would be null/empty, and `act_copy_payments` would send `Authorization: Token ` (empty) — causing 401.
+
+The Output tab is the definitive way to verify what any Web Activity actually returned and which key to reference.
 
 ---
 
 **A19**
-The engineer's account has `Key Vault Secrets Officer` — that grants the human user access. But when a Databricks notebook reads a secret via the secret scope, it is the **Databricks workspace's service identity** (`AzureDatabricks` enterprise application) that makes the actual Key Vault API call, not the human user. The `AzureDatabricks` global service principal needs `Key Vault Secrets User` role on the Key Vault.
+`Authentication type = Anonymous` on the linked service means ADF does not apply any built-in authentication scheme when making REST calls through this linked service. It does NOT mean the API calls are unauthenticated end-to-end.
 
-Fix: Portal → Key Vault → **Access Control (IAM)** → **+ Add role assignment** → role: `Key Vault Secrets User` → Members: search **`AzureDatabricks`** (the built-in global Databricks service principal) → assign → wait 2 minutes → retry.
+The actual authentication happens inside the pipeline logic:
+1. `act_get_username` and `act_get_password` read credentials from Key Vault
+2. `act_api_login` POSTs credentials to `/api/auth/login/` → receives a token
+3. `act_set_token` stores the token in `v_token`
+4. `act_copy_payments` adds `Authorization: Token <v_token>` as an **additional header** on the GET request
+
+The linked service handles the transport (HTTPS to the base URL). The pipeline handles the application-level authentication manually. This pattern is necessary when the API uses a custom auth flow (fetch token via POST, then use in header) that ADF's built-in auth types don't natively support.
 
 ---
-
-## ADLS Gen2 Connection Methods
 
 **A20**
-`spark.conf.set(key, value)` sets a configuration value on the active Spark session. For SP OAuth, it tells the Azure ABFS (Azure Blob File System) connector which OAuth credentials to use when accessing a specific storage account. The configuration is **session-scoped** — it is cleared when the cluster restarts or the Spark session ends. This means: after every cluster restart, you must re-run the cells that call `spark.conf.set()`. This is why the project uses `%run "./00b_connect_storage_no_mount"` as the first cell in every other notebook — to re-establish the config automatically.
+`setOfObjects` writes the JSON as a single JSON object or array at the root level — ADF wraps all records in one valid JSON document. Each record from the API response appears as an object within the array.
+
+Example output with `setOfObjects`:
+```json
+[
+  {"payment_id": "PAY-001", "amount_aud": 15.50, ...},
+  {"payment_id": "PAY-002", "amount_aud": 22.00, ...}
+]
+```
+
+`arrayOfObjects` is essentially the same for a REST source that returns a JSON array — both produce valid JSON arrays. The difference becomes relevant when the source returns a stream of objects (NDJSON/newline-delimited JSON): `setOfObjects` would wrap the whole stream in `[...]`, while `arrayOfObjects` expects the source to already return a proper array.
+
+For reading this file back in Spark, `spark.read.option("multiLine", "true").json(path)` handles `setOfObjects` format correctly.
 
 ---
 
-**A21**
-```python
-def abfss(container: str, path: str = "") -> str:
-    base = f"abfss://{container}@{storage_account}.dfs.core.windows.net"
-    return f"{base}/{path}" if path else base
-```
+## Bronze Layer Design
 
-`abfss` stands for **Azure Blob File System Secure** — it is the protocol for ADLS Gen2 over HTTPS. It requires that the storage account has **hierarchical namespace enabled** (making it a true Gen2 data lake, not plain blob storage). The `wasbs://` protocol is for classic Azure Blob Storage (non-hierarchical) and is used with SAS tokens — like when accessing the shared source blob `dataenggdailystorage` which is a standard blob account without HNS.
+**A21**
+The path `bronze/api/payments/raw/payments.json` follows the convention `bronze/<source-type>/<entity>/raw/<file>` for three reasons:
+
+1. **Source type disambiguation:** When the project has 28 source systems (API, blob uploads, streaming), you need to know at a glance where the data came from. `api/` means REST API, `blob/` means CSV upload, `streaming/` means IoT Event Hub.
+
+2. **Multi-entity expansion:** Day 3 adds sessions, customers, and stations. Without entity-level folders, all API data would land in the same directory, making it impossible to run targeted reads or apply different retention policies per entity.
+
+3. **Downstream predictability:** Databricks ingestion notebooks use a deterministic path pattern — they know exactly where to look for payments data without parameter configuration.
+
+Flat path (`bronze/payments.json`) breaks as soon as a second entity is added and gives no indication of the source system.
 
 ---
 
 **A22**
-SAS tokens only work with `wasbs://` (Windows Azure Storage Blob Service protocol), not `abfss://`. The `abfss://` protocol is for ADLS Gen2 with OAuth authentication. Using `abfss://` with a SAS token causes `InvalidAuthenticationInfo` because the connector expects an OAuth flow, not a SAS token.
+No — the Bronze design is not incomplete. ADF's job is to land the raw API response exactly as received. Adding audit columns (`_ingestion_ts`, `_source_file`, `_pipeline_run_id`) is the Databricks notebook's job when it reads from Bronze and writes to Silver.
 
-Fix: replace `abfss://` with `wasbs://` in all paths for the shared source storage:
-```python
-# Wrong
-f"abfss://{CONTAINER}@{STORAGE_ACCOUNT}.dfs.core.windows.net/..."
+This separation is intentional:
+- ADF is a no-code orchestration tool — adding columns requires a transformation engine
+- Bronze = raw landing zone. If you add columns in Bronze, you've already transformed the data
+- Audit columns added at the Bronze→Silver transition reflect when Databricks processed the data, which is meaningful for debugging Silver processing issues
 
-# Correct
-f"wasbs://{CONTAINER}@{STORAGE_ACCOUNT}.blob.core.windows.net/..."
-```
+Day 3 adds a Databricks notebook that reads `payments.json`, adds the 4 audit columns, and writes to `silver/payments/` as a Delta table with MERGE upsert.
 
 ---
 
 **A23**
+Yes, this is a problem. Running the pipeline twice with the same sink path overwrites `payments.json` — if Day 2 fetches page 1 in the morning and again in the afternoon, the first file is replaced. If the API data for page 1 changed between runs, you lose the morning snapshot. Bronze should be an audit log — every run's raw data should be preserved.
 
-| | Method 1 — SP OAuth Direct | Method 4 — Mount + SP OAuth |
-|---|---|---|
-| Uses `spark.conf.set` | Yes | Yes (inside the mount config) |
-| Uses `dbutils.fs.mount()` | No | Yes |
-| Works on Shared/Standard mode | Yes | No — blocked |
-| Works on Serverless | Yes | No — blocked |
-| Path style | `abfss://container@account.dfs.core.windows.net/` | `/mnt/container/` |
-| Re-run on restart | 3 cells (~30 seconds) | Run mount notebook |
-| Deprecated | No — current approach | Yes — being phased out |
+Day 3 fixes this with **partitioned sink paths**:
+```
+bronze/api/payments/raw/ingestion_date=2026-10-13/page_001.json
+bronze/api/payments/raw/ingestion_date=2026-10-13/page_002.json
+```
 
-Mounting is blocked on Standard, Shared, and Serverless clusters because `dbutils.fs.mount()` creates a cluster-wide mount that all users on a shared cluster can see — violating user isolation. Method 1 is the recommended approach: zero dependency on cluster mode, no mount lifecycle to manage, compatible with Unity Catalog.
+Using `@formatDateTime(utcNow(), 'yyyy-MM-dd')` as the partition value ensures each day's run lands in its own directory. Re-running on the same day would overwrite that day's partition only — not historical data.
 
 ---
 
-## API Auth and Architecture
-
 **A24**
-Complete auth flow:
+Parameterizing at both levels is the correct design because the dataset and pipeline have different scopes:
 
-1. **Key Vault → Credentials:** Notebook reads `voltgrid-username` and `voltgrid-password` from Key Vault via `dbutils.secrets.get()`. Both values stay in memory — never printed, never written to disk.
+- **Dataset level (`p_page`, `p_page_size`):** Makes the dataset reusable for any caller — if another pipeline wanted to call the payments endpoint with different pagination, it can pass different values without modifying the dataset definition.
 
-2. **Login request:** `requests.post(f"{api_base_url}/api/auth/login/", json={"username": username, "password": password}, timeout=10)` — sends credentials as a JSON POST body over HTTPS.
+- **Pipeline level (`p_page`, `p_page_size`):** Allows the pipeline to be triggered with different parameters from ADF Monitor, a trigger, or a parent pipeline (ForEach in Day 3).
 
-3. **Token received:** API responds with `{"token": "abcdef..."}`. The token is extracted and stored as a Python variable — in memory only, never persisted.
-
-4. **All subsequent calls:** Every API call adds `Authorization: Token <value>` as a header. The password is never sent again.
-
-5. **End of session:** When the notebook finishes or the cluster restarts, the token variable is cleared automatically.
-
-**Why the token is more secure than sending the password every time:**
-- If the token is intercepted or leaked, it can be invalidated server-side without changing the password
-- The password (the "master credential") travels only once — reducing the attack surface
-- Tokens can have shorter lifetimes than passwords, reducing exposure window
+If you hardcoded `page=1&page_size=100` in the linked service Base URL, you would need a different linked service for every pagination variant, and the URL-level change would affect every dataset that uses that linked service. Parameterization keeps concerns separated: linked service = connection, dataset = shape + path, pipeline = logic.
 
 ---
 
 **A25**
-Full design for a retail analytics platform:
+To add `/api/db/sessions/` with sink at `bronze/api/sessions/raw/sessions.json`:
 
-**Resources to create on Day 1:**
+**Reusable existing components:**
+- Linked services: `ls_keyvault`, `ls_voltgrid_api`, `ls_adls_bronze` — all reuse unchanged
+- The Key Vault Web Activities (`act_get_username`, `act_get_password`) and login logic are the same
 
-| Resource | Name | Configuration |
-|---|---|---|
-| Resource Group | `rg-retail-analytics-dev` | Central India |
-| ADLS Gen2 | `retaildatalakedev` | Standard LRS, HNS ON, Cool tier |
-| Containers | `bronze`, `silver`, `gold`, `source` | Private access |
-| Key Vault | `kv-retail-dev` | Standard tier, RBAC model |
-| Service Principal | `sp-retail-dev` | Created via `az ad sp create-for-rbac` |
-| Databricks Workspace | `dbw-retail-dev` | Trial tier, Central India |
-| Databricks Cluster | `dev-cluster` | Single Node, Dedicated, DS3_v2, Photon OFF, 15-min auto-terminate |
+**New components needed:**
+1. **New source dataset:** `ds_voltgrid_sessions_src` — same linked service `ls_voltgrid_api`, same parameters `p_page` and `p_page_size`, but relative URL: `/api/db/sessions/?page=@{dataset().p_page}&page_size=@{dataset().p_page_size}`
+2. **New sink dataset:** `ds_bronze_sessions_sink` — same linked service `ls_adls_bronze`, file path: `bronze` / `api/sessions/raw` / `sessions.json`
+3. **New Copy Activity** in the pipeline: `act_copy_sessions` — same source config as `act_copy_payments` (same auth header `@concat('Token ', variables('v_token'))`), but using the new datasets
 
-**Naming convention:** `<resource-type>-<project>-<environment>` — e.g. `kv-retail-dev`, `sp-retail-dev`, `rg-retail-analytics-dev`.
+**How to avoid duplicating Key Vault Web Activities:**
+Option 1 (simple — Day 2 scope): Add `act_copy_sessions` in parallel with `act_copy_payments` after `act_set_token` — both share the same `v_token` variable. No duplication needed.
 
-**Secrets strategy:**
-
-| Secret | Key Vault Name | Notes |
-|---|---|---|
-| SQL connection string | `sql-connection-string` | Full JDBC connection string — never in code |
-| External API key | `vendor-api-key` | Stored as plain string — notebooks call `dbutils.secrets.get()` |
-| Storage account name | `adls-account-name` | Even non-sensitive values go in Key Vault for centralisation |
-
-**Databricks → Storage connection:** SP OAuth direct access (`Method 1`) — SP Client ID, Secret, and Tenant ID stored in Key Vault, read via secret scope, passed to `spark.conf.set()`.
-
-**Identity roles:**
-
-| Identity | Key Vault role | Storage role |
-|---|---|---|
-| Your user account | `Key Vault Secrets Officer` | `Storage Blob Data Contributor` |
-| `AzureDatabricks` global app | `Key Vault Secrets User` | None (reads via SP OAuth) |
-| `sp-retail-dev` (SP) | `Key Vault Secrets User` | `Storage Blob Data Contributor` |
-| ADF Managed Identity | `Key Vault Secrets User` | `Storage Blob Data Contributor` |
+Option 2 (Day 3 pattern): Extract the authentication steps into a **separate pipeline** (`pl_get_api_token`) that outputs the token, then call it from a parent pipeline using **Execute Pipeline Activity** before a ForEach that loops over all 6 endpoints.
 
 ---

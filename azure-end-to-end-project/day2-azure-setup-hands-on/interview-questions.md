@@ -1,152 +1,148 @@
-# Day 1 — Interview Questions: Kickoff, Architecture, and Azure Setup
+# Day 2 — Interview Questions: Azure Setup + ADF Bronze Ingestion
 
-> 25 questions covering Azure resource setup, Key Vault, Service Principals, RBAC, ADLS Gen2, Databricks clusters, secret scopes, API auth, SAS tokens, and storage connection methods.
+> 25 questions covering Resource Group, ADLS Gen2, Key Vault RBAC, ADF Managed Identity, access control, linked services, datasets, pipeline activities, and Bronze layer design.
 > Attempt first, then check `interview-solutions.md`.
 
 ---
 
-## Azure Resources and Setup
+## Azure Resources and ADLS Gen2
 
 **Q1 (Warm-up)**
-What is an Azure Resource Group? Why should all resources for a single project live in one Resource Group?
+What is the difference between Azure Blob Storage and ADLS Gen2? What single setting turns a Blob Storage account into ADLS Gen2, and why does this project require it?
 
 ---
 
 **Q2 (Conceptual)**
-What is the difference between Azure Blob Storage and ADLS Gen2? Which one is used in this project and why?
+This project disables storage account key access (`allowSharedKeyAccess = false`). What does this enforce? What happens if a developer tries to use `az storage blob list --account-key <key>` after this setting is applied?
 
 ---
 
-**Q3 (Conceptual)**
-What is a resource provider in Azure? Give an example of what happens if you skip registering `Microsoft.KeyVault` before trying to create a Key Vault.
+**Q3 (Scenario)**
+A data engineer creates an ADLS Gen2 storage account but forgets to enable hierarchical namespace. They try to connect Databricks with `abfss://bronze@evdatalakedev.dfs.core.windows.net/`. What specific error will they see, and how do they fix it?
 
 ---
 
-**Q4 (Scenario)**
-A data engineer creates a storage account but accidentally picks **Standard ZRS** instead of **Standard LRS**. What is the cost difference, and how do they fix it?
+**Q4 (Conceptual)**
+The bronze container is created with `--auth-mode login` in the CLI. What does this mean? Why not use `--account-key` or `--sas-token` for the container create command when account key access is disabled?
 
 ---
 
 **Q5 (Tricky)**
-A data engineer creates a storage account in Azure and enables containers but forgets to turn on **hierarchical namespace**. They try to connect Databricks to it using `abfss://`. What problem will they hit?
+A new team member asks: "Why do we have 4 containers — bronze, silver, gold, source? Can't we just use folders inside one container?" Explain why separate containers are the correct design choice.
 
 ---
 
-## Key Vault and Secrets
+## Key Vault — RBAC Model
 
 **Q6 (Warm-up)**
-What is Azure Key Vault? Why does this project store all credentials in Key Vault instead of hardcoding them in notebooks?
+The Key Vault in this project uses the **RBAC permission model**. What is the alternative (legacy) model, and what is the key advantage of RBAC over the legacy model?
 
 ---
 
 **Q7 (Conceptual)**
-The Key Vault is created with the RBAC permission model. The engineer who created it tries to add a secret immediately and gets `Forbidden: ForbiddenByRbac`. What did they miss?
+A data engineer creates a Key Vault with RBAC model and immediately tries `az keyvault secret set`. They get `Forbidden: ForbiddenByRbac`. What did they miss and what is the exact fix?
 
 ---
 
 **Q8 (Scenario)**
-A data engineer runs `az keyvault secret set` but gets:
-`Conflict: ObjectIsDeletedButRecoverable — The secret is in a deleted but recoverable state.`
-What does this mean and how do they fix it?
+The ADF pipeline needs to read the `voltgrid-username` secret. The ADF Managed Identity is assigned `Key Vault Secrets Officer` instead of `Key Vault Secrets User`. Does the pipeline still work? What is the problem with using Secrets Officer for ADF?
 
 ---
 
-**Q9 (Tricky)**
-A notebook calls `dbutils.secrets.get(scope="kv-ev-scope", key="voltgrid-password")` and prints the value with `print(password)`. The output shows `[REDACTED]`. Has the secret been read correctly or is there an error?
+**Q9 (Conceptual)**
+What is the difference between `Key Vault Secrets Officer` and `Key Vault Secrets User`? Map each role to the correct identity in this project and explain why.
 
 ---
 
-## Service Principal and RBAC
-
-**Q10 (Warm-up)**
-What is a Service Principal in Azure? Why do Databricks and ADF use a Service Principal instead of a human account to access storage?
+**Q10 (Tricky)**
+A data engineer stores the VoltGrid API password directly in the ADF pipeline's Web Activity body as a hardcoded string instead of reading it from Key Vault. Name 3 specific risks this creates.
 
 ---
 
-**Q11 (Conceptual)**
-After creating a Service Principal with `az ad sp create-for-rbac`, the engineer navigates away without copying the `password` field. What must they do and why?
+## ADF Managed Identity and Access Control
+
+**Q11 (Warm-up)**
+What is a System-assigned Managed Identity in ADF? How is it different from a Service Principal, and why does this project use it for ADF instead of creating a separate SP?
 
 ---
 
 **Q12 (Conceptual)**
-A data engineer gives the Service Principal the `Storage Blob Data Owner` role instead of `Storage Blob Data Contributor`. What extra capability does Owner have that is not needed? What risk does it introduce?
+ADF needs to write JSON files to the `bronze/` container. The ADF MI is assigned `Storage Blob Data Owner` instead of `Storage Blob Data Contributor`. What extra capability does Owner add that is not needed? What principle does this violate?
 
 ---
 
 **Q13 (Scenario)**
-A notebook connects to ADLS Gen2 using SP OAuth and gets:
-`403 Forbidden — The client does not have permission to perform this action.`
-The SP was created correctly and the secret is in Key Vault. What is the most likely cause?
+The ADF linked service `ls_adls_bronze` test connection returns green. But when the pipeline runs, `act_copy_payments` fails with `403 AuthorizationPermissionMismatch` on the sink. The role assignments look correct in the Portal. What is the most likely cause?
 
 ---
 
-**Q14 (Tricky)**
-Explain the difference between a Service Principal's **Application (Client) ID** and its **Object ID**. When you run `az role assignment create`, which one do you use with `--assignee-object-id`?
+**Q14 (Conceptual)**
+In ADF, how does the `ls_keyvault` linked service authenticate to Key Vault? Write the exact chain: what identity is used, how it gets a token, and what REST call it makes to read a secret.
 
 ---
 
-## Databricks Cluster and Secret Scope
-
-**Q15 (Warm-up)**
-What is a Databricks Secret Scope? How does it link Databricks to Azure Key Vault?
+**Q15 (Tricky)**
+The ADF Web Activity `act_get_username` uses Authentication = `System Assigned Managed Identity` and Resource = `https://vault.azure.net`. What would happen if you set Resource to `https://storage.azure.com` by mistake? Would the request succeed or fail?
 
 ---
 
-**Q16 (Conceptual)**
-A data engineer creates a Databricks cluster with Access mode = Standard. They run `dbutils.fs.mount(...)` and get `Method not whitelisted`. What is the fix?
+## ADF Pipeline Design
+
+**Q16 (Warm-up)**
+In the pipeline `pl_bronze_api_payments`, why do `act_get_username` and `act_get_password` run in parallel instead of sequentially? What is the dependency condition that both must satisfy before `act_api_login` runs?
 
 ---
 
-**Q17 (Scenario)**
-A notebook ran successfully this morning. After lunch the engineer reopens the notebook on the same cluster (still running) and the cell that calls `dbutils.secrets.get(...)` fails with `KeyError: 'storage_account'`. What is the most likely cause?
+**Q17 (Conceptual)**
+The `act_api_login` Web Activity uses this body expression:
+```
+@concat('{"username":"', activity('act_get_username').output.value, '","password":"', activity('act_get_password').output.value, '"}')
+```
+What does `.output.value` refer to here? What JSON does the Key Vault REST API return that makes `.value` the correct field?
 
 ---
 
-**Q18 (Conceptual)**
-Why does this project use **Dedicated** access mode instead of **Shared** mode for the Databricks cluster? What happens in Shared mode when `dbutils.fs.mount()` is called?
+**Q18 (Scenario)**
+The `act_api_login` activity succeeds and returns a token. But `act_copy_payments` fails with `401 Unauthorized`. The pipeline variable `v_token` was set using `@activity('act_api_login').output.token`. What output key should actually be used — how do you verify this in ADF Monitor?
 
 ---
 
-**Q19 (Tricky)**
-A data engineer creates the Key Vault-backed secret scope but the notebooks keep getting `PERMISSION_DENIED: Invalid permissions on KeyVault — Status code 403`. The engineer's own account has `Key Vault Secrets Officer`. What specifically is still missing?
+**Q19 (Conceptual)**
+The `ls_voltgrid_api` linked service uses `Authentication type = Anonymous`. Does this mean the API connection is unauthenticated? If not, explain what Anonymous means here and where the actual authentication happens in the pipeline.
 
 ---
 
-## ADLS Gen2 Connection Methods
-
-**Q20 (Warm-up)**
-What does `spark.conf.set()` do when you configure SP OAuth in a Databricks notebook? How long does this configuration last?
+**Q20 (Tricky)**
+In the sink dataset `ds_bronze_payments_sink`, the file pattern is set to `setOfObjects`. What does this mean for the output JSON format? What would the file look like if `arrayOfObjects` was chosen instead?
 
 ---
 
-**Q21 (Conceptual)**
-What is the `abfss()` helper function used in this project? Write it from memory and explain why the protocol is `abfss` and not `wasbs`.
+## Bronze Layer Design
+
+**Q21 (Warm-up)**
+The payment data lands at `bronze/api/payments/raw/payments.json`. Why is the path structured as `bronze/<source-type>/<entity>/raw/<file>` and not just `bronze/payments.json`?
 
 ---
 
-**Q22 (Scenario)**
-A data engineer is reading from the shared source blob `dataenggdailystorage` using `abfss://` and gets `InvalidAuthenticationInfo`. The SAS token is correct. What is wrong?
+**Q22 (Conceptual)**
+The Bronze file written by ADF today does not contain audit columns like `_ingestion_ts`, `_source_file`, or `_pipeline_run_id`. Does this mean the Bronze design is incomplete? When and by what process are these columns added?
 
 ---
 
-**Q23 (Tricky)**
-Compare SP OAuth Direct Access (Method 1) with Mount + SP OAuth (Method 4). When is mounting blocked and why is Method 1 the recommended approach going forward?
+**Q23 (Scenario)**
+A data engineer runs the pipeline twice. The second run overwrites `payments.json` with the same 100 records. Is this a problem for the Bronze layer? What would Day 3 do differently to prevent data loss on re-runs?
 
 ---
-
-## API Auth and Architecture
 
 **Q24 (Conceptual)**
-The VoltGrid API uses token-based authentication. Describe the complete auth flow from credentials in Key Vault to a successful API call. Why is the token considered more secure than storing the password in the request header directly?
+Why is the `p_page` and `p_page_size` parameterized at both the pipeline and dataset level? Could we just hardcode `page=1&page_size=100` in the linked service Base URL instead?
 
 ---
 
 **Q25 (System design)**
-You are setting up a new Azure project from scratch for a retail analytics platform. Using the same pattern as this EV project, describe:
-- What Azure resources you would create on Day 1
-- What naming convention you would follow
-- How you would handle secrets for a SQL database connection string, an API key, and a storage account
-- How Databricks would connect to the storage account
-- What role each identity (your user account, Databricks SP, ADF managed identity) would have on Key Vault and Storage
+You are asked to extend this pipeline to also ingest from the `/api/db/sessions/` endpoint and land the data at `bronze/api/sessions/raw/sessions.json`. Describe all the ADF changes needed:
+- Which existing components can be reused?
+- What new components must be created?
+- How would you avoid duplicating the Key Vault Web Activities and token logic?
 
 ---
