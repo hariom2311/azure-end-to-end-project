@@ -11,13 +11,15 @@
 | # | Item |
 |---|---|
 | 1 | Resource Group `rg-ev-intelligence-dev` |
-| 2 | ADLS Gen2 with `bronze/` and `silver/` containers (plus `gold/`, `source/`) |
-| 3 | Key Vault with RBAC permission model + secrets for API credentials |
-| 4 | Your user account has `Key Vault Secrets Officer` role — can read/write secrets |
+| 2 | ADLS Gen2 with `bronze/`, `silver/`, `gold/`, `source/` containers |
+| 3 | Key Vault (RBAC model) with API credentials as secrets |
+| 4 | Your user account has `Key Vault Secrets Officer` — can read/write secrets |
 | 5 | ADF instance with System-assigned Managed Identity |
 | 6 | ADF MI has `Key Vault Secrets User` on Key Vault |
-| 7 | ADF MI has `Storage Blob Data Contributor` on ADLS (`bronze/` write) |
+| 7 | ADF MI has `Storage Blob Data Contributor` on ADLS |
 | 8 | Pipeline `pl_bronze_api_payments` runs and lands JSON in `bronze/api/payments/raw/` |
+
+> **Databricks is not set up yet.** Databricks workspace, compute, and ADLS access via Unity Catalog External Locations will be covered in a later day. For now the focus is purely on Azure infrastructure + ADF loading data into Bronze.
 
 ---
 
@@ -547,29 +549,8 @@ Click `act_copy_payments` → **Output** tab:
 
 ### 8.3 Verify File in Bronze
 
-In a Databricks notebook (or Cloud Shell with CLI), verify the file landed in the correct Bronze path:
+Verify via Azure CLI (Databricks setup comes in a later day):
 
-**In Databricks (after SP OAuth or MI setup):**
-```python
-# List the bronze payments directory
-display(dbutils.fs.ls("abfss://bronze@evdatalakedev.dfs.core.windows.net/api/payments/raw/"))
-
-# Read the file
-df = spark.read.option("multiLine", "true").json(
-    "abfss://bronze@evdatalakedev.dfs.core.windows.net/api/payments/raw/payments.json"
-)
-print(f"Record count: {df.count()}")
-display(df.limit(5))
-```
-
-Expected:
-```
-Record count: 100
-payment_id | session_id | amount_aud | status | paid_at | ...
-PAY-000001 | SES-12345  | 15.50      | PAID   | 2026-...
-```
-
-**Via Azure CLI (Storage Explorer alternative):**
 ```bash
 az storage blob list \
   --account-name evdatalakedev \
@@ -583,6 +564,18 @@ Expected:
 ```
 api/payments/raw/payments.json
 ```
+
+Download and inspect the raw content:
+```bash
+az storage blob download \
+  --account-name evdatalakedev \
+  --container-name bronze \
+  --name "api/payments/raw/payments.json" \
+  --file payments_check.json \
+  --auth-mode login
+```
+
+> **Databricks access to this file** will use Unity Catalog External Locations (Access Connector → Storage Credential → External Location) — covered in the Databricks session. No `spark.conf.set`, no mount, no SAS token.
 
 ---
 
@@ -808,8 +801,7 @@ gold/
 - [ ] Pipeline `pl_bronze_api_payments` — 5 activities built, published
 - [ ] Pipeline triggered manually — all 5 activities green
 - [ ] `act_copy_payments` output shows rowsCopied = 100
-- [ ] File `bronze/api/payments/raw/payments.json` exists in ADLS
-- [ ] (Optional) Databricks notebook confirms record count = 100
+- [ ] File `bronze/api/payments/raw/payments.json` confirmed via `az storage blob list`
 
 ---
 
@@ -824,7 +816,13 @@ Bronze API path  : bronze/api/payments/raw/payments.json
 abfss path       : abfss://bronze@evdatalakedev.dfs.core.windows.net/api/payments/raw/
 
 Access control (modern standard — no account keys, no SAS):
-  Your user          → Key Vault Secrets Officer  → kv-ev-intelligence-dev
-  ADF MI             → Key Vault Secrets User     → kv-ev-intelligence-dev
-  ADF MI             → Storage Blob Data Contributor → evdatalakedev
+  Your user    → Key Vault Secrets Officer     → kv-ev-intelligence-dev
+  ADF MI       → Key Vault Secrets User        → kv-ev-intelligence-dev
+  ADF MI       → Storage Blob Data Contributor → evdatalakedev
+
+Databricks access (later day — Unity Catalog):
+  Access Connector (MI) → Storage Blob Data Contributor → evdatalakedev
+  Storage Credential    → references Access Connector MI
+  External Location     → abfss://bronze@evdatalakedev.dfs.core.windows.net/
+  Unity Catalog injects credentials automatically — no spark.conf, no mount
 ```

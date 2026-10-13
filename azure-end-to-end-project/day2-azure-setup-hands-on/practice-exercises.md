@@ -246,47 +246,47 @@ Expected: `api/payments/raw/payments.json`
 
 ---
 
-## Exercise 7 — Inspect the Bronze File
+## Exercise 7 — Inspect the Bronze File via CLI
 
-**Objective:** Read the raw JSON that ADF wrote and understand the Bronze-layer structure.
+**Objective:** Confirm the raw JSON landed correctly and understand what Bronze-layer data looks like before Databricks processes it.
 
-Open a Databricks notebook and run (assumes SP OAuth is configured — see Day 2 notes Part 7 or set up SP credentials in Key Vault first):
+1. List files in the bronze payments directory:
+   ```bash
+   az storage blob list \
+     --account-name evdatalakedev \
+     --container-name bronze \
+     --prefix "api/payments/raw/" \
+     --auth-mode login \
+     --query "[].{name:name, size:properties.contentLength}" \
+     -o table
+   ```
+   Expected: `api/payments/raw/payments.json` with size > 0
 
-```python
-SCOPE = "kv-ev-scope"
-storage_account = dbutils.secrets.get(scope=SCOPE, key="adls-account-name")
-sp_client_id    = dbutils.secrets.get(scope=SCOPE, key="sp-client-id")
-sp_client_secret= dbutils.secrets.get(scope=SCOPE, key="sp-client-secret")
-sp_tenant_id    = dbutils.secrets.get(scope=SCOPE, key="sp-tenant-id")
+2. Download and inspect the raw content:
+   ```bash
+   az storage blob download \
+     --account-name evdatalakedev \
+     --container-name bronze \
+     --name "api/payments/raw/payments.json" \
+     --file payments_check.json \
+     --auth-mode login
+   ```
 
-spark.conf.set(f"fs.azure.account.auth.type.{storage_account}.dfs.core.windows.net", "OAuth")
-spark.conf.set(f"fs.azure.account.oauth.provider.type.{storage_account}.dfs.core.windows.net",
-               "org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider")
-spark.conf.set(f"fs.azure.account.oauth2.client.id.{storage_account}.dfs.core.windows.net", sp_client_id)
-spark.conf.set(f"fs.azure.account.oauth2.client.secret.{storage_account}.dfs.core.windows.net", sp_client_secret)
-spark.conf.set(f"fs.azure.account.oauth2.client.endpoint.{storage_account}.dfs.core.windows.net",
-               f"https://login.microsoftonline.com/{sp_tenant_id}/oauth2/token")
-
-bronze_path = f"abfss://bronze@{storage_account}.dfs.core.windows.net/api/payments/raw/"
-
-# List files
-display(dbutils.fs.ls(bronze_path))
-
-# Read the JSON
-df = spark.read.option("multiLine", "true").json(bronze_path + "payments.json")
-print(f"Record count: {df.count()}")
-print(f"Schema:")
-df.printSchema()
-display(df.limit(5))
-```
+3. Open `payments_check.json` in a text editor or run:
+   ```bash
+   # View first 500 characters (PowerShell)
+   Get-Content payments_check.json -Raw | Select-Object -First 1 | ForEach-Object { $_.Substring(0, [Math]::Min(500, $_.Length)) }
+   ```
 
 Answer these questions from the output:
-1. How many records were written? Does it match the `rowsCopied = 100` in ADF Monitor?
-2. What columns does the raw JSON have? Are there any null columns?
-3. Is there a `_ingestion_ts` or `_source_file` column? (Answer: No — Bronze from ADF lands raw. Audit columns are added by Databricks in Day 3.)
-4. What is the data type ADF inferred for `amount_aud`? Is it correct?
+1. Is the file valid JSON — does it start with `[` (array of objects)?
+2. What fields does a single payment record have? List them.
+3. Is there a `_ingestion_ts` or `_source_file` audit column? Why not?
+4. What value does `amount_aud` hold — is it a number or a string?
 
-**Verify:** Record count = 100, file exists at `api/payments/raw/payments.json`.
+> **Note:** Databricks will read this file using Unity Catalog External Locations (covered in a later day). At that point, audit columns (`_ingestion_ts`, `_source_file`, `_pipeline_run_id`) are added during the Bronze → Silver transformation.
+
+**Verify:** File exists at `api/payments/raw/payments.json`, content is a valid JSON array.
 
 ---
 

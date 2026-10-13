@@ -28,16 +28,17 @@ The correct command uses `--auth-mode login` (Azure AD identity) or `--auth-mode
 ---
 
 **A3**
-Without hierarchical namespace, the account is plain Blob Storage. When Databricks tries `abfss://bronze@evdatalakedev.dfs.core.windows.net/`, it connects via the ABFS (Azure Blob File System) connector which requires ADLS Gen2. The error will be something like:
+Without hierarchical namespace, the account is plain Blob Storage. The `abfss://` protocol connects via the ABFS (Azure Blob File System) driver which requires ADLS Gen2 with HNS. Without it, the DFS endpoint (`*.dfs.core.windows.net`) does not exist for that account, so any `abfss://` access fails:
 ```
-StatusCode=403, ErrorCode=FilesystemNotFound — The specified filesystem does not exist.
+StatusCode=404, ErrorCode=FilesystemNotFound — The specified filesystem does not exist.
 ```
-Or the connector may fail to resolve the DFS endpoint entirely.
+ADF's ADLS Gen2 linked service will also fail its test connection against the DFS endpoint.
 
 **Fix:** HNS cannot be enabled retroactively on an existing account. The engineer must:
-1. Create a new storage account with HNS enabled
-2. Re-create the containers
-3. Delete the old account
+1. Create a new storage account with hierarchical namespace ON
+2. Re-create the 4 containers
+3. Reassign all RBAC roles (ADF MI, user account) to the new storage resource
+4. Delete the old account
 
 This is why enabling HNS at creation time is critical — it is not fixable after the fact.
 
@@ -109,9 +110,9 @@ A pipeline with write access to Key Vault could potentially be exploited (throug
 | Role | Can read secret values | Can create/update/delete secrets | Assigned to |
 |---|---|---|---|
 | `Key Vault Secrets Officer` | Yes | Yes | Your user account (needs to manage secrets) |
-| `Key Vault Secrets User` | Yes | No | ADF MI, AzureDatabricks app, Service Principal |
+| `Key Vault Secrets User` | Yes | No | ADF MI, Service Principal, and any downstream service that only reads secrets |
 
-Principle: grant the **minimum privilege needed** for the task. ADF, Databricks, and the SP only need to read secrets at runtime — they should never be able to create or overwrite them.
+Principle: grant the **minimum privilege needed** for the task. ADF only needs to read secrets at runtime — it should never be able to create or overwrite them.
 
 ---
 
@@ -280,14 +281,14 @@ Flat path (`bronze/payments.json`) breaks as soon as a second entity is added an
 ---
 
 **A22**
-No — the Bronze design is not incomplete. ADF's job is to land the raw API response exactly as received. Adding audit columns (`_ingestion_ts`, `_source_file`, `_pipeline_run_id`) is the Databricks notebook's job when it reads from Bronze and writes to Silver.
+No — the Bronze design is not incomplete. ADF's job is to land the raw API response exactly as received. Adding audit columns (`_ingestion_ts`, `_source_file`, `_pipeline_run_id`) is the transformation engine's job (Databricks, covered in a later day) when it reads from Bronze and writes to Silver.
 
 This separation is intentional:
-- ADF is a no-code orchestration tool — adding columns requires a transformation engine
-- Bronze = raw landing zone. If you add columns in Bronze, you've already transformed the data
-- Audit columns added at the Bronze→Silver transition reflect when Databricks processed the data, which is meaningful for debugging Silver processing issues
+- ADF is a no-code orchestration tool — adding columns requires a compute/transformation layer
+- Bronze = raw landing zone. If you add columns at ingest time, you've already transformed the data and lost the original source record shape
+- Audit columns added at the Bronze → Silver transition reflect when the data was processed, which is meaningful for debugging transformation issues independently of ingestion timing
 
-Day 3 adds a Databricks notebook that reads `payments.json`, adds the 4 audit columns, and writes to `silver/payments/` as a Delta table with MERGE upsert.
+A later Databricks session adds the notebook that reads `payments.json` via Unity Catalog External Location, adds the 4 audit columns, and writes to `silver/payments/` as a Delta table with MERGE upsert.
 
 ---
 
