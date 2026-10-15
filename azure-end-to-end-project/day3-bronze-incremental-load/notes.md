@@ -58,9 +58,9 @@ Re-run same day (idempotent):
 
 ```
 [Databricks Unity Catalog — one-time setup]
-  Access Connector (MI) → Storage Blob Data Contributor → evdatalakedev
+  Access Connector (MI) → Storage Blob Data Contributor → evdatalakedev2
   Storage Credential: mi-ev-credential
-  External Location:  ext-loc-ev-bronze  (abfss://bronze@evdatalakedev...)
+  External Location:  ext-loc-ev-bronze  (abfss://bronze@evdatalakedev2...)
   Catalog: ev_catalog | Schema: ctl
   Delta Table: ev_catalog.ctl.pipeline_control
 
@@ -85,7 +85,7 @@ Before creating the control table, the Unity Catalog infrastructure must exist. 
 
 Verify in Azure Portal:
 - Databricks workspace exists (`dbw-ev-intelligence-dev` in `rg-ev-intelligence-dev`)
-- ADLS Gen2 `evdatalakedev` has `bronze` container
+- ADLS Gen2 `evdatalakedev2` has `bronze` container
 - `MicrosoftDatabricks` resource provider is registered
 
 ```bash
@@ -105,7 +105,7 @@ The Access Connector is an Azure resource whose Managed Identity Unity Catalog u
    |---|---|
    | Subscription | yours |
    | Resource group | `rg-ev-intelligence-dev` |
-   | Name | `ac-ev-databricks` |
+   | Name | `ac-ev-databricks-02` |
    | Region | `Central India` |
 
 3. **Review + Create** → **Create** (~1 minute)
@@ -119,35 +119,35 @@ The Access Connector is an Azure resource whose Managed Identity Unity Catalog u
 ```bash
 az databricks access-connector create \
   --resource-group rg-ev-intelligence-dev \
-  --name ac-ev-databricks \
+  --name ac-ev-databricks-02 \
   --location centralindia \
   --identity-type SystemAssigned
 ```
 
 ### 1.3 Grant Access Connector Permission on ADLS Gen2
 
-The Access Connector's Managed Identity must have `Storage Blob Data Contributor` on `evdatalakedev`.
+The Access Connector's Managed Identity must have `Storage Blob Data Contributor` on `evdatalakedev2`.
 
 **Via Portal:**
-1. Portal → **Storage accounts** → `evdatalakedev` → **Access Control (IAM)**
+1. Portal → **Storage accounts** → `evdatalakedev2` → **Access Control (IAM)**
 2. **+ Add** → **Add role assignment**
 3. Role: `Storage Blob Data Contributor` → **Next**
 4. Members: **Managed identity** → **+ Select members**
    - Managed identity type: `Access Connector for Azure Databricks`
-   - Select: `ac-ev-databricks`
+   - Select: `ac-ev-databricks-02`
 5. **Review + assign**
 
 **Via CLI:**
 ```bash
 STORAGE_ID=$(az storage account show \
-  --name evdatalakedev \
+  --name evdatalakedev2 \
   --resource-group rg-ev-intelligence-dev \
   --query id -o tsv)
 
 AC_PRINCIPAL=$(az resource show \
   --resource-group rg-ev-intelligence-dev \
   --resource-type "Microsoft.Databricks/accessConnectors" \
-  --name ac-ev-databricks \
+  --name ac-ev-databricks-02 \
   --query "identity.principalId" -o tsv)
 
 az role assignment create \
@@ -180,7 +180,7 @@ Fill in:
 | Credential name | `mi-ev-credential` |
 | Access connector ID | paste the Resource ID from Part 1.2 |
 | User assigned managed identity ID | leave blank |
-| Comment | `MI credential for evdatalakedev` |
+| Comment | `MI credential for evdatalakedev2` |
 
 Click **Create** → `mi-ev-credential` appears in the list.
 
@@ -198,7 +198,7 @@ Fill in:
 |---|---|
 | External location name | `ext-loc-ev-bronze` |
 | Storage type | `Azure Data Lake Storage` (default) |
-| URL | `abfss://bronze@evdatalakedev.dfs.core.windows.net/` |
+| URL | `abfss://bronze@evdatalakedev2.dfs.core.windows.net/` |
 | Storage credential | `mi-ev-credential` |
 
 Click **Create** → **Test connection**
@@ -212,7 +212,7 @@ Expected result:
 
 If Read/List/Write fail with `Authorization failed` → the Access Connector MI doesn't have `Storage Blob Data Contributor` yet — re-check Part 1.3, wait 2 more minutes.
 
-> **What Unity Catalog provides:** Once this External Location exists, any notebook that reads/writes to `abfss://bronze@evdatalakedev.dfs.core.windows.net/` using a path covered by this location will have credentials injected automatically. No `spark.conf.set`, no account key, no mount.
+> **What Unity Catalog provides:** Once this External Location exists, any notebook that reads/writes to `abfss://bronze@evdatalakedev2.dfs.core.windows.net/` using a path covered by this location will have credentials injected automatically. No `spark.conf.set`, no account key, no mount.
 
 ### 2.3 Create Catalog and Schema
 
@@ -267,14 +267,14 @@ CREATE TABLE IF NOT EXISTS ev_catalog.ctl.pipeline_control (
     sink_base_path STRING       NOT NULL,
     file_prefix    STRING       NOT NULL,
     page_size      INT          NOT NULL,
-    load_type      STRING       NOT NULL DEFAULT 'full',
-    last_watermark STRING       NOT NULL DEFAULT '1900-01-01T00:00:00Z',
+    load_type      STRING       NOT NULL,
+    last_watermark STRING       NOT NULL,
     last_run_ts    TIMESTAMP,
-    is_active      BOOLEAN      NOT NULL DEFAULT true,
+    is_active      BOOLEAN      NOT NULL,
     CONSTRAINT pk_source_name PRIMARY KEY (source_name)
 )
 USING DELTA
-LOCATION 'abfss://bronze@evdatalakedev.dfs.core.windows.net/ctl/pipeline_control'
+LOCATION 'abfss://bronze@evdatalakedev2.dfs.core.windows.net/ctl/pipeline_control'
 COMMENT 'ADF ingestion control table — drives endpoint, path, watermark per source';
 ```
 
@@ -767,7 +767,7 @@ bronze/api/sessions/ingestion_date=2026-10-14/sessions_page_001.json
 
 **Databricks / Unity Catalog:**
 - [ ] Access Connector `ac-ev-databricks` created
-- [ ] Access Connector MI has `Storage Blob Data Contributor` on `evdatalakedev`
+- [ ] Access Connector MI has `Storage Blob Data Contributor` on `evdatalakedev2`
 - [ ] Storage Credential `mi-ev-credential` created in Databricks
 - [ ] External Location `ext-loc-ev-bronze` created — Read/Write test green
 - [ ] Catalog `ev_catalog` and schema `ctl` created
@@ -788,7 +788,7 @@ bronze/api/sessions/ingestion_date=2026-10-14/sessions_page_001.json
 - [ ] Trigger `trg_payments_incremental` created and active
 
 **Post-run verification:**
-- [ ] `az storage blob list --account-name evdatalakedev --container-name bronze --prefix "api/payments/" --auth-mode login` shows multiple files
+- [ ] `az storage blob list --account-name evdatalakedev2 --container-name bronze --prefix "api/payments/" --auth-mode login` shows multiple files
 - [ ] Control table shows `load_type = incremental` and `last_watermark` updated
 - [ ] Second run fetches only records changed since first run
 
@@ -814,19 +814,19 @@ bronze/api/sessions/ingestion_date=2026-10-14/sessions_page_001.json
 
 ```
 Control table : ev_catalog.ctl.pipeline_control
-                Location: abfss://bronze@evdatalakedev.dfs.core.windows.net/ctl/pipeline_control
+                Location: abfss://bronze@evdatalakedev2.dfs.core.windows.net/ctl/pipeline_control
 
 Sink pattern  : bronze/<sink_base_path>/ingestion_date=YYYY-MM-DD/<file_prefix>_page_NNN.json
 Example       : bronze/api/payments/ingestion_date=2026-10-14/payments_page_001.json
 
 Access chain (Databricks):
-  ac-ev-databricks (MI)  →  Storage Blob Data Contributor  →  evdatalakedev
-  mi-ev-credential       →  references ac-ev-databricks
-  ext-loc-ev-bronze      →  abfss://bronze@evdatalakedev.dfs.core.windows.net/
+  ac-ev-databricks-02 (MI)  →  Storage Blob Data Contributor  →  evdatalakedev2
+  mi-ev-credential          →  references ac-ev-databricks-02
+  ext-loc-ev-bronze         →  abfss://bronze@evdatalakedev2.dfs.core.windows.net/
 
 Access chain (ADF):
   adf-ev-intelligence-dev MI  →  Key Vault Secrets User        →  kv-ev-intelligence-dev
-  adf-ev-intelligence-dev MI  →  Storage Blob Data Contributor →  evdatalakedev
+  adf-ev-intelligence-dev MI  →  Storage Blob Data Contributor →  evdatalakedev2
   adf-ev-intelligence-dev MI  →  Contributor                   →  dbw-ev-intelligence-dev
 
 API pagination:
