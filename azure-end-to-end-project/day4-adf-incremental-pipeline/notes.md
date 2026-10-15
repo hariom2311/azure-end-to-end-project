@@ -40,6 +40,7 @@ nb_update_watermark                ds_bronze_payments_sink (updated — dynamic 
                                      ├── Read control table (Databricks notebook)
                                      ├── Get auth token (Web Activities)
                                      ├── Fetch page 1 + capture total_pages
+                                     ├── Copy page 1 data to Bronze
                                      ├── Until loop (pages 2 to N)
                                      └── Update watermark (Databricks notebook)
                                    trg_payments_incremental (new Tumbling Window trigger)
@@ -47,70 +48,47 @@ nb_update_watermark                ds_bronze_payments_sink (updated — dynamic 
 
 ---
 
-## Architecture: Full Pipeline Flow
+## Architecture: Full Pipeline Activity Graph
 
 ```
-[ADF Pipeline: pl_bronze_incremental_load]
+[START — no dependencies]
+  act_get_username  (Web → KV)     ─────────────────────────────────────┐
+  act_get_password  (Web → KV)     ────────────────────────────────┐    │
+  act_read_ctl      (Databricks)   ──┐                             │    │
+                                     │                             ▼    ▼
+[depends on act_read_ctl]            │                        act_api_login (Web POST)
+  act_set_endpoint    (SetVar)  ◄────┤                             │
+  act_set_sink_path   (SetVar)  ◄────┤                        act_set_token (SetVar)
+  act_set_file_prefix (SetVar)  ◄────┤                             │
+  act_set_page_size   (SetVar)  ◄────┤                        act_fetch_page1_meta (Web GET)
+  act_set_watermark   (SetVar)  ◄────┤                             │
+  act_set_ingestion_date (SetVar) ◄──┤                        act_set_total_pages (SetVar)
+  act_set_run_ts      (SetVar)  ◄────┘                             │
+                                                                    │
+[Copy data1 — depends on ALL set variables + act_set_total_pages]  │
+  Copy data1 (act_copy_page1) ◄──────────────────────────────────────
+     depends on: act_set_total_pages, act_set_endpoint, act_set_sink_path,
+                 act_set_file_prefix, act_set_page_size, act_set_watermark,
+                 act_set_ingestion_date, act_set_run_ts
 
-  act_read_ctl  (Databricks Notebook)
-    → reads ev_catalog.ctl.pipeline_control for p_source_name
-    → exits with JSON: endpoint, sink_base_path, file_prefix, page_size, load_type, last_watermark
-        ↓
-  act_set_endpoint / act_set_sink_path / act_set_file_prefix / act_set_page_size  (Set Variable ×4, parallel)
-        ↓
-  act_set_watermark  (Set Variable — epoch if p_load_type_override=full, else control table value)
-  act_set_ingestion_date  (Set Variable — yyyy-MM-dd)
-  act_set_run_ts  (Set Variable — utcnow(), used as new watermark after success)
-        ↓
-  act_get_username ─┐
-  act_get_password  ├──→  act_api_login  →  act_set_token
-                    ↓
-  act_fetch_page1_meta  (Web Activity — GET page 1, capture total_pages from pagination block)
-        ↓
-  act_set_total_pages  (Set Variable — v_total_pages)
-  act_copy_page1  (Copy Activity — write page 1 data to Bronze sink)
-  act_set_current_page_2  (Set Variable — v_current_page = 2)
-        ↓
-  Until: @greaterOrEquals(v_current_page, add(v_total_pages, 1))
-    ├── act_copy_page  (Copy Activity — page N)
-    └── act_increment_page  (Set Variable — v_current_page + 1)
-        ↓
-  act_update_watermark  (Databricks Notebook — writes v_run_ts to control table)
-        ↓ (On Failure from any copy)
-  act_alert_failure  (Web Activity — alert webhook)
+[Until loop — depends on Copy data1]
+  Until (act_set_current_page_2 = 2, loop pages 2..N)
+    ├── act_copy_page   (Copy — no dependency inside loop, first to run)
+    └── act_increment_page (SetVar — depends on act_copy_page)
+
+[act_update_watermark — depends on Until success]
+  act_update_watermark (Databricks)
 ```
 
 ---
 
-## Part 1 — ADF Linked Service for Databricks
+## Part 1 — Access Setup (Three Layers)
 
-ADF needs a linked service to call Databricks notebooks. It uses ADF's system-assigned Managed Identity — the same MI already used for Key Vault and ADLS.
+This is the part most commonly missed. ADF's MI needs three separate permissions — one Azure RBAC role and one Databricks workspace-level user grant.
 
-### 1.1 Create Linked Service `ls_databricks`
+### 1.1 Azure RBAC — Contributor on Databricks Workspace (ARM level)
 
-**ADF Studio → Manage → Linked services → + New:**
-
-1. Search `Azure Databricks` → select **Azure Databricks** (under **Compute** category — NOT "Azure Databricks Delta Lake") → **Continue**
-
-2. Fill:
-
-   | Field | Value |
-   |---|---|
-   | Name | `ls_databricks` |
-   | Azure subscription | yours |
-   | Databricks workspace | `dbw-ev-intelligence-dev` |
-   | Select cluster | **New job cluster** |
-   | Job cluster version | `15.4 LTS (includes Apache Spark 3.5.0, Scala 2.12)` |
-   | Node type | `Standard_DS3_v2` |
-   | Authentication type | `System Assigned Managed Identity` |
-
-3. **Test connection** → green → **Create**
-
-> **New job cluster:** ADF spins up a fresh cluster per pipeline run and terminates it when done. No idle cluster to forget to stop — cost is incurred only during execution (~5 minutes for a full payments load).
-
-### 1.2 Grant ADF MI Access to Databricks Workspace
-
-ADF's Managed Identity needs `Contributor` on the Databricks workspace to trigger notebook jobs.
+Required so ADF can call the Databricks Jobs API to submit and monitor notebook runs.
 
 **Via Portal:**
 1. Portal → **Azure Databricks** → `dbw-ev-intelligence-dev` → **Access Control (IAM)**
@@ -138,19 +116,56 @@ az role assignment create \
   --scope $DBW_ID
 ```
 
+### 1.2 Databricks Workspace User — Add ADF MI as User (workspace level)
+
+This is the step that causes the permission error when running notebooks via ADF. Azure RBAC (`Contributor`) gives ADF access to the ARM plane — it can create job runs. But the Databricks workspace itself has its own permission system. The ADF MI must be added as a user **inside** the Databricks workspace, or it cannot access notebooks, catalogs, or clusters.
+
+**Steps:**
+1. In Databricks workspace → top-right avatar → **Manage** → **Identity and Access** → **Users** tab  
+   (or go to `https://accounts.azuredatabricks.net` → **User Management**)
+2. **+ Add User**
+3. Enter the **Object ID** (Principal ID) of the ADF MI — this is the value of `$ADF_MI` from the CLI command above
+   - Alternatively, search for the ADF factory name in the identities list
+4. Assign workspace role: **User** (sufficient — ADF only needs to run notebooks, not admin the workspace)
+5. Click **Add**
+
+**Or via Databricks workspace → Admin Settings → Users:**
+1. **Settings** (gear icon) → **Admin Console** → **Users** tab
+2. **+ Add User** → enter the service principal's Application ID or Object ID
+3. Role: `User`
+
+> **Why this is needed:** Azure RBAC controls the ARM/resource plane (can ADF submit a job request?). Databricks workspace access controls the data plane (can the principal access notebooks, Unity Catalog, clusters?). Both are required. Missing the workspace user is the most common cause of `com.databricks.common.client.DatabricksServiceException: User not authorized`.
+
+### 1.3 Create Linked Service `ls_databricks`
+
+**ADF Studio → Manage → Linked services → + New → Azure Databricks (Compute category):**
+
+| Field | Value |
+|---|---|
+| Name | `ls_databricks` |
+| Azure subscription | yours |
+| Databricks workspace | `dbw-ev-intelligence-dev` |
+| Select cluster | **New job cluster** |
+| Job cluster version | `15.4 LTS (includes Apache Spark 3.5.0, Scala 2.12)` |
+| Node type | `Standard_DS3_v2` |
+| Authentication type | `System Assigned Managed Identity` |
+
+**Test connection** → green → **Create**
+
+> **New job cluster:** ADF spins up a fresh cluster per pipeline run and terminates it when done. No idle cluster to forget to stop — cost only during execution.
+
 ---
 
-## Part 2 — Update Source Dataset
+## Part 2 — Update Datasets
 
-The Day 2 dataset `ds_voltgrid_payments_src` needs two new parameters so it can serve any source endpoint and carry the `updated_after` watermark.
+### 2.1 Update Source Dataset `ds_voltgrid_payments_src`
 
 **ADF Studio → Author → Datasets → `ds_voltgrid_payments_src`:**
 
 1. **Parameters** tab → add:
    - `p_endpoint` — String — default: `/api/db/payments/`
    - `p_updated_after` — String — default: `1900-01-01T00:00:00Z`
-
-   (Keep existing `p_page` and `p_page_size` parameters.)
+   (Keep existing `p_page` and `p_page_size`)
 
 2. **Connection** tab → Relative URL → **Edit dynamic content**:
    ```
@@ -165,7 +180,7 @@ The Day 2 dataset `ds_voltgrid_payments_src` needs two new parameters so it can 
    )
    ```
 
-**Full dataset parameters after update:**
+**Full parameters after update:**
 
 | Parameter | Type | Default |
 |---|---|---|
@@ -176,7 +191,7 @@ The Day 2 dataset `ds_voltgrid_payments_src` needs two new parameters so it can 
 
 ### 2.2 Update Sink Dataset `ds_bronze_payments_sink`
 
-The Day 2 sink dataset had the folder path and file name hardcoded. In Day 4 both must come from pipeline variables so the pipeline can serve any source and any date partition.
+The Day 2 sink had folder and file name hardcoded. Day 4 needs both to be dynamic.
 
 **ADF Studio → Author → Datasets → `ds_bronze_payments_sink`:**
 
@@ -190,10 +205,6 @@ The Day 2 sink dataset had the folder path and file name hardcoded. In Day 4 bot
    - File path (File): `@dataset().p_file`
 
 3. **Publish all**
-
-> The pipeline passes these at runtime:
-> - `p_folder` = `@concat(variables('v_sink_base_path'), '/ingestion_date=', variables('v_ingestion_date'))`
-> - `p_file` = `@concat(variables('v_file_prefix'), '_page_', padLeft(string(variables('v_current_page')), 3, '0'), '.json')`
 
 ---
 
@@ -221,44 +232,77 @@ The Day 2 sink dataset had the folder path and file name hardcoded. In Day 4 bot
 | `v_total_pages` | Integer | Max pages from API page 1 response |
 | `v_run_ts` | String | ISO 8601 UTC captured at pipeline start — written back as new watermark |
 
-### 3.3 Build Step by Step
+### 3.3 Activities — Build Order and Dependency Chain
 
-#### Step 1 — Read Control Table
+Each activity below lists exactly what it depends on and what depends on it.
 
-Drag **Databricks Notebook** activity → rename `act_read_ctl`
+---
 
-**Azure Databricks** tab:
+#### `act_read_ctl` — Databricks Notebook
+
+**Depends on:** nothing (pipeline start)  
+**Downstream of:** nothing  
+**Required by:** all 7 Set Variable activities below
+
+- Type: `DatabricksNotebook`
 - Linked service: `ls_databricks`
-- Notebook path: `/Workspace/ev-project/nb_read_control_table`
+- Notebook path: `/Users/hariomsuryawanshi68258@gmail.com/nb_read_control_table`
+  *(use your actual Databricks notebook path — check in Databricks Workspace)*
+- Base parameters:
+  - `source_name` = `@pipeline().parameters.p_source_name`
 
-**Settings** tab → **Base parameters** → **+ New**:
-- Name: `source_name` | Value → **Add dynamic content**: `@pipeline().parameters.p_source_name`
-
----
-
-#### Step 2 — Set Variables from Control Table Output
-
-Connect 4 **Set Variable** activities in parallel from `act_read_ctl` (all depend on it, none depend on each other):
-
-> The notebook exits with a JSON **string** via `dbutils.notebook.exit(json.dumps(result))`. Use `@json()` in ADF expressions to parse it before accessing fields.
-
-| Activity | Variable | Value expression |
-|---|---|---|
-| `act_set_endpoint` | `v_endpoint` | `@json(activity('act_read_ctl').output.runOutput).endpoint` |
-| `act_set_sink_path` | `v_sink_base_path` | `@json(activity('act_read_ctl').output.runOutput).sink_base_path` |
-| `act_set_file_prefix` | `v_file_prefix` | `@json(activity('act_read_ctl').output.runOutput).file_prefix` |
-| `act_set_page_size` | `v_page_size` | `@string(json(activity('act_read_ctl').output.runOutput).page_size)` |
+> Exits with JSON string: `{"endpoint": "...", "sink_base_path": "...", "file_prefix": "...", "page_size": 1000, "load_type": "...", "last_watermark": "..."}`
 
 ---
 
-#### Step 3 — Set Watermark, Date, and Run Timestamp
+#### `act_set_endpoint` — Set Variable
 
-After all 4 Set Variable activities above, add 3 more **Set Variable** activities:
+**Depends on:** `act_read_ctl` (Succeeded)  
+**Required by:** `Copy data1`
 
-**act_set_watermark:**
-```
-Variable: v_last_watermark
-Value:
+- Variable: `v_endpoint`
+- Value: `@json(activity('act_read_ctl').output.runOutput).endpoint`
+
+---
+
+#### `act_set_sink_path` — Set Variable
+
+**Depends on:** `act_read_ctl` (Succeeded)  
+**Required by:** `Copy data1`
+
+- Variable: `v_sink_base_path`
+- Value: `@json(activity('act_read_ctl').output.runOutput).sink_base_path`
+
+---
+
+#### `act_set_file_prefix` — Set Variable
+
+**Depends on:** `act_read_ctl` (Succeeded)  
+**Required by:** `Copy data1`
+
+- Variable: `v_file_prefix`
+- Value: `@json(activity('act_read_ctl').output.runOutput).file_prefix`
+
+---
+
+#### `act_set_page_size` — Set Variable
+
+**Depends on:** `act_read_ctl` (Succeeded)  
+**Required by:** `Copy data1`
+
+- Variable: `v_page_size`
+- Value: `@string(json(activity('act_read_ctl').output.runOutput).page_size)`
+
+---
+
+#### `act_set_watermark` — Set Variable
+
+**Depends on:** `act_read_ctl` (Succeeded)  
+**Required by:** `Copy data1`
+
+- Variable: `v_last_watermark`
+- Value:
+  ```
   @if(
     and(
       not(empty(pipeline().parameters.p_load_type_override)),
@@ -267,52 +311,84 @@ Value:
     '1900-01-01T00:00:00Z',
     json(activity('act_read_ctl').output.runOutput).last_watermark
   )
-```
-> If `p_load_type_override = 'full'` → use epoch (fetch everything). Otherwise → use control table watermark (incremental).
-
-**act_set_ingestion_date:**
-```
-Variable: v_ingestion_date
-Value: @formatDateTime(utcnow(), 'yyyy-MM-dd')
-```
-
-**act_set_run_ts:**
-```
-Variable: v_run_ts
-Value: @utcnow()
-```
-> Captured at pipeline **start** — not end. Captures at start means any records updated during the pipeline run are included in the next incremental window (safe overlap vs. risk of gap).
+  ```
 
 ---
 
-#### Step 4 — Authenticate to VoltGrid API
+#### `act_set_ingestion_date` — Set Variable
 
-Add **act_get_username** and **act_get_password** (parallel Web Activities to Key Vault) then **act_api_login** (POST to VoltGrid) then **act_set_token** — identical to Day 2 pipeline. See Day 2 notes Part 7.3 for exact settings.
+**Depends on:** `act_read_ctl` (Succeeded)  
+**Required by:** `Copy data1`
 
-Key Vault URLs:
-- Username: `https://kv-ev-intelligence-dev.vault.azure.net/secrets/voltgrid-username/?api-version=7.0`
-- Password: `https://kv-ev-intelligence-dev.vault.azure.net/secrets/voltgrid-password/?api-version=7.0`
-
-Login POST body:
-```
-@concat('{"username":"', activity('act_get_username').output.value, '","password":"', activity('act_get_password').output.value, '"}')
-```
-
-Set token:
-```
-Variable: v_token
-Value: @activity('act_api_login').output.token
-```
+- Variable: `v_ingestion_date`
+- Value: `@formatDateTime(utcnow(), 'yyyy-MM-dd')`
 
 ---
 
-#### Step 5 — Fetch Page 1 and Capture total_pages
+#### `act_set_run_ts` — Set Variable
 
-ADF's Copy Activity writes data to the sink but does not expose the full API response body (including pagination metadata). Use a **Web Activity** for page 1 to read the response — then a separate Copy Activity to write page 1 data.
+**Depends on:** `act_read_ctl` (Succeeded)  
+**Required by:** `Copy data1`, eventually `act_update_watermark` (via `v_run_ts`)
 
-**act_fetch_page1_meta** (Web Activity):
+- Variable: `v_run_ts`
+- Value: `@utcnow()`
+
+> Captured at pipeline **start** — not end. This ensures records updated during the run window are captured in the next incremental fetch (safe overlap vs. gap).
+
+---
+
+#### `act_get_username` — Web Activity (Key Vault)
+
+**Depends on:** nothing (pipeline start, runs in parallel with `act_read_ctl` branch)  
+**Required by:** `act_api_login`
+
 - Method: `GET`
-- URL → Add dynamic content:
+- URL: `https://kv-ev-intelligence-dev.vault.azure.net/secrets/voltgrid-username/?api-version=7.0`
+- Authentication: MSI, resource: `https://vault.azure.net`
+
+---
+
+#### `act_get_password` — Web Activity (Key Vault)
+
+**Depends on:** nothing (pipeline start, runs in parallel with `act_get_username` and `act_read_ctl`)  
+**Required by:** `act_api_login`
+
+- Method: `GET`
+- URL: `https://kv-ev-intelligence-dev.vault.azure.net/secrets/voltgrid-password/?api-version=7.0`
+- Authentication: MSI, resource: `https://vault.azure.net`
+
+---
+
+#### `act_api_login` — Web Activity (POST login)
+
+**Depends on:** `act_get_username` (Succeeded), `act_get_password` (Succeeded)  
+**Required by:** `act_set_token`
+
+- Method: `POST`
+- URL: `https://ev-project-navy-mu.vercel.app/api/auth/login/`
+- Headers: `Content-Type: application/json`
+- Body: `@concat('{"username":"', activity('act_get_username').output.value, '","password":"', activity('act_get_password').output.value, '"}')`
+
+---
+
+#### `act_set_token` — Set Variable
+
+**Depends on:** `act_api_login` (Succeeded)  
+**Required by:** `act_fetch_page1_meta`
+
+- Variable: `v_token`
+- Value: `@activity('act_api_login').output.token`
+
+---
+
+#### `act_fetch_page1_meta` — Web Activity (GET page 1)
+
+**Depends on:** `act_set_token` (Succeeded)  
+**Required by:** `act_set_total_pages`
+
+- Method: `GET`
+- Headers: `authorization` = `@concat('Token ', variables('v_token'))`
+- URL:
   ```
   @concat(
     'https://ev-project-navy-mu.vercel.app',
@@ -323,90 +399,163 @@ ADF's Copy Activity writes data to the sink but does not expose the full API res
     encodeUriComponent(variables('v_last_watermark'))
   )
   ```
-- Headers: `Authorization` = `@concat('Token ', variables('v_token'))`
 
-**act_set_total_pages** (Set Variable, after `act_fetch_page1_meta`):
-```
-Variable: v_total_pages
-Value: @int(activity('act_fetch_page1_meta').output.pagination.total_pages)
-```
-
-**act_copy_page1** (Copy Activity, parallel with `act_set_total_pages`):
-- Source: `ds_voltgrid_payments_src`
-  - `p_endpoint`: `@variables('v_endpoint')`
-  - `p_page`: `1`
-  - `p_page_size`: `@variables('v_page_size')`
-  - `p_updated_after`: `@variables('v_last_watermark')`
-  - Additional headers: `Authorization` = `@concat('Token ', variables('v_token'))`
-- Sink: `ds_bronze_adls_sink` (JSON, parameterised)
-  - Container: `bronze`
-  - Folder path: `@concat(variables('v_sink_base_path'), '/ingestion_date=', variables('v_ingestion_date'))`
-  - File name: `@concat(variables('v_file_prefix'), '_page_', padLeft('1', 3, '0'), '.json')`
-
-Result: `bronze/api/payments/ingestion_date=2026-10-14/payments_page_001.json`
+> This uses a Web Activity (not Copy) because only Web Activity exposes the full response body. ADF's Copy Activity does not surface `pagination.total_pages` as an output — it only reports rows/bytes copied.
 
 ---
 
-#### Step 6 — Set Current Page to 2
+#### `act_set_total_pages` — Set Variable
 
-```
-Variable: v_current_page
-Value: 2
-```
+**Depends on:** `act_fetch_page1_meta` (Succeeded)  
+**Required by:** `Copy data1` (act_copy_page1)
 
-Page 1 already written. Until loop starts at page 2.
+- Variable: `v_total_pages`
+- Value: `@int(activity('act_fetch_page1_meta').output.pagination.total_pages)`
 
 ---
 
-#### Step 7 — Until Loop (Pages 2 to total_pages)
+#### `Copy data1` (act_copy_page1) — Copy Activity
 
-Drag **Until** activity. Connect `act_set_current_page_2` → Until.
+**Depends on:** `act_set_total_pages` + all 7 Set Variable activities from `act_read_ctl` branch:
+- `act_set_total_pages` (Succeeded)
+- `act_set_endpoint` (Succeeded)
+- `act_set_sink_path` (Succeeded)
+- `act_set_file_prefix` (Succeeded)
+- `act_set_page_size` (Succeeded)
+- `act_set_watermark` (Succeeded)
+- `act_set_ingestion_date` (Succeeded)
+- `act_set_run_ts` (Succeeded)
 
-**Until expression** → Add dynamic content:
+**Required by:** Until loop
+
+This is the join point where both branches (Databricks control table read and API auth + page1 fetch) converge before the loop.
+
+**Source — `ds_voltgrid_payments_src`:**
+```
+p_page:         "1"
+p_page_size:    @variables('v_page_size')
+p_endpoint:     @variables('v_endpoint')
+p_updated_after: @variables('v_last_watermark')
+```
+
+**Sink — `ds_bronze_payments_sink`:**
+```
+p_folder: @concat(variables('v_sink_base_path'), '/ingestion_date=', variables('v_ingestion_date'))
+p_file:   @concat(variables('v_file_prefix'), '_page_', padLeft('1', 3, '0'), '.json')
+```
+
+Result file: `bronze/api/payments/ingestion_date=2026-10-14/payments_page_001.json`
+
+> **Bug in your current JSON:** The `p_file` expression is `@concat(variables('v_file_prefix'), '.json')` — this produces `payments.json` instead of `payments_page_001.json`. Fix it to: `@concat(variables('v_file_prefix'), '_page_', padLeft('1', 3, '0'), '.json')`
+
+---
+
+#### Until Loop
+
+**Depends on:** `Copy data1` (Succeeded)  
+**Required by:** `act_update_watermark`
+
+**Exit condition:**
 ```
 @greaterOrEquals(variables('v_current_page'), add(variables('v_total_pages'), 1))
 ```
-> Exits when `v_current_page > v_total_pages`. The `+1` accounts for the post-increment — page N runs, then increments to N+1, then the condition checks N+1 >= N+1 → true → exit.
 
-**Inside the Until loop** (click Until → Edit pencil — both activities must appear on the inner canvas):
+Before the loop starts, initialise the counter: add a **Set Variable** activity between `Copy data1` and Until:
 
-**act_copy_page** (Copy Activity):
-- Source: `ds_voltgrid_payments_src`
-  - `p_endpoint`: `@variables('v_endpoint')`
-  - `p_page`: `@variables('v_current_page')`
-  - `p_page_size`: `@variables('v_page_size')`
-  - `p_updated_after`: `@variables('v_last_watermark')`
-  - Additional headers: `Authorization` = `@concat('Token ', variables('v_token'))`
-- Sink: `ds_bronze_adls_sink`
-  - Folder: `@concat(variables('v_sink_base_path'), '/ingestion_date=', variables('v_ingestion_date'))`
-  - File: `@concat(variables('v_file_prefix'), '_page_', padLeft(string(variables('v_current_page')), 3, '0'), '.json')`
+**`act_set_current_page_2`** (Set Variable):
+- **Depends on:** `Copy data1` (Succeeded)
+- Variable: `v_current_page`
+- Value: `2`
 
-**act_increment_page** (Set Variable, depends on `act_copy_page` success):
-```
-Variable: v_current_page
-Value: @add(variables('v_current_page'), 1)
-```
+Then connect `act_set_current_page_2` → Until.
 
-> **Critical:** Both activities must be inside the Until body — drag them onto the inner canvas. If `act_increment_page` is on the main canvas, the page counter never advances and the loop runs forever.
+**Inside the Until loop** (both must be on the inner canvas — click Until → Edit pencil):
+
+**`act_copy_page`** (Copy Activity):
+- **Depends on:** nothing inside the loop (first activity to run each iteration)
+- Source — `ds_voltgrid_payments_src`:
+  ```
+  p_page:          @variables('v_current_page')
+  p_page_size:     @variables('v_page_size')
+  p_endpoint:      @variables('v_endpoint')
+  p_updated_after: @variables('v_last_watermark')
+  ```
+  Additional header: `Authorization` = `@concat('Token ', variables('v_token'))`
+- Sink — `ds_bronze_payments_sink`:
+  ```
+  p_folder: @concat(variables('v_sink_base_path'), '/ingestion_date=', variables('v_ingestion_date'))
+  p_file:   @concat(variables('v_file_prefix'), '_page_', padLeft(string(variables('v_current_page')), 3, '0'), '.json')
+  ```
+
+**`act_increment_page`** (Set Variable):
+- **Depends on:** `act_copy_page` (Succeeded) — inside Until loop
+- Variable: `v_current_page`
+- Value: `@add(variables('v_current_page'), 1)`
+
+> **Critical:** If `act_increment_page` is on the main canvas instead of inside the Until body, `v_current_page` never advances and the loop fetches page 2 forever until timeout.
 
 ---
 
-#### Step 8 — Update Watermark
+#### `act_update_watermark` — Databricks Notebook
 
-On Success from Until loop, add **Databricks Notebook** activity:
+**Depends on:** Until loop (Succeeded)  
+**Required by:** nothing (final step on success path)
 
-**act_update_watermark:**
 - Linked service: `ls_databricks`
-- Notebook path: `/Workspace/ev-project/nb_update_watermark`
+- Notebook path: `/Users/hariomsuryawanshi68258@gmail.com/nb_update_watermark`
 - Base parameters:
-  - `source_name`: `@pipeline().parameters.p_source_name`
-  - `new_watermark`: `@variables('v_run_ts')`
+  - `source_name` = `@pipeline().parameters.p_source_name`
+  - `new_watermark` = `@variables('v_run_ts')`
 
 ---
 
-#### Step 9 — Failure Alert
+### 3.4 Complete Activity Dependency Summary
 
-Connect **On Failure** from `act_copy_page1` and `act_copy_page` to a Web Activity `act_alert_failure`. Use a Teams webhook or Logic App URL to notify on any page failure.
+```
+Pipeline start (parallel):
+  act_read_ctl        ── no dependency
+  act_get_username    ── no dependency
+  act_get_password    ── no dependency
+
+After act_read_ctl (all parallel, all depend only on act_read_ctl):
+  act_set_endpoint
+  act_set_sink_path
+  act_set_file_prefix
+  act_set_page_size
+  act_set_watermark
+  act_set_ingestion_date
+  act_set_run_ts
+
+After act_get_username + act_get_password:
+  act_api_login       ── depends on: act_get_username, act_get_password
+
+After act_api_login:
+  act_set_token       ── depends on: act_api_login
+
+After act_set_token:
+  act_fetch_page1_meta ── depends on: act_set_token
+
+After act_fetch_page1_meta:
+  act_set_total_pages  ── depends on: act_fetch_page1_meta
+
+JOIN POINT — Copy data1 waits for BOTH branches:
+  Copy data1          ── depends on: act_set_total_pages,
+                                     act_set_endpoint, act_set_sink_path,
+                                     act_set_file_prefix, act_set_page_size,
+                                     act_set_watermark, act_set_ingestion_date,
+                                     act_set_run_ts
+
+After Copy data1:
+  act_set_current_page_2 ── depends on: Copy data1
+
+After act_set_current_page_2:
+  Until loop          ── depends on: act_set_current_page_2
+    act_copy_page     ── no dependency (first in loop body)
+    act_increment_page ── depends on: act_copy_page
+
+After Until loop:
+  act_update_watermark ── depends on: Until (Succeeded)
+```
 
 ---
 
@@ -421,24 +570,13 @@ bronze/
 └── api/
     └── payments/
         └── ingestion_date=2026-10-14/
-            ├── payments_page_001.json    ← 1,000 records
-            ├── payments_page_002.json    ← 1,000 records
+            ├── payments_page_001.json    ← page 1  (1,000 records)
+            ├── payments_page_002.json    ← page 2  (1,000 records)
             │   ...
-            └── payments_page_321.json   ← ~217 records (last page)
+            └── payments_page_321.json   ← page 321 (~217 records — last page)
 ```
 
-### 4.2 Why This Naming Convention Is Reliable
-
-| Property | How achieved |
-|---|---|
-| **Lexicographic sort = correct order** | Zero-padded 3-digit page number — `_page_001`, `_page_002` |
-| **Idempotent re-runs** | Same `ingestion_date` + same page → same file name → overwrite is safe |
-| **Source isolation** | `file_prefix` from control table — `payments_page_001.json` vs `sessions_page_001.json` |
-| **No hardcoded paths in ADF** | All path values from control table — add new source by inserting one row |
-| **Hive partition discovery** | `ingestion_date=YYYY-MM-DD` → Spark auto-discovers partitions on read |
-| **Long-lasting** | Handles 1–999 pages without naming conflicts |
-
-### 4.3 ADF Expression Examples
+### 4.2 ADF Expression Examples
 
 | Expression | Example resolved value |
 |---|---|
@@ -447,13 +585,12 @@ bronze/
 | `variables('v_file_prefix')` | `payments` |
 | `variables('v_current_page')` | `42` |
 | Full folder | `api/payments/ingestion_date=2026-10-14` |
-| Full file | `payments_page_042.json` |
+| Full file (loop) | `payments_page_042.json` |
+| Full file (page 1) | `payments_page_001.json` |
 
 ---
 
 ## Part 5 — Trigger Setup
-
-Use a **Tumbling Window Trigger** — tracks every window, guarantees no day is silently missed (unlike Schedule trigger which fires and forgets).
 
 **ADF Studio → Manage → Triggers → + New:**
 
@@ -466,21 +603,15 @@ Use a **Tumbling Window Trigger** — tracks every window, guarantees no day is 
 | Max concurrency | `1` |
 | Retry | `2` times, `30` minutes interval |
 
-**Pipeline parameters for this trigger:**
+Pipeline parameters:
 - `p_source_name`: `payments`
-- `p_load_type_override`: `` (empty — use control table)
+- `p_load_type_override`: `` (empty)
 
 **Publish all** → **Activate trigger**
-
-**For backfill:**
-- Set start date to how far back you need (e.g. `2026-01-01T00:00:00Z`)
-- ADF queues all windows from that date to today automatically — each window gets its own `ingestion_date` partition
 
 ---
 
 ## Part 6 — Adding a New Source (Zero Pipeline Changes)
-
-Once the pipeline is built, adding any new API endpoint requires only a SQL INSERT:
 
 ```sql
 INSERT INTO ev_catalog.ctl.pipeline_control
@@ -489,32 +620,33 @@ VALUES
     ('sessions', '/api/db/sessions/', 'api/sessions', 'sessions', 1000, 'full', '1900-01-01T00:00:00Z', true);
 ```
 
-Then trigger with `p_source_name = 'sessions'` — no ADF pipeline changes required.
-
-Sink resolves automatically:
-```
-bronze/api/sessions/ingestion_date=2026-10-14/sessions_page_001.json
-```
+Trigger with `p_source_name = 'sessions'` — no ADF pipeline changes required.
 
 ---
 
 ## Verify: Day 4 Checklist
 
-**ADF setup:**
-- [ ] Linked service `ls_databricks` created — New job cluster, test connection green
-- [ ] ADF MI has `Contributor` on `dbw-ev-intelligence-dev`
-- [ ] Dataset `ds_voltgrid_payments_src` updated — 4 parameters including `p_endpoint` and `p_updated_after`
-- [ ] Pipeline `pl_bronze_incremental_load` created with all parameters and variables
+**Access setup:**
+- [ ] ADF MI has `Contributor` on `dbw-ev-intelligence-dev` (Azure RBAC)
+- [ ] ADF MI added as **User** inside Databricks workspace (workspace-level access)
+- [ ] `ls_databricks` test connection green
+
+**Datasets:**
+- [ ] `ds_voltgrid_payments_src` has 4 parameters: `p_endpoint`, `p_page`, `p_page_size`, `p_updated_after`
+- [ ] `ds_bronze_payments_sink` has 2 parameters: `p_folder`, `p_file`
 
 **Pipeline activities:**
-- [ ] `act_read_ctl` returns correct JSON from control table
-- [ ] Set Variable activities correctly parse JSON fields with `@json(...)`
-- [ ] `act_fetch_page1_meta` returns `pagination.total_pages` from API
-- [ ] `act_copy_page1` writes `payments_page_001.json` to Bronze
-- [ ] Until loop condition uses `add(v_total_pages, 1)` — not just `v_total_pages`
-- [ ] `act_increment_page` is inside the Until body (not on main canvas)
-- [ ] Until loop runs pages 2 to N — each page writes `payments_page_NNN.json`
-- [ ] `act_update_watermark` updates `last_watermark` and `load_type` in control table
+- [ ] `act_read_ctl` — notebook path matches actual path in Databricks Workspace (case-sensitive)
+- [ ] All 7 Set Variable activities depend on `act_read_ctl`
+- [ ] `act_api_login` depends on both `act_get_username` AND `act_get_password`
+- [ ] `act_fetch_page1_meta` depends on `act_set_token`
+- [ ] `Copy data1` depends on `act_set_total_pages` + all 7 SetVar activities (8 total dependencies)
+- [ ] `Copy data1` sink `p_file` uses `padLeft` — NOT just `@concat(variables('v_file_prefix'), '.json')`
+- [ ] `act_set_current_page_2` sets `v_current_page = 2`, depends on `Copy data1`
+- [ ] Until loop connected from `act_set_current_page_2`
+- [ ] `act_copy_page` AND `act_increment_page` are INSIDE the Until body
+- [ ] `act_increment_page` depends on `act_copy_page` (sequential, not parallel)
+- [ ] `act_update_watermark` depends on Until loop success
 
 **Post-run verification:**
 ```bash
@@ -525,11 +657,8 @@ az storage blob list \
   --auth-mode login \
   --query "[].{name:name, size:properties.contentLength}" -o table
 ```
-- [ ] Files `payments_page_001.json` through `payments_page_NNN.json` all exist
-- [ ] No zero-byte files (all pages returned data)
-- [ ] Control table: `load_type = 'incremental'`, `last_watermark` updated to today's UTC timestamp
-- [ ] Second pipeline run (incremental) fetches fewer pages than full run
-- [ ] Trigger `trg_payments_incremental` created and active
+- [ ] Files `payments_page_001.json` through `payments_page_NNN.json` all exist with correct naming
+- [ ] Control table: `load_type = 'incremental'`, `last_watermark` updated to pipeline start UTC
 
 ---
 
@@ -537,14 +666,15 @@ az storage blob list \
 
 | Error | Cause | Fix |
 |---|---|---|
-| `act_read_ctl` fails — `You do not have permission` | ADF MI missing Contributor on Databricks workspace | Portal → Databricks → IAM → assign Contributor to `adf-ev-intelligence-dev` |
-| `act_read_ctl` fails — notebook not found | Notebook path wrong | Check exact path in Databricks Workspace — case-sensitive |
-| `json()` returns null in Set Variable | `dbutils.notebook.exit()` not called or notebook failed silently | Check Databricks Jobs logs (triggered by ADF) for the run |
-| `total_pages` is 0 or 1 | `updated_after` filter too recent — watermark not reset after Day 3 test | Run with `p_load_type_override = full` to force epoch watermark |
-| Until loop runs forever | `act_increment_page` is outside the Until body | Click Until → Edit pencil — confirm `act_increment_page` is on the inner canvas |
-| File size 0 bytes for some pages | Copy Activity succeeded but API returned empty `data` array | Check API for that page number manually; may be a gap in the dataset |
-| `encodeUriComponent is not recognized` | ADF expression function name case mismatch | Use lowercase exactly: `encodeUriComponent` (not `EncodeUriComponent`) |
-| `act_update_watermark` fails — widget not found | Notebook widget name mismatch | Notebook expects `source_name` and `new_watermark` — verify ADF parameter names match exactly |
+| `User not authorized` or `403` on notebook run | ADF MI not added as user inside Databricks workspace | Admin Console → Users → Add the ADF MI principal as User |
+| `act_read_ctl` fails — `Contributor` assigned but still 403 | Only ARM RBAC was set; workspace-level user grant missing | See Part 1.2 — must add MI as workspace user separately |
+| `act_read_ctl` fails — notebook not found | Notebook path is case-sensitive and must match exactly | Copy path from Databricks → right-click notebook → Copy URL or check breadcrumb |
+| `json()` returns null | Notebook `dbutils.notebook.exit()` was not reached | Check Databricks job run logs linked in the activity output |
+| `total_pages` resolves to 0 | `updated_after` filter is too recent (watermark not reset after Day 3 test) | Trigger with `p_load_type_override = full` |
+| Page 1 file named `payments.json` not `payments_page_001.json` | `p_file` expression missing `_page_` + `padLeft` | Fix `Copy data1` sink: `@concat(variables('v_file_prefix'), '_page_', padLeft('1', 3, '0'), '.json')` |
+| Until loop runs forever | `act_increment_page` is on the main canvas, not inside the Until body | Click Until → Edit (pencil) → drag `act_increment_page` to inner canvas |
+| Until loop exits after page 1 | `v_current_page` was never set to 2, or condition is wrong | Confirm `act_set_current_page_2` runs before Until and sets value `2` |
+| `act_update_watermark` widget not found | Parameter names don't match notebook widget names | Notebook expects exactly `source_name` and `new_watermark` — check spelling |
 
 ---
 
@@ -563,12 +693,17 @@ Control table : ev_catalog.ctl.pipeline_control
 Access chain (ADF):
   adf-ev-intelligence-dev MI  →  Key Vault Secrets User        →  kv-ev-intelligence-dev
   adf-ev-intelligence-dev MI  →  Storage Blob Data Contributor →  evdatalakedev2
-  adf-ev-intelligence-dev MI  →  Contributor                   →  dbw-ev-intelligence-dev
+  adf-ev-intelligence-dev MI  →  Contributor (ARM)             →  dbw-ev-intelligence-dev
+  adf-ev-intelligence-dev MI  →  User (workspace)              →  dbw-ev-intelligence-dev
+
+Notebook paths (actual — match exactly):
+  /Users/hariomsuryawanshi68258@gmail.com/nb_read_control_table
+  /Users/hariomsuryawanshi68258@gmail.com/nb_update_watermark
 
 API pagination:
   page_size     = 1000 (from control table)
   total_pages   = response.pagination.total_pages (from act_fetch_page1_meta)
   updated_after = v_last_watermark (epoch on full load, previous watermark on incremental)
 
-Watermark update: v_run_ts (utcnow() captured at pipeline start) written after all pages succeed
+Watermark update: v_run_ts (utcnow() at pipeline start) written after all pages succeed
 ```
