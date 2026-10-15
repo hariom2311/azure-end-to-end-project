@@ -266,35 +266,24 @@ The Medallion Architecture's MERGE at Silver is specifically designed to make Br
 ## File Naming, Path Design, and Trigger
 
 **A21**
-ADF does not have a `padLeft` function — it exists in Azure Logic Apps and some documentation examples but throws `Unknown function 'padLeft'` in ADF expression validation.
+No padding — files are named `payments_page_1.json`, `payments_page_2.json`, ..., `payments_page_321.json`.
 
-The correct ADF pattern is a nested `@if` that prepends the right number of zeros based on the page number range:
-
+**Loop pages (`act_copy_page`) — `p_file` expression:**
 ```
-@if(
-  lessOrEquals(variables('v_current_page'), 9),
-  concat(variables('v_file_prefix'), '_page_00', string(variables('v_current_page')), '.json'),
-  if(
-    lessOrEquals(variables('v_current_page'), 99),
-    concat(variables('v_file_prefix'), '_page_0', string(variables('v_current_page')), '.json'),
-    concat(variables('v_file_prefix'), '_page_', string(variables('v_current_page')), '.json')
-  )
-)
+@concat(variables('v_file_prefix'), '_page_', string(variables('v_current_page')), '.json')
 ```
 
 Results:
-- Page 7: `lessOrEquals(7, 9)` = true → `_page_00` + `7` → `payments_page_007.json`
-- Page 42: `lessOrEquals(42, 9)` = false → `lessOrEquals(42, 99)` = true → `_page_0` + `42` → `payments_page_042.json`
-- Page 321: both conditions false → `_page_` + `321` → `payments_page_321.json`
+- `v_current_page = 2` → `payments_page_2.json`
+- `v_current_page = 42` → `payments_page_42.json`
+- `v_current_page = 321` → `payments_page_321.json`
 
-For the page 1 Copy Activity (hardcoded), the suffix is simply: `@concat(variables('v_file_prefix'), '_page_001.json')`
+**Page 1 (`Copy data1`) — `p_file` expression:**
+```
+@concat(variables('v_file_prefix'), '_page_1.json')
+```
 
-**Why zero-padding is necessary:** File systems and tools sort file names lexicographically (character by character), not numerically:
-
-Without padding: `payments_page_2.json` sorts after `payments_page_10.json` (because `'2' > '1'`)
-With padding: `payments_page_002.json` sorts before `payments_page_010.json` (because `'0' < '1'`)
-
-Downstream jobs that glob all files and process them in order (Spark reads, monitoring, debugging) see pages in the wrong sequence without padding — potentially processing page 2 before page 199.
+`string()` converts the Integer variable to a string for concatenation. Without it, ADF throws a type error because `concat` expects all string arguments.
 
 ---
 

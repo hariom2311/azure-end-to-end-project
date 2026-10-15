@@ -133,7 +133,7 @@ A full pipeline run fails on page 200 of 321. The engineer triggers a re-run wit
 ## File Naming, Path Design, and Trigger
 
 **Q21 (Warm-up)**
-The pipeline zero-pads the page number in file names — `payments_page_007.json`, `payments_page_042.json`, `payments_page_321.json`. ADF does not have a `padLeft` function. What expression do you use instead to produce 3-digit zero-padded page numbers, and why is zero-padding necessary at all?
+The pipeline names files `payments_page_1.json`, `payments_page_2.json`, ..., `payments_page_321.json` — no zero-padding. Write the ADF expression used in `act_copy_page` (loop) and `Copy data1` (page 1) to produce these file names from the `v_file_prefix` and `v_current_page` variables.
 
 ---
 
