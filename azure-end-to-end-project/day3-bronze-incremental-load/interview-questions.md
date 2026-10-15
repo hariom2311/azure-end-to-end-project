@@ -1,6 +1,6 @@
-# Day 3 — Interview Questions: Bronze Incremental Load
+# Day 3 — Interview Questions: Unity Catalog Setup + Control Table
 
-> 25 questions covering Unity Catalog External Locations, Access Connectors, Delta control tables, ADF Until loops, incremental watermarks, idempotency, pagination design, and file naming conventions.
+> 15 questions covering Access Connectors, Unity Catalog credential chain, External Delta tables, control table design, and Databricks notebooks as ADF integration points.
 > Attempt first, then check `interview-solutions.md`.
 
 ---
@@ -18,17 +18,17 @@ Explain the three-layer Unity Catalog chain: Access Connector → Storage Creden
 ---
 
 **Q3 (Scenario)**
-A data engineer creates the External Location `ext-loc-ev-bronze` pointing to `abfss://bronze@evdatalakedev.dfs.core.windows.net/`. The test connection shows ✅ Read, ✅ List but ❌ Write. What is the most likely cause and how do they fix it?
+A data engineer creates the External Location `ext-loc-ev-bronze` pointing to `abfss://bronze@evdatalakedev2.dfs.core.windows.net/`. The test connection shows ✅ Read, ✅ List but ❌ Write. What is the most likely cause and how do they fix it?
 
 ---
 
 **Q4 (Conceptual)**
-After creating the External Location, a Databricks notebook reads from `abfss://bronze@evdatalakedev.dfs.core.windows.net/api/payments/` with no `spark.conf.set` and no storage access key. How does the read succeed — what injects the credentials automatically?
+After creating the External Location, a Databricks notebook reads from `abfss://bronze@evdatalakedev2.dfs.core.windows.net/api/payments/` with no `spark.conf.set` and no storage access key. How does the read succeed — what injects the credentials automatically?
 
 ---
 
 **Q5 (Tricky)**
-The External Location test connection shows ❌ File Events Resource Provision and ❌ File Events Resource Teardown alongside ✅ Read/Write. Should the engineer block the pipeline until these are fixed? What are File Events used for and why are they not critical for this day's work?
+The External Location test connection shows ❌ File Events Resource Provision and ❌ File Events Resource Teardown alongside ✅ Read/Write. Should the engineer block the pipeline until these are fixed? What are File Events used for and why are they not critical for this project?
 
 ---
 
@@ -40,16 +40,12 @@ What is the difference between a Managed Delta table and an External Delta table
 ---
 
 **Q7 (Conceptual)**
-The control table has a `last_watermark` column initialised to `1900-01-01T00:00:00Z`. Why is the epoch (year 1900) used instead of `null` or today's date? What would break if `null` was used and ADF tried to pass it into the API URL?
+The control table seeds `last_watermark` with `'1900-01-01T00:00:00Z'`. Why is the epoch year used instead of `null` or today's date? What would break if `null` was inserted and ADF tried to pass it into the API URL?
 
 ---
 
 **Q8 (Scenario)**
-ADF's notebook activity `act_read_ctl` returns a JSON string via `dbutils.notebook.exit()`. In the next ADF Set Variable activity, the engineer uses:
-```
-@activity('act_read_ctl').output.runOutput.endpoint
-```
-But it returns `null`. What is wrong and what is the correct expression?
+The engineer runs the `CREATE TABLE` statement but gets: `DeltaAnalysisException: Location 'abfss://bronze@evdatalakedev2.dfs.core.windows.net/ctl/pipeline_control' already exists`. The path has files from a previous failed attempt. What are the two options to resolve this, and which is safer?
 
 ---
 
@@ -59,95 +55,33 @@ The control table has an `is_active` column. A data engineer asks: "Why not just
 ---
 
 **Q10 (Tricky)**
-After a successful full load, the notebook `nb_update_watermark` sets `last_watermark = v_run_ts` where `v_run_ts = utcnow()` captured at pipeline start. A data engineer argues: "We should use `utcnow()` at the END of the pipeline, not the start." Who is right and why?
+The `pipeline_control` table has no `DEFAULT` clauses — all NOT NULL columns require explicit values at insert time. What is the operational consequence of this design, and when would adding `DEFAULT` clauses be appropriate vs. when would it be a risk?
 
 ---
 
-## Pagination and Until Loop
+## Databricks Notebooks as ADF Integration Points
 
 **Q11 (Warm-up)**
-The API returns `pagination.total_pages = 321` for a page_size of 1000. This means the full payments dataset has approximately how many records? How is `total_pages` used to control the ADF Until loop?
+The notebook `nb_read_control_table` ends with `dbutils.notebook.exit(json.dumps(result))`. What does this do, and how does ADF access the value returned by this call?
 
 ---
 
 **Q12 (Conceptual)**
-In ADF, a Set Variable activity inside an Until loop tries to increment `v_current_page` using:
-```
-@add(variables('v_current_page'), 1)
-```
-But after 3 loop iterations `v_current_page` is still `2`. What is wrong?
+Why does `nb_read_control_table` return a JSON-serialised string rather than returning individual values? Why can't the notebook just `print()` the values for ADF to pick up?
 
 ---
 
 **Q13 (Scenario)**
-An Until loop runs page 1 through page 5 correctly, but on page 6 the API returns a 429 (Too Many Requests) error. The Copy Activity fails. What happens to the pipeline? What should the retry policy on the Copy Activity be set to, and at what level?
+An ADF pipeline calls `nb_read_control_table`. The activity succeeds but the downstream Set Variable activity that reads `activity('act_read_ctl').output.runOutput` returns an empty string. What are two possible causes in the notebook itself?
 
 ---
 
 **Q14 (Conceptual)**
-Why is page 1 fetched separately as a Web Activity (`act_fetch_page1_meta`) before the Until loop, rather than including it inside the loop with all other pages?
+`nb_update_watermark` updates both `last_watermark` and `load_type` in a single SQL UPDATE. Why is `load_type` also updated to `'incremental'` here rather than being left for ADF to manage via a parameter?
 
 ---
 
 **Q15 (Tricky)**
-The Until loop exit condition is:
-```
-@greaterOrEquals(variables('v_current_page'), add(variables('v_total_pages'), 1))
-```
-Why is `add(variables('v_total_pages'), 1)` used instead of just `variables('v_total_pages')`? What would happen if the condition was `@equals(variables('v_current_page'), variables('v_total_pages'))`?
-
----
-
-## Incremental Load and Idempotency
-
-**Q16 (Warm-up)**
-What does "incremental load" mean in this context? What is the `updated_after` parameter used for, and where does its value come from on the second pipeline run?
-
----
-
-**Q17 (Conceptual)**
-What does "idempotent" mean for a Bronze ingestion pipeline? Give a concrete example of how running `pl_bronze_incremental_load` twice on the same day produces the same result in ADLS.
-
----
-
-**Q18 (Scenario)**
-A pipeline runs at 02:00 UTC on 2026-10-15 and loads 5 pages of payments. At 03:00 UTC the pipeline is re-triggered because someone thought it failed. It loads the same 5 pages again with the same filenames. Is there a data problem? Why or why not?
-
----
-
-**Q19 (Conceptual)**
-The `p_load_type_override = 'full'` parameter forces a full reload without changing the control table's `last_watermark` before the run. How does the pipeline achieve this — trace through the expression in `act_set_watermark`?
-
----
-
-**Q20 (Tricky)**
-A full load runs for 321 pages. On page 200 the ADF pipeline fails. The engineer fixes the issue and reruns. The rerun starts from page 1 again — not page 200. Is this a problem for data quality in Bronze? Why or why not, and what would happen downstream in Silver?
-
----
-
-## File Naming and Path Design
-
-**Q21 (Warm-up)**
-The file naming convention is `<file_prefix>_page_NNN.json` — e.g. `payments_page_042.json`. Why is the page number zero-padded to 3 digits? What problem occurs if it is not zero-padded?
-
----
-
-**Q22 (Conceptual)**
-All configuration values — endpoint, sink path, file prefix, page size — come from the control table instead of being hardcoded in ADF parameters or dataset definitions. Name 2 operational benefits this provides.
-
----
-
-**Q23 (Scenario)**
-A data engineer wants to add sessions ingestion. The sessions endpoint is `/api/db/sessions/` and the data should land at `bronze/api/sessions/`. What is the complete change needed to support this — ADF changes, Databricks changes, and control table changes?
-
----
-
-**Q24 (Conceptual)**
-The sink path uses `ingestion_date=YYYY-MM-DD` as a folder name rather than just `YYYY-MM-DD`. Why is the `ingestion_date=` prefix included — what is this pattern called and what tool automatically uses it?
-
----
-
-**Q25 (System design)**
-The VoltGrid payments dataset has 320,000+ records with page_size=1000, giving ~320 pages. A full load takes ~25 minutes. An engineer proposes adding parallelism — run 5 pages at once to cut the time to 5 minutes. Design how you would implement this in ADF while keeping the pipeline idempotent. What are the constraints and risks?
+After running `nb_update_watermark` to test it manually, the engineer must reset the control table before Day 4. Why is this reset necessary — what would happen in Day 4 if the watermark was left at today's date from the manual test?
 
 ---
