@@ -441,12 +441,13 @@ p_updated_after: @variables('v_last_watermark')
 **Sink — `ds_bronze_payments_sink`:**
 ```
 p_folder: @concat(variables('v_sink_base_path'), '/ingestion_date=', variables('v_ingestion_date'))
-p_file:   @concat(variables('v_file_prefix'), '_page_', padLeft('1', 3, '0'), '.json')
+p_file:   @concat(variables('v_file_prefix'), '_page_001.json')
 ```
 
 Result file: `bronze/api/payments/ingestion_date=2026-10-14/payments_page_001.json`
 
-> **Bug in your current JSON:** The `p_file` expression is `@concat(variables('v_file_prefix'), '.json')` — this produces `payments.json` instead of `payments_page_001.json`. Fix it to: `@concat(variables('v_file_prefix'), '_page_', padLeft('1', 3, '0'), '.json')`
+> **Bug in your current JSON:** The `p_file` expression is `@concat(variables('v_file_prefix'), '.json')` — this produces `payments.json` instead of `payments_page_001.json`. Fix it to: `@concat(variables('v_file_prefix'), '_page_001.json')`
+> Note: `padLeft` does not exist in ADF expressions. For page 1 the suffix is hardcoded `_page_001`. For the loop pages, use the nested `@if` expression shown in `act_copy_page` below.
 
 ---
 
@@ -484,7 +485,15 @@ Then connect `act_set_current_page_2` → Until.
 - Sink — `ds_bronze_payments_sink`:
   ```
   p_folder: @concat(variables('v_sink_base_path'), '/ingestion_date=', variables('v_ingestion_date'))
-  p_file:   @concat(variables('v_file_prefix'), '_page_', padLeft(string(variables('v_current_page')), 3, '0'), '.json')
+  p_file:   @if(
+              lessOrEquals(variables('v_current_page'), 9),
+              concat(variables('v_file_prefix'), '_page_00', string(variables('v_current_page')), '.json'),
+              if(
+                lessOrEquals(variables('v_current_page'), 99),
+                concat(variables('v_file_prefix'), '_page_0', string(variables('v_current_page')), '.json'),
+                concat(variables('v_file_prefix'), '_page_', string(variables('v_current_page')), '.json')
+              )
+            )
   ```
 
 **`act_increment_page`** (Set Variable):
@@ -641,7 +650,8 @@ Trigger with `p_source_name = 'sessions'` — no ADF pipeline changes required.
 - [ ] `act_api_login` depends on both `act_get_username` AND `act_get_password`
 - [ ] `act_fetch_page1_meta` depends on `act_set_token`
 - [ ] `Copy data1` depends on `act_set_total_pages` + all 7 SetVar activities (8 total dependencies)
-- [ ] `Copy data1` sink `p_file` uses `padLeft` — NOT just `@concat(variables('v_file_prefix'), '.json')`
+- [ ] `Copy data1` sink `p_file` is `@concat(variables('v_file_prefix'), '_page_001.json')` — NOT just `@concat(variables('v_file_prefix'), '.json')`
+- [ ] Loop `act_copy_page` sink `p_file` uses nested `@if` for zero-padding (pages 1–9: `00N`, 10–99: `0NN`, 100+: `NNN`)
 - [ ] `act_set_current_page_2` sets `v_current_page = 2`, depends on `Copy data1`
 - [ ] Until loop connected from `act_set_current_page_2`
 - [ ] `act_copy_page` AND `act_increment_page` are INSIDE the Until body
@@ -671,7 +681,8 @@ az storage blob list \
 | `act_read_ctl` fails — notebook not found | Notebook path is case-sensitive and must match exactly | Copy path from Databricks → right-click notebook → Copy URL or check breadcrumb |
 | `json()` returns null | Notebook `dbutils.notebook.exit()` was not reached | Check Databricks job run logs linked in the activity output |
 | `total_pages` resolves to 0 | `updated_after` filter is too recent (watermark not reset after Day 3 test) | Trigger with `p_load_type_override = full` |
-| Page 1 file named `payments.json` not `payments_page_001.json` | `p_file` expression missing `_page_` + `padLeft` | Fix `Copy data1` sink: `@concat(variables('v_file_prefix'), '_page_', padLeft('1', 3, '0'), '.json')` |
+| Page 1 file named `payments.json` not `payments_page_001.json` | `p_file` expression missing `_page_001` suffix | Fix `Copy data1` sink: `@concat(variables('v_file_prefix'), '_page_001.json')` |
+| Loop pages not zero-padded (page 7 → `payments_page_7.json`) | Using `string(v_current_page)` directly without padding | Use the nested `@if` expression — `padLeft` does not exist in ADF |
 | Until loop runs forever | `act_increment_page` is on the main canvas, not inside the Until body | Click Until → Edit (pencil) → drag `act_increment_page` to inner canvas |
 | Until loop exits after page 1 | `v_current_page` was never set to 2, or condition is wrong | Confirm `act_set_current_page_2` runs before Until and sets value `2` |
 | `act_update_watermark` widget not found | Parameter names don't match notebook widget names | Notebook expects exactly `source_name` and `new_watermark` — check spelling |

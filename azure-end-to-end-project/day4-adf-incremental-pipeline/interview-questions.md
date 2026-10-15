@@ -133,7 +133,7 @@ A full pipeline run fails on page 200 of 321. The engineer triggers a re-run wit
 ## File Naming, Path Design, and Trigger
 
 **Q21 (Warm-up)**
-The file naming convention uses `padLeft(string(variables('v_current_page')), 3, '0')`. What does this produce for page 7, page 42, and page 321? Why is zero-padding necessary?
+The pipeline zero-pads the page number in file names — `payments_page_007.json`, `payments_page_042.json`, `payments_page_321.json`. ADF does not have a `padLeft` function. What expression do you use instead to produce 3-digit zero-padded page numbers, and why is zero-padding necessary at all?
 
 ---
 
