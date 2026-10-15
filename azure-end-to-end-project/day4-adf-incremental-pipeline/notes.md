@@ -6,20 +6,43 @@
 
 ---
 
+## What Changes vs What Stays from Day 2
+
+```
+ADF Artifact                  Action        Reason
+────────────────────────────  ──────────    ──────────────────────────────────────────────
+ls_rest_voltgrid              KEEP          Still the REST connection to the API — unchanged
+ls_adls                       KEEP          Still the ADLS sink connection — unchanged
+ls_keyvault                   KEEP          Still the Key Vault connection — unchanged
+ls_databricks                 CREATE NEW    New — didn't exist in Day 2
+ds_voltgrid_payments_src      UPDATE        Add p_endpoint + p_updated_after params;
+                                            update Relative URL to include updated_after
+ds_bronze_payments_sink       UPDATE        Make folder path + file name dynamic
+                                            (currently hardcoded in Day 2 — needs variables)
+pl_bronze_api_payments        LEAVE ALONE   Day 2 pipeline stays as-is (working reference)
+pl_bronze_incremental_load    CREATE NEW    New production pipeline — control table driven
+trg_payments_incremental      CREATE NEW    Tumbling Window trigger — didn't exist in Day 2
+```
+
+> Rule of thumb: linked services are infrastructure-level (rarely change). Datasets evolve as the pipeline matures. The new pipeline is a new artifact — not a modification of Day 2 — because it is a fundamentally different design.
+
+---
+
 ## What We Are Building
 
 ```
 Day 3 output:                      Day 4 adds:
 ──────────────────────────         ──────────────────────────────────────────────────
-Control table in Delta             ls_databricks linked service
-nb_read_control_table              ADF MI → Contributor on Databricks workspace
-nb_update_watermark                pl_bronze_incremental_load pipeline
+Control table in Delta             ls_databricks (new linked service)
+nb_read_control_table              ds_voltgrid_payments_src (updated — 2 new params)
+nb_update_watermark                ds_bronze_payments_sink (updated — dynamic paths)
+                                   pl_bronze_incremental_load (new pipeline)
                                      ├── Read control table (Databricks notebook)
                                      ├── Get auth token (Web Activities)
                                      ├── Fetch page 1 + capture total_pages
                                      ├── Until loop (pages 2 to N)
                                      └── Update watermark (Databricks notebook)
-                                   Tumbling Window trigger (daily)
+                                   trg_payments_incremental (new Tumbling Window trigger)
 ```
 
 ---
@@ -151,7 +174,26 @@ The Day 2 dataset `ds_voltgrid_payments_src` needs two new parameters so it can 
 | `p_page_size` | Int | `1000` |
 | `p_updated_after` | String | `1900-01-01T00:00:00Z` |
 
+### 2.2 Update Sink Dataset `ds_bronze_payments_sink`
+
+The Day 2 sink dataset had the folder path and file name hardcoded. In Day 4 both must come from pipeline variables so the pipeline can serve any source and any date partition.
+
+**ADF Studio → Author → Datasets → `ds_bronze_payments_sink`:**
+
+1. **Parameters** tab → add:
+   - `p_folder` — String — default: `api/payments/ingestion_date=2026-10-14`
+   - `p_file` — String — default: `payments_page_001.json`
+
+2. **Connection** tab:
+   - Container: `bronze`
+   - File path (Directory): `@dataset().p_folder`
+   - File path (File): `@dataset().p_file`
+
 3. **Publish all**
+
+> The pipeline passes these at runtime:
+> - `p_folder` = `@concat(variables('v_sink_base_path'), '/ingestion_date=', variables('v_ingestion_date'))`
+> - `p_file` = `@concat(variables('v_file_prefix'), '_page_', padLeft(string(variables('v_current_page')), 3, '0'), '.json')`
 
 ---
 
