@@ -229,6 +229,7 @@ The Day 2 sink had folder and file name hardcoded. Day 4 needs both to be dynami
 | `v_last_watermark` | String | `updated_after` value for this run |
 | `v_ingestion_date` | String | `YYYY-MM-DD` for sink partition folder |
 | `v_current_page` | Integer | Loop counter (starts at 2) |
+| `v_next_page` | Integer | Temp variable for increment — ADF cannot self-reference a variable, so `v_current_page + 1` is written here first then copied back |
 | `v_total_pages` | Integer | Max pages from API page 1 response |
 | `v_run_ts` | String | ISO 8601 UTC captured at pipeline start — written back as new watermark |
 
@@ -469,7 +470,9 @@ Before the loop starts, initialise the counter: add a **Set Variable** activity 
 
 Then connect `act_set_current_page_2` → Until.
 
-**Inside the Until loop** (both must be on the inner canvas — click Until → Edit pencil):
+**Inside the Until loop** (all three must be on the inner canvas — click Until → Edit pencil):
+
+> **ADF limitation:** A Set Variable activity cannot read and write the same variable in one expression (self-reference error). The counter increment therefore requires two activities — one writes to a temp variable, the next copies it back.
 
 **`act_copy_page`** (Copy Activity):
 - **Depends on:** nothing inside the loop (first activity to run each iteration)
@@ -488,11 +491,16 @@ Then connect `act_set_current_page_2` → Until.
   ```
 
 **`act_increment_page`** (Set Variable):
-- **Depends on:** `act_copy_page` (Succeeded) — inside Until loop
-- Variable: `v_current_page`
+- **Depends on:** `act_copy_page` (Succeeded)
+- Variable: `v_next_page`
 - Value: `@add(variables('v_current_page'), 1)`
 
-> **Critical:** If `act_increment_page` is on the main canvas instead of inside the Until body, `v_current_page` never advances and the loop fetches page 2 forever until timeout.
+**`act_set_current_page`** (Set Variable):
+- **Depends on:** `act_increment_page` (Succeeded)
+- Variable: `v_current_page`
+- Value: `@variables('v_next_page')`
+
+> **Critical:** All three activities must be inside the Until body. If any are on the main canvas, `v_current_page` never advances and the loop fetches page 2 forever until timeout.
 
 ---
 
@@ -549,9 +557,10 @@ After Copy data1:
   act_set_current_page_2 ── depends on: Copy data1
 
 After act_set_current_page_2:
-  Until loop          ── depends on: act_set_current_page_2
-    act_copy_page     ── no dependency (first in loop body)
-    act_increment_page ── depends on: act_copy_page
+  Until loop             ── depends on: act_set_current_page_2
+    act_copy_page        ── no dependency (first in loop body)
+    act_increment_page   ── depends on: act_copy_page  (writes v_next_page = current + 1)
+    act_set_current_page ── depends on: act_increment_page  (writes v_current_page = v_next_page)
 
 After Until loop:
   act_update_watermark ── depends on: Until (Succeeded)
@@ -645,8 +654,10 @@ Trigger with `p_source_name = 'sessions'` — no ADF pipeline changes required.
 - [ ] Loop `act_copy_page` sink `p_file` is `@concat(variables('v_file_prefix'), '_page_', string(variables('v_current_page')), '.json')`
 - [ ] `act_set_current_page_2` sets `v_current_page = 2`, depends on `Copy data1`
 - [ ] Until loop connected from `act_set_current_page_2`
-- [ ] `act_copy_page` AND `act_increment_page` are INSIDE the Until body
-- [ ] `act_increment_page` depends on `act_copy_page` (sequential, not parallel)
+- [ ] `act_copy_page`, `act_increment_page`, `act_set_current_page` are all INSIDE the Until body
+- [ ] `act_increment_page` depends on `act_copy_page` — writes `v_next_page = v_current_page + 1`
+- [ ] `act_set_current_page` depends on `act_increment_page` — writes `v_current_page = v_next_page`
+- [ ] Pipeline variable `v_next_page` (Integer) exists — required because ADF forbids self-referencing variables
 - [ ] `act_update_watermark` depends on Until loop success
 
 **Post-run verification:**
@@ -673,7 +684,8 @@ az storage blob list \
 | `json()` returns null | Notebook `dbutils.notebook.exit()` was not reached | Check Databricks job run logs linked in the activity output |
 | `total_pages` resolves to 0 | `updated_after` filter is too recent (watermark not reset after Day 3 test) | Trigger with `p_load_type_override = full` |
 | Page 1 file named `payments.json` | `p_file` expression has newlines or missing `_page_1` suffix | Fix `Copy data1` sink: `@concat(variables('v_file_prefix'), '_page_1.json')` |
-| Until loop runs forever | `act_increment_page` is on the main canvas, not inside the Until body | Click Until → Edit (pencil) → drag `act_increment_page` to inner canvas |
+| `The expression contains self referencing variable` | `v_current_page = @add(variables('v_current_page'), 1)` — ADF forbids reading and writing the same variable | Use two activities: `act_increment_page` writes `v_next_page = current + 1`, then `act_set_current_page` writes `v_current_page = v_next_page` |
+| Until loop runs forever | Any of `act_copy_page`, `act_increment_page`, `act_set_current_page` is on the main canvas instead of inside the Until body | Click Until → Edit (pencil) → confirm all three activities are on the inner canvas |
 | Until loop exits after page 1 | `v_current_page` was never set to 2, or condition is wrong | Confirm `act_set_current_page_2` runs before Until and sets value `2` |
 | `act_update_watermark` widget not found | Parameter names don't match notebook widget names | Notebook expects exactly `source_name` and `new_watermark` — check spelling |
 
