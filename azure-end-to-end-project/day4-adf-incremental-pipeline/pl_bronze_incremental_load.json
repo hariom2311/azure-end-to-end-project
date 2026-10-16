@@ -175,7 +175,7 @@
                 "userProperties": [],
                 "typeProperties": {
                     "method": "GET",
-                    "url": "https://kv-ev-intelligence-dev.vault.azure.net/secrets/voltgrid-username/?api-version=7.0",
+                    "url": "https://kv-ev-intelligence-dev02.vault.azure.net/secrets/voltgrid-username/?api-version=7.0",
                     "authentication": {
                         "type": "MSI",
                         "resource": "https://vault.azure.net"
@@ -196,7 +196,7 @@
                 "userProperties": [],
                 "typeProperties": {
                     "method": "GET",
-                    "url": "https://kv-ev-intelligence-dev.vault.azure.net/secrets/voltgrid-password/?api-version=7.0",
+                    "url": "https://kv-ev-intelligence-dev02.vault.azure.net/secrets/voltgrid-password/?api-version=7.0",
                     "authentication": {
                         "type": "MSI",
                         "resource": "https://vault.azure.net"
@@ -337,9 +337,6 @@
                                 "value": "@concat('Token ', variables('v_token'))",
                                 "type": "Expression"
                             }
-                        },
-                        "paginationRules": {
-                            "supportRFC5988": "true"
                         }
                     },
                     "sink": {
@@ -359,11 +356,11 @@
                         "type": "DatasetReference",
                         "parameters": {
                             "p_page": {
-                                "value": "@int(1)",
+                                "value": "1",
                                 "type": "Expression"
                             },
                             "p_page_size": {
-                                "value": "@int(variables('v_page_size'))",
+                                "value": "@variables('v_page_size')",
                                 "type": "Expression"
                             },
                             "p_endpoint": {
@@ -452,9 +449,6 @@
                                             "value": "@concat('Token ', variables('v_token'))",
                                             "type": "Expression"
                                         }
-                                    },
-                                    "paginationRules": {
-                                        "supportRFC5988": "true"
                                     }
                                 },
                                 "sink": {
@@ -478,7 +472,7 @@
                                             "type": "Expression"
                                         },
                                         "p_page_size": {
-                                            "value": "@int(variables('v_page_size'))",
+                                            "value": "@variables('v_page_size')",
                                             "type": "Expression"
                                         },
                                         "p_endpoint": {

@@ -1,0 +1,37 @@
+{
+    "name": "ds_bronze_payments_sink",
+    "properties": {
+        "linkedServiceName": {
+            "referenceName": "ls_adls_bronze",
+            "type": "LinkedServiceReference"
+        },
+        "parameters": {
+            "p_folder": {
+                "type": "string",
+                "defaultValue": "api/payments/ingestion_date=2026-10-15"
+            },
+            "p_file": {
+                "type": "string",
+                "defaultValue": "payments_page_1.json"
+            }
+        },
+        "annotations": [],
+        "type": "Json",
+        "typeProperties": {
+            "location": {
+                "type": "AzureBlobFSLocation",
+                "fileName": {
+                    "value": "@dataset().p_file",
+                    "type": "Expression"
+                },
+                "folderPath": {
+                    "value": "@dataset().p_folder",
+                    "type": "Expression"
+                },
+                "fileSystem": "bronze"
+            }
+        },
+        "schema": {}
+    },
+    "type": "Microsoft.DataFactory/factories/datasets"
+}

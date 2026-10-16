@@ -32,9 +32,17 @@
                 "name": "act_set_endpoint",
                 "type": "SetVariable",
                 "dependsOn": [
-                    { "activity": "act_read_ctl", "dependencyConditions": [ "Succeeded" ] }
+                    {
+                        "activity": "act_read_ctl",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
                 ],
-                "policy": { "secureOutput": false, "secureInput": false },
+                "policy": {
+                    "secureOutput": false,
+                    "secureInput": false
+                },
                 "userProperties": [],
                 "typeProperties": {
                     "variableName": "v_endpoint",
@@ -48,9 +56,17 @@
                 "name": "act_set_page_size",
                 "type": "SetVariable",
                 "dependsOn": [
-                    { "activity": "act_read_ctl", "dependencyConditions": [ "Succeeded" ] }
+                    {
+                        "activity": "act_read_ctl",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
                 ],
-                "policy": { "secureOutput": false, "secureInput": false },
+                "policy": {
+                    "secureOutput": false,
+                    "secureInput": false
+                },
                 "userProperties": [],
                 "typeProperties": {
                     "variableName": "v_page_size",
@@ -64,9 +80,17 @@
                 "name": "act_set_watermark",
                 "type": "SetVariable",
                 "dependsOn": [
-                    { "activity": "act_read_ctl", "dependencyConditions": [ "Succeeded" ] }
+                    {
+                        "activity": "act_read_ctl",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
                 ],
-                "policy": { "secureOutput": false, "secureInput": false },
+                "policy": {
+                    "secureOutput": false,
+                    "secureInput": false
+                },
                 "userProperties": [],
                 "typeProperties": {
                     "variableName": "v_last_watermark",
@@ -90,7 +114,7 @@
                 "userProperties": [],
                 "typeProperties": {
                     "method": "GET",
-                    "url": "https://kv-ev-intelligence-dev.vault.azure.net/secrets/voltgrid-username/?api-version=7.0",
+                    "url": "https://kv-ev-intelligence-dev02.vault.azure.net/secrets/voltgrid-username/?api-version=7.0",
                     "authentication": {
                         "type": "MSI",
                         "resource": "https://vault.azure.net"
@@ -111,7 +135,7 @@
                 "userProperties": [],
                 "typeProperties": {
                     "method": "GET",
-                    "url": "https://kv-ev-intelligence-dev.vault.azure.net/secrets/voltgrid-password/?api-version=7.0",
+                    "url": "https://kv-ev-intelligence-dev02.vault.azure.net/secrets/voltgrid-password/?api-version=7.0",
                     "authentication": {
                         "type": "MSI",
                         "resource": "https://vault.azure.net"
@@ -122,8 +146,18 @@
                 "name": "act_api_login",
                 "type": "WebActivity",
                 "dependsOn": [
-                    { "activity": "act_get_username", "dependencyConditions": [ "Succeeded" ] },
-                    { "activity": "act_get_password", "dependencyConditions": [ "Succeeded" ] }
+                    {
+                        "activity": "act_get_username",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    },
+                    {
+                        "activity": "act_get_password",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
                 ],
                 "policy": {
                     "timeout": "0.12:00:00",
@@ -135,7 +169,9 @@
                 "userProperties": [],
                 "typeProperties": {
                     "method": "POST",
-                    "headers": { "Content-Type": "application/json" },
+                    "headers": {
+                        "Content-Type": "application/json"
+                    },
                     "url": "https://ev-project-navy-mu.vercel.app/api/auth/login/",
                     "body": {
                         "value": "@concat('{\"username\":\"', activity('act_get_username').output.value, '\",\"password\":\"', activity('act_get_password').output.value, '\"}')",
@@ -147,9 +183,17 @@
                 "name": "act_set_token",
                 "type": "SetVariable",
                 "dependsOn": [
-                    { "activity": "act_api_login", "dependencyConditions": [ "Succeeded" ] }
+                    {
+                        "activity": "act_api_login",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
                 ],
-                "policy": { "secureOutput": false, "secureInput": false },
+                "policy": {
+                    "secureOutput": false,
+                    "secureInput": false
+                },
                 "userProperties": [],
                 "typeProperties": {
                     "variableName": "v_token",
@@ -163,10 +207,30 @@
                 "name": "act_fetch_page1_meta",
                 "type": "WebActivity",
                 "dependsOn": [
-                    { "activity": "act_set_token",     "dependencyConditions": [ "Succeeded" ] },
-                    { "activity": "act_set_endpoint",  "dependencyConditions": [ "Succeeded" ] },
-                    { "activity": "act_set_page_size", "dependencyConditions": [ "Succeeded" ] },
-                    { "activity": "act_set_watermark", "dependencyConditions": [ "Succeeded" ] }
+                    {
+                        "activity": "act_set_token",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    },
+                    {
+                        "activity": "act_set_endpoint",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    },
+                    {
+                        "activity": "act_set_page_size",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    },
+                    {
+                        "activity": "act_set_watermark",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
                 ],
                 "policy": {
                     "timeout": "0.12:00:00",
@@ -194,9 +258,17 @@
                 "name": "act_set_total_pages",
                 "type": "SetVariable",
                 "dependsOn": [
-                    { "activity": "act_fetch_page1_meta", "dependencyConditions": [ "Succeeded" ] }
+                    {
+                        "activity": "act_fetch_page1_meta",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
                 ],
-                "policy": { "secureOutput": false, "secureInput": false },
+                "policy": {
+                    "secureOutput": false,
+                    "secureInput": false
+                },
                 "userProperties": [],
                 "typeProperties": {
                     "variableName": "v_total_pages",
@@ -205,6 +277,168 @@
                         "type": "Expression"
                     }
                 }
+            },
+            {
+                "name": "act_set_sink_path",
+                "type": "SetVariable",
+                "dependsOn": [
+                    {
+                        "activity": "act_read_ctl",
+                        "dependencyConditions": [ "Succeeded" ]
+                    }
+                ],
+                "policy": { "secureOutput": false, "secureInput": false },
+                "userProperties": [],
+                "typeProperties": {
+                    "variableName": "v_sink_base_path",
+                    "value": {
+                        "value": "@activity('act_read_ctl').output.runOutput.sink_base_path",
+                        "type": "Expression"
+                    }
+                }
+            },
+            {
+                "name": "act_set_file_prefix",
+                "type": "SetVariable",
+                "dependsOn": [
+                    {
+                        "activity": "act_read_ctl",
+                        "dependencyConditions": [ "Succeeded" ]
+                    }
+                ],
+                "policy": { "secureOutput": false, "secureInput": false },
+                "userProperties": [],
+                "typeProperties": {
+                    "variableName": "v_file_prefix",
+                    "value": {
+                        "value": "@activity('act_read_ctl').output.runOutput.file_prefix",
+                        "type": "Expression"
+                    }
+                }
+            },
+            {
+                "name": "act_set_ingestion_date",
+                "type": "SetVariable",
+                "dependsOn": [
+                    {
+                        "activity": "act_read_ctl",
+                        "dependencyConditions": [ "Succeeded" ]
+                    }
+                ],
+                "policy": { "secureOutput": false, "secureInput": false },
+                "userProperties": [],
+                "typeProperties": {
+                    "variableName": "v_ingestion_date",
+                    "value": {
+                        "value": "@formatDateTime(utcnow(), 'yyyy-MM-dd')",
+                        "type": "Expression"
+                    }
+                }
+            },
+            {
+                "name": "act_set_run_ts",
+                "type": "SetVariable",
+                "dependsOn": [
+                    {
+                        "activity": "act_read_ctl",
+                        "dependencyConditions": [ "Succeeded" ]
+                    }
+                ],
+                "policy": { "secureOutput": false, "secureInput": false },
+                "userProperties": [],
+                "typeProperties": {
+                    "variableName": "v_run_ts",
+                    "value": {
+                        "value": "@utcnow()",
+                        "type": "Expression"
+                    }
+                }
+            },
+            {
+                "name": "Copy data1",
+                "type": "Copy",
+                "dependsOn": [
+                    { "activity": "act_set_total_pages",    "dependencyConditions": [ "Succeeded" ] },
+                    { "activity": "act_set_sink_path",      "dependencyConditions": [ "Succeeded" ] },
+                    { "activity": "act_set_file_prefix",    "dependencyConditions": [ "Succeeded" ] },
+                    { "activity": "act_set_ingestion_date", "dependencyConditions": [ "Succeeded" ] },
+                    { "activity": "act_set_run_ts",         "dependencyConditions": [ "Succeeded" ] },
+                    { "activity": "act_set_endpoint",       "dependencyConditions": [ "Succeeded" ] },
+                    { "activity": "act_set_page_size",      "dependencyConditions": [ "Succeeded" ] },
+                    { "activity": "act_set_watermark",      "dependencyConditions": [ "Succeeded" ] }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "source": {
+                        "type": "RestSource",
+                        "httpRequestTimeout": "00:01:40",
+                        "requestInterval": "00.00:00:00.010",
+                        "requestMethod": "GET",
+                        "additionalHeaders": {
+                            "Authorization": {
+                                "value": "@concat('Token ', variables('v_token'))",
+                                "type": "Expression"
+                            }
+                        }
+                    },
+                    "sink": {
+                        "type": "JsonSink",
+                        "storeSettings": {
+                            "type": "AzureBlobFSWriteSettings"
+                        },
+                        "formatSettings": {
+                            "type": "JsonWriteSettings"
+                        }
+                    },
+                    "enableStaging": false
+                },
+                "inputs": [
+                    {
+                        "referenceName": "ds_voltgrid_payments_src",
+                        "type": "DatasetReference",
+                        "parameters": {
+                            "p_page": {
+                                "value": "1",
+                                "type": "Expression"
+                            },
+                            "p_page_size": {
+                                "value": "@variables('v_page_size')",
+                                "type": "Expression"
+                            },
+                            "p_endpoint": {
+                                "value": "@variables('v_endpoint')",
+                                "type": "Expression"
+                            },
+                            "p_updated_after": {
+                                "value": "@variables('v_last_watermark')",
+                                "type": "Expression"
+                            }
+                        }
+                    }
+                ],
+                "outputs": [
+                    {
+                        "referenceName": "ds_bronze_payments_sink",
+                        "type": "DatasetReference",
+                        "parameters": {
+                            "p_folder": {
+                                "value": "@concat(variables('v_sink_base_path'), '/ingestion_date=', variables('v_ingestion_date'))",
+                                "type": "Expression"
+                            },
+                            "p_file": {
+                                "value": "@concat(variables('v_file_prefix'), '_page_1.json')",
+                                "type": "Expression"
+                            }
+                        }
+                    }
+                ]
             }
         ],
         "parameters": {
@@ -213,22 +447,43 @@
                 "defaultValue": "payments"
             },
             "p_load_type_override": {
-                "type": "string",
-                "defaultValue": ""
+                "type": "string"
             }
         },
         "variables": {
-            "v_token":          { "type": "String" },
-            "v_endpoint":       { "type": "String" },
-            "v_sink_base_path": { "type": "String" },
-            "v_file_prefix":    { "type": "String" },
-            "v_page_size":      { "type": "String" },
-            "v_last_watermark": { "type": "String" },
-            "v_ingestion_date": { "type": "String" },
-            "v_current_page":   { "type": "Integer" },
-            "v_next_page":      { "type": "Integer" },
-            "v_total_pages":    { "type": "Integer" },
-            "v_run_ts":         { "type": "String" }
+            "v_token": {
+                "type": "String"
+            },
+            "v_endpoint": {
+                "type": "String"
+            },
+            "v_sink_base_path": {
+                "type": "String"
+            },
+            "v_file_prefix": {
+                "type": "String"
+            },
+            "v_page_size": {
+                "type": "String"
+            },
+            "v_last_watermark": {
+                "type": "String"
+            },
+            "v_ingestion_date": {
+                "type": "String"
+            },
+            "v_current_page": {
+                "type": "Integer"
+            },
+            "v_next_page": {
+                "type": "Integer"
+            },
+            "v_total_pages": {
+                "type": "Integer"
+            },
+            "v_run_ts": {
+                "type": "String"
+            }
         },
         "annotations": []
     }

@@ -11,9 +11,9 @@
 ```
 ADF Artifact                  Action        Reason
 ────────────────────────────  ──────────    ──────────────────────────────────────────────
-ls_rest_voltgrid              KEEP          Still the REST connection to the API — unchanged
-ls_adls                       KEEP          Still the ADLS sink connection — unchanged
-ls_keyvault                   KEEP          Still the Key Vault connection — unchanged
+ls_voltgrid_api               KEEP          REST connection to the VoltGrid API — unchanged
+ls_adls_bronze                KEEP          ADLS Gen2 sink connection — unchanged
+ls_keyvault                   KEEP          Key Vault connection — unchanged
 ls_databricks                 CREATE NEW    New — didn't exist in Day 2
 ds_voltgrid_payments_src      UPDATE        Add p_endpoint + p_updated_after params;
                                             update Relative URL to include updated_after
@@ -185,9 +185,11 @@ This is the step that causes the permission error when running notebooks via ADF
 | Parameter | Type | Default |
 |---|---|---|
 | `p_endpoint` | String | `/api/db/payments/` |
-| `p_page` | Int | `1` |
-| `p_page_size` | Int | `1000` |
+| `p_page` | String | `1` |
+| `p_page_size` | String | `1000` |
 | `p_updated_after` | String | `1900-01-01T00:00:00Z` |
+
+> All parameters are `String` typed. Pass page numbers as string literals (`"1"`) or `@variables('v_current_page')` directly — do NOT use `@int()` cast. ADF throws `BadRequest` when an `@int()` expression is passed to a `String` dataset parameter.
 
 ### 2.2 Update Sink Dataset `ds_bronze_payments_sink`
 
@@ -200,11 +202,13 @@ The Day 2 sink had folder and file name hardcoded. Day 4 needs both to be dynami
    - `p_file` — String — default: `payments_page_001.json`
 
 2. **Connection** tab:
-   - Container: `bronze`
-   - File path (Directory): `@dataset().p_folder`
-   - File path (File): `@dataset().p_file`
+   - File system (Container): `bronze`
+   - Directory: `@dataset().p_folder`
+   - File: `@dataset().p_file`
 
-3. **Publish all**
+3. Linked service: `ls_adls_bronze`
+
+4. **Publish all**
 
 ---
 
@@ -344,7 +348,7 @@ Each activity below lists exactly what it depends on and what depends on it.
 **Required by:** `act_api_login`
 
 - Method: `GET`
-- URL: `https://kv-ev-intelligence-dev.vault.azure.net/secrets/voltgrid-username/?api-version=7.0`
+- URL: `https://kv-ev-intelligence-dev02.vault.azure.net/secrets/voltgrid-username/?api-version=7.0`
 - Authentication: MSI, resource: `https://vault.azure.net`
 
 ---
@@ -355,7 +359,7 @@ Each activity below lists exactly what it depends on and what depends on it.
 **Required by:** `act_api_login`
 
 - Method: `GET`
-- URL: `https://kv-ev-intelligence-dev.vault.azure.net/secrets/voltgrid-password/?api-version=7.0`
+- URL: `https://kv-ev-intelligence-dev02.vault.azure.net/secrets/voltgrid-password/?api-version=7.0`
 - Authentication: MSI, resource: `https://vault.azure.net`
 
 ---
@@ -435,12 +439,12 @@ This is the join point where both branches (Databricks control table read and AP
 
 **Source — `ds_voltgrid_payments_src`:**
 ```
-p_page:          @int(1)
-p_page_size:     @int(variables('v_page_size'))
+p_page:          "1"
+p_page_size:     @variables('v_page_size')
 p_endpoint:      @variables('v_endpoint')
 p_updated_after: @variables('v_last_watermark')
 ```
-> `p_page` and `p_page_size` are typed `Int` in the dataset. `v_page_size` is stored as String (ADF variables cannot be typed Int from a SetVariable expression), so `@int()` cast is required. Without it ADF throws `BadRequest` at pipeline parse time.
+> All dataset parameters are `String` typed (actual dataset from ADF). Pass `p_page` as the string literal `"1"` and `p_page_size` directly from `v_page_size` (already String). Do NOT use `@int()` — it causes `BadRequest` when passed to a String-typed parameter.
 
 **Sink — `ds_bronze_payments_sink`:**
 ```
@@ -482,7 +486,7 @@ Then connect `act_set_current_page_2` → Until.
 - Source — `ds_voltgrid_payments_src`:
   ```
   p_page:          @variables('v_current_page')
-  p_page_size:     @int(variables('v_page_size'))
+  p_page_size:     @variables('v_page_size')
   p_endpoint:      @variables('v_endpoint')
   p_updated_after: @variables('v_last_watermark')
   ```
@@ -673,7 +677,7 @@ az storage blob list \
   --auth-mode login \
   --query "[].{name:name, size:properties.contentLength}" -o table
 ```
-- [ ] Files `payments_page_001.json` through `payments_page_NNN.json` all exist with correct naming
+- [ ] Files `payments_page_1.json` through `payments_page_NNN.json` all exist with correct naming
 - [ ] Control table: `load_type = 'incremental'`, `last_watermark` updated to pipeline start UTC
 
 ---
@@ -708,7 +712,7 @@ Control table : ev_catalog.ctl.pipeline_control
                 abfss://bronze@evdatalakedev2.dfs.core.windows.net/ctl/pipeline_control
 
 Access chain (ADF):
-  adf-ev-intelligence-dev MI  →  Key Vault Secrets User        →  kv-ev-intelligence-dev
+  adf-ev-intelligence-dev MI  →  Key Vault Secrets User        →  kv-ev-intelligence-dev02
   adf-ev-intelligence-dev MI  →  Storage Blob Data Contributor →  evdatalakedev2
   adf-ev-intelligence-dev MI  →  Contributor (ARM)             →  dbw-ev-intelligence-dev
   adf-ev-intelligence-dev MI  →  User (workspace)              →  dbw-ev-intelligence-dev

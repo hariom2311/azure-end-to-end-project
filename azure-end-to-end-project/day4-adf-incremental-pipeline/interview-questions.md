@@ -68,7 +68,7 @@ The pipeline has 11 variables. Why are `v_endpoint`, `v_sink_base_path`, `v_file
 ---
 
 **Q10 (Tricky)**
-`v_page_size` is typed as `String` even though page size is a number. The dataset parameter `p_page_size` is typed as `Int`. Explain why the mismatch exists and how it is resolved in the ADF expression chain.
+`v_page_size` is typed as `String` and the dataset parameter `p_page_size` is also typed as `String`. The API returns `page_size` as a number from the control table notebook. Explain what would go wrong if you tried to pass `@int(variables('v_page_size'))` to a `String`-typed dataset parameter.
 
 ---
 

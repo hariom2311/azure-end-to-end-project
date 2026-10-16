@@ -1,0 +1,37 @@
+{
+    "name": "ds_voltgrid_payments_src",
+    "properties": {
+        "linkedServiceName": {
+            "referenceName": "ls_voltgrid_api",
+            "type": "LinkedServiceReference"
+        },
+        "parameters": {
+            "p_page": {
+                "type": "string",
+                "defaultValue": "1"
+            },
+            "p_page_size": {
+                "type": "string",
+                "defaultValue": "1000"
+            },
+            "p_endpoint": {
+                "type": "string",
+                "defaultValue": "/api/db/payments/"
+            },
+            "p_updated_after": {
+                "type": "string",
+                "defaultValue": "1900-01-01T00:00:00Z"
+            }
+        },
+        "annotations": [],
+        "type": "RestResource",
+        "typeProperties": {
+            "relativeUrl": {
+                "value": "@concat(dataset().p_endpoint,'?page=',string(dataset().p_page),'&page_size=',string(dataset().p_page_size),'&updated_after=',encodeUriComponent(dataset().p_updated_after))",
+                "type": "Expression"
+            }
+        },
+        "schema": []
+    },
+    "type": "Microsoft.DataFactory/factories/datasets"
+}
