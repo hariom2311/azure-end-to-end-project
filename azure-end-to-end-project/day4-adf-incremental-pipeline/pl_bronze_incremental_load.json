@@ -42,7 +42,7 @@
                 "typeProperties": {
                     "variableName": "v_endpoint",
                     "value": {
-                        "value": "@json(activity('act_read_ctl').output.runOutput).endpoint",
+                        "value": "@activity('act_read_ctl').output.runOutput.endpoint",
                         "type": "Expression"
                     }
                 }
@@ -61,7 +61,7 @@
                 "typeProperties": {
                     "variableName": "v_sink_base_path",
                     "value": {
-                        "value": "@json(activity('act_read_ctl').output.runOutput).sink_base_path",
+                        "value": "@activity('act_read_ctl').output.runOutput.sink_base_path",
                         "type": "Expression"
                     }
                 }
@@ -80,7 +80,7 @@
                 "typeProperties": {
                     "variableName": "v_file_prefix",
                     "value": {
-                        "value": "@json(activity('act_read_ctl').output.runOutput).file_prefix",
+                        "value": "@activity('act_read_ctl').output.runOutput.file_prefix",
                         "type": "Expression"
                     }
                 }
@@ -99,7 +99,7 @@
                 "typeProperties": {
                     "variableName": "v_page_size",
                     "value": {
-                        "value": "@string(json(activity('act_read_ctl').output.runOutput).page_size)",
+                        "value": "@string(activity('act_read_ctl').output.runOutput.page_size)",
                         "type": "Expression"
                     }
                 }
@@ -118,7 +118,7 @@
                 "typeProperties": {
                     "variableName": "v_last_watermark",
                     "value": {
-                        "value": "@if(and(not(empty(pipeline().parameters.p_load_type_override)),equals(pipeline().parameters.p_load_type_override,'full')),'1900-01-01T00:00:00Z',json(activity('act_read_ctl').output.runOutput).last_watermark)",
+                        "value": "@if(and(not(empty(pipeline().parameters.p_load_type_override)),equals(pipeline().parameters.p_load_type_override,'full')),'1900-01-01T00:00:00Z',activity('act_read_ctl').output.runOutput.last_watermark)",
                         "type": "Expression"
                     }
                 }

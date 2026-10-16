@@ -41,22 +41,15 @@ Diagnosis: If `runOutput` contains the expected JSON string but `act_set_endpoin
 ---
 
 **A4**
-`activity('act_read_ctl').output.runOutput` is a **string**, not a JSON object. It contains:
-```
-{"endpoint": "/api/db/payments/", "sink_base_path": "api/payments", ...}
-```
+`activity('act_read_ctl').output.runOutput` is an **Object** — ADF automatically parses the JSON string returned by `dbutils.notebook.exit()` into a native object. Fields are accessed directly with dot notation:
 
-Without `@json()`:
 ```
 @activity('act_read_ctl').output.runOutput.endpoint
 ```
-ADF tries to access `.endpoint` on a string type — strings don't have named properties. The expression returns `null`.
 
-With `@json()`:
-```
-@json(activity('act_read_ctl').output.runOutput).endpoint
-```
-`json()` parses the string into an ADF object, then `.endpoint` accesses the field correctly. This is always required when a Databricks notebook exits with `json.dumps(result)`.
+`@json()` is NOT needed and will fail with `InvalidTemplate: The function 'json' expects its parameter to be a string or an XML. The provided value is of type 'Object'`. ADF auto-parses the notebook exit value before exposing it as `runOutput`.
+
+The question in Q4 is updated: the correct access pattern is direct dot notation — no `@json()` wrapper required for Databricks notebook output.
 
 ---
 

@@ -25,9 +25,9 @@ The `act_read_ctl` Databricks Notebook activity succeeds (green in Monitor) but 
 **Q4 (Conceptual)**
 The notebook returns `dbutils.notebook.exit(json.dumps(result))`. In ADF, you access the endpoint field with:
 ```
-@json(activity('act_read_ctl').output.runOutput).endpoint
+@activity('act_read_ctl').output.runOutput.endpoint
 ```
-Why is `@json()` needed — what would happen without it?
+Why is `@json()` NOT needed here, and what error does it cause if you wrap `runOutput` with `@json()`?
 
 ---
 

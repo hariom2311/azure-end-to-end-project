@@ -262,7 +262,7 @@ Each activity below lists exactly what it depends on and what depends on it.
 **Required by:** `Copy data1`
 
 - Variable: `v_endpoint`
-- Value: `@json(activity('act_read_ctl').output.runOutput).endpoint`
+- Value: `@activity('act_read_ctl').output.runOutput.endpoint`
 
 ---
 
@@ -272,7 +272,7 @@ Each activity below lists exactly what it depends on and what depends on it.
 **Required by:** `Copy data1`
 
 - Variable: `v_sink_base_path`
-- Value: `@json(activity('act_read_ctl').output.runOutput).sink_base_path`
+- Value: `@activity('act_read_ctl').output.runOutput.sink_base_path`
 
 ---
 
@@ -282,7 +282,7 @@ Each activity below lists exactly what it depends on and what depends on it.
 **Required by:** `Copy data1`
 
 - Variable: `v_file_prefix`
-- Value: `@json(activity('act_read_ctl').output.runOutput).file_prefix`
+- Value: `@activity('act_read_ctl').output.runOutput.file_prefix`
 
 ---
 
@@ -292,7 +292,7 @@ Each activity below lists exactly what it depends on and what depends on it.
 **Required by:** `Copy data1`
 
 - Variable: `v_page_size`
-- Value: `@string(json(activity('act_read_ctl').output.runOutput).page_size)`
+- Value: `@string(activity('act_read_ctl').output.runOutput.page_size)`
 
 ---
 
@@ -310,7 +310,7 @@ Each activity below lists exactly what it depends on and what depends on it.
       equals(pipeline().parameters.p_load_type_override, 'full')
     ),
     '1900-01-01T00:00:00Z',
-    json(activity('act_read_ctl').output.runOutput).last_watermark
+    activity('act_read_ctl').output.runOutput.last_watermark
   )
   ```
 
