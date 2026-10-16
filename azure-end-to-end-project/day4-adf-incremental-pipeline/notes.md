@@ -161,16 +161,19 @@ az role assignment create \
   --scope $DBW_ID
 ```
 
-### 1.2 Databricks Workspace User — Add ADF MI as User
+### 1.2 Databricks Workspace — Add ADF MI as Service Principal
 
-Azure RBAC (`Contributor`) lets ADF submit job requests. It does NOT grant access inside the Databricks workspace. The ADF MI must also be added as a workspace user.
+Azure RBAC (`Contributor`) lets ADF submit job requests at the ARM level. It does NOT grant access inside the Databricks workspace. The ADF MI must also be added as a **Service Principal** inside the workspace.
 
 **Steps:**
-1. Databricks workspace → top-right avatar → **Manage** → **Identity and Access** → **Users** tab
-2. **+ Add User**
-3. Enter the **Object ID** (Principal ID) of the ADF MI — the value of `$ADF_MI` above
+1. Databricks workspace → top-right avatar → **Manage** → **Identity and Access** → **Service Principals** tab
+2. **+ Add Service Principal**
+3. Enter the **Application ID** (Client ID) of the ADF MI — find it at:
+   Portal → Azure Data Factory → `adf-ev-intelligence-dev` → **Properties** → **Managed Identity Application ID**
 4. Role: **User**
 5. Click **Add**
+
+> **Application ID vs Object ID:** These are two different GUIDs for the same service principal. The Databricks Service Principals tab requires the **Application ID**. The Object ID (used for Azure RBAC role assignments) will not resolve correctly here.
 
 > Missing this step causes `User not authorized` when the pipeline tries to run a notebook, even if Azure RBAC is set correctly.
 
