@@ -384,8 +384,10 @@ Each activity below lists exactly what it depends on and what depends on it.
 
 #### `act_fetch_page1_meta` — Web Activity (GET page 1)
 
-**Depends on:** `act_set_token` (Succeeded)  
+**Depends on:** `act_set_token` (Succeeded), `act_set_endpoint` (Succeeded), `act_set_page_size` (Succeeded), `act_set_watermark` (Succeeded)
 **Required by:** `act_set_total_pages`
+
+> This is the real join point of both branches — it needs the token (KV branch) AND the endpoint/page_size/watermark (control table branch) before it can build the URL.
 
 - Method: `GET`
 - Headers: `authorization` = `@concat('Token ', variables('v_token'))`
@@ -433,11 +435,12 @@ This is the join point where both branches (Databricks control table read and AP
 
 **Source — `ds_voltgrid_payments_src`:**
 ```
-p_page:         "1"
-p_page_size:    @variables('v_page_size')
-p_endpoint:     @variables('v_endpoint')
+p_page:          @int(1)
+p_page_size:     @int(variables('v_page_size'))
+p_endpoint:      @variables('v_endpoint')
 p_updated_after: @variables('v_last_watermark')
 ```
+> `p_page` and `p_page_size` are typed `Int` in the dataset. `v_page_size` is stored as String (ADF variables cannot be typed Int from a SetVariable expression), so `@int()` cast is required. Without it ADF throws `BadRequest` at pipeline parse time.
 
 **Sink — `ds_bronze_payments_sink`:**
 ```
@@ -479,7 +482,7 @@ Then connect `act_set_current_page_2` → Until.
 - Source — `ds_voltgrid_payments_src`:
   ```
   p_page:          @variables('v_current_page')
-  p_page_size:     @variables('v_page_size')
+  p_page_size:     @int(variables('v_page_size'))
   p_endpoint:      @variables('v_endpoint')
   p_updated_after: @variables('v_last_watermark')
   ```
@@ -540,13 +543,14 @@ After act_get_username + act_get_password:
 After act_api_login:
   act_set_token       ── depends on: act_api_login
 
-After act_set_token:
-  act_fetch_page1_meta ── depends on: act_set_token
+After act_set_token + act_set_endpoint + act_set_page_size + act_set_watermark (REAL join point):
+  act_fetch_page1_meta ── depends on: act_set_token, act_set_endpoint,
+                                       act_set_page_size, act_set_watermark
 
 After act_fetch_page1_meta:
   act_set_total_pages  ── depends on: act_fetch_page1_meta
 
-JOIN POINT — Copy data1 waits for BOTH branches:
+JOIN POINT — Copy data1 waits for remaining variables:
   Copy data1          ── depends on: act_set_total_pages,
                                      act_set_endpoint, act_set_sink_path,
                                      act_set_file_prefix, act_set_page_size,
