@@ -174,7 +174,28 @@ Azure RBAC (`Contributor`) lets ADF submit job requests. It does NOT grant acces
 
 > Missing this step causes `User not authorized` when the pipeline tries to run a notebook, even if Azure RBAC is set correctly.
 
-### 1.3 Create Linked Service `ls_databricks`
+### 1.3 Unity Catalog — Grant ADF MI Access to Control Table
+
+After adding the ADF MI as a workspace user, it still cannot read or write the Delta control table unless Unity Catalog privileges are granted. Run these three SQL commands in a Databricks notebook or SQL editor:
+
+```sql
+-- Allow the ADF MI to see the catalog
+GRANT USAGE ON CATALOG ev_catalog TO `9245da2f-7129-4e0c-92c4-134fe896e294`;
+
+-- Allow the ADF MI to see the schema
+GRANT USAGE ON SCHEMA ev_catalog.ctl TO `9245da2f-7129-4e0c-92c4-134fe896e294`;
+
+-- Allow the ADF MI to read and write the control table
+GRANT SELECT, MODIFY ON TABLE ev_catalog.ctl.pipeline_control TO `9245da2f-7129-4e0c-92c4-134fe896e294`;
+```
+
+> **What is `9245da2f-7129-4e0c-92c4-134fe896e294`?** This is the **Application ID** (also called Client ID) of the ADF Managed Identity service principal. It is different from the Object ID used in step 1.2. You can find it in: Portal → Azure Data Factory → `adf-ev-intelligence-dev` → **Properties** → **Managed Identity Application ID** (or search for the ADF name in Azure AD → Enterprise Applications).
+
+> **Students:** Replace this GUID with your own ADF MI Application ID. The format is the same — a UUID.
+
+> **Why three separate grants?** Unity Catalog uses a layered permission model. `USAGE` on the catalog allows the principal to see it. `USAGE` on the schema allows seeing the schema. `SELECT, MODIFY` on the table allows reading rows (`nb_read_control_table`) and updating the watermark (`nb_update_watermark`). All three are required — granting only table-level access without catalog/schema USAGE will fail with a permissions error.
+
+### 1.4 Create Linked Service `ls_databricks`
 
 **ADF Studio → Manage → Linked services → + New → Azure Databricks:**
 
@@ -644,6 +665,7 @@ Trigger with `p_source_name = 'sessions'` — no ADF pipeline changes required.
 **Access setup:**
 - [ ] ADF MI has `Contributor` on `dbw-ev-intelligence-dev` (Azure RBAC)
 - [ ] ADF MI added as **User** inside Databricks workspace (workspace-level)
+- [ ] Unity Catalog grants run: `USAGE` on catalog, `USAGE` on schema, `SELECT, MODIFY` on table
 - [ ] `ls_databricks` test connection green
 - [ ] `ls_voltgrid_api` has NO extra parameters with null values (delete leftover test params)
 
