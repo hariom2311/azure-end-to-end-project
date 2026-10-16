@@ -407,7 +407,10 @@
                 "userProperties": [],
                 "typeProperties": {
                     "variableName": "v_current_page",
-                    "value": 2
+                    "value": {
+                        "value": "@int(2)",
+                        "type": "Expression"
+                    }
                 }
             },
             {
@@ -590,7 +593,8 @@
                 "defaultValue": "payments"
             },
             "p_load_type_override": {
-                "type": "string"
+                "type": "string",
+                "defaultValue": ""
             }
         },
         "variables": {
