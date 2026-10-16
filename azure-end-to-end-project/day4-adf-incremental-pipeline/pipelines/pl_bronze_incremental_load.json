@@ -34,10 +34,15 @@
                 "dependsOn": [
                     {
                         "activity": "act_read_ctl",
-                        "dependencyConditions": [ "Succeeded" ]
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
                     }
                 ],
-                "policy": { "secureOutput": false, "secureInput": false },
+                "policy": {
+                    "secureOutput": false,
+                    "secureInput": false
+                },
                 "userProperties": [],
                 "typeProperties": {
                     "variableName": "v_endpoint",
@@ -53,10 +58,15 @@
                 "dependsOn": [
                     {
                         "activity": "act_read_ctl",
-                        "dependencyConditions": [ "Succeeded" ]
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
                     }
                 ],
-                "policy": { "secureOutput": false, "secureInput": false },
+                "policy": {
+                    "secureOutput": false,
+                    "secureInput": false
+                },
                 "userProperties": [],
                 "typeProperties": {
                     "variableName": "v_sink_base_path",
@@ -72,10 +82,15 @@
                 "dependsOn": [
                     {
                         "activity": "act_read_ctl",
-                        "dependencyConditions": [ "Succeeded" ]
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
                     }
                 ],
-                "policy": { "secureOutput": false, "secureInput": false },
+                "policy": {
+                    "secureOutput": false,
+                    "secureInput": false
+                },
                 "userProperties": [],
                 "typeProperties": {
                     "variableName": "v_file_prefix",
@@ -91,10 +106,15 @@
                 "dependsOn": [
                     {
                         "activity": "act_read_ctl",
-                        "dependencyConditions": [ "Succeeded" ]
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
                     }
                 ],
-                "policy": { "secureOutput": false, "secureInput": false },
+                "policy": {
+                    "secureOutput": false,
+                    "secureInput": false
+                },
                 "userProperties": [],
                 "typeProperties": {
                     "variableName": "v_page_size",
@@ -110,10 +130,15 @@
                 "dependsOn": [
                     {
                         "activity": "act_read_ctl",
-                        "dependencyConditions": [ "Succeeded" ]
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
                     }
                 ],
-                "policy": { "secureOutput": false, "secureInput": false },
+                "policy": {
+                    "secureOutput": false,
+                    "secureInput": false
+                },
                 "userProperties": [],
                 "typeProperties": {
                     "variableName": "v_last_watermark",
@@ -129,10 +154,15 @@
                 "dependsOn": [
                     {
                         "activity": "act_read_ctl",
-                        "dependencyConditions": [ "Succeeded" ]
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
                     }
                 ],
-                "policy": { "secureOutput": false, "secureInput": false },
+                "policy": {
+                    "secureOutput": false,
+                    "secureInput": false
+                },
                 "userProperties": [],
                 "typeProperties": {
                     "variableName": "v_ingestion_date",
@@ -148,10 +178,15 @@
                 "dependsOn": [
                     {
                         "activity": "act_read_ctl",
-                        "dependencyConditions": [ "Succeeded" ]
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
                     }
                 ],
-                "policy": { "secureOutput": false, "secureInput": false },
+                "policy": {
+                    "secureOutput": false,
+                    "secureInput": false
+                },
                 "userProperties": [],
                 "typeProperties": {
                     "variableName": "v_run_ts",
@@ -209,11 +244,15 @@
                 "dependsOn": [
                     {
                         "activity": "act_get_username",
-                        "dependencyConditions": [ "Succeeded" ]
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
                     },
                     {
                         "activity": "act_get_password",
-                        "dependencyConditions": [ "Succeeded" ]
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
                     }
                 ],
                 "policy": {
@@ -242,10 +281,15 @@
                 "dependsOn": [
                     {
                         "activity": "act_api_login",
-                        "dependencyConditions": [ "Succeeded" ]
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
                     }
                 ],
-                "policy": { "secureOutput": false, "secureInput": false },
+                "policy": {
+                    "secureOutput": false,
+                    "secureInput": false
+                },
                 "userProperties": [],
                 "typeProperties": {
                     "variableName": "v_token",
@@ -259,10 +303,30 @@
                 "name": "act_fetch_page1_meta",
                 "type": "WebActivity",
                 "dependsOn": [
-                    { "activity": "act_set_token",     "dependencyConditions": [ "Succeeded" ] },
-                    { "activity": "act_set_endpoint",  "dependencyConditions": [ "Succeeded" ] },
-                    { "activity": "act_set_page_size", "dependencyConditions": [ "Succeeded" ] },
-                    { "activity": "act_set_watermark", "dependencyConditions": [ "Succeeded" ] }
+                    {
+                        "activity": "act_set_token",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    },
+                    {
+                        "activity": "act_set_endpoint",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    },
+                    {
+                        "activity": "act_set_page_size",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    },
+                    {
+                        "activity": "act_set_watermark",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
                 ],
                 "policy": {
                     "timeout": "0.12:00:00",
@@ -292,10 +356,15 @@
                 "dependsOn": [
                     {
                         "activity": "act_fetch_page1_meta",
-                        "dependencyConditions": [ "Succeeded" ]
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
                     }
                 ],
-                "policy": { "secureOutput": false, "secureInput": false },
+                "policy": {
+                    "secureOutput": false,
+                    "secureInput": false
+                },
                 "userProperties": [],
                 "typeProperties": {
                     "variableName": "v_total_pages",
@@ -309,14 +378,54 @@
                 "name": "Copy data1",
                 "type": "Copy",
                 "dependsOn": [
-                    { "activity": "act_set_total_pages",    "dependencyConditions": [ "Succeeded" ] },
-                    { "activity": "act_set_endpoint",       "dependencyConditions": [ "Succeeded" ] },
-                    { "activity": "act_set_sink_path",      "dependencyConditions": [ "Succeeded" ] },
-                    { "activity": "act_set_file_prefix",    "dependencyConditions": [ "Succeeded" ] },
-                    { "activity": "act_set_page_size",      "dependencyConditions": [ "Succeeded" ] },
-                    { "activity": "act_set_watermark",      "dependencyConditions": [ "Succeeded" ] },
-                    { "activity": "act_set_ingestion_date", "dependencyConditions": [ "Succeeded" ] },
-                    { "activity": "act_set_run_ts",         "dependencyConditions": [ "Succeeded" ] }
+                    {
+                        "activity": "act_set_total_pages",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    },
+                    {
+                        "activity": "act_set_endpoint",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    },
+                    {
+                        "activity": "act_set_sink_path",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    },
+                    {
+                        "activity": "act_set_file_prefix",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    },
+                    {
+                        "activity": "act_set_page_size",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    },
+                    {
+                        "activity": "act_set_watermark",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    },
+                    {
+                        "activity": "act_set_ingestion_date",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    },
+                    {
+                        "activity": "act_set_run_ts",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
                 ],
                 "policy": {
                     "timeout": "0.12:00:00",
@@ -370,6 +479,10 @@
                             "p_updated_after": {
                                 "value": "@variables('v_last_watermark')",
                                 "type": "Expression"
+                            },
+                            "p_token": {
+                                "value": "@variables('v_token')",
+                                "type": "Expression"
                             }
                         }
                     }
@@ -397,10 +510,15 @@
                 "dependsOn": [
                     {
                         "activity": "Copy data1",
-                        "dependencyConditions": [ "Succeeded" ]
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
                     }
                 ],
-                "policy": { "secureOutput": false, "secureInput": false },
+                "policy": {
+                    "secureOutput": false,
+                    "secureInput": false
+                },
                 "userProperties": [],
                 "typeProperties": {
                     "variableName": "v_current_page",
@@ -416,7 +534,9 @@
                 "dependsOn": [
                     {
                         "activity": "act_set_current_page_2",
-                        "dependencyConditions": [ "Succeeded" ]
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
                     }
                 ],
                 "userProperties": [],
@@ -468,7 +588,7 @@
                                     "type": "DatasetReference",
                                     "parameters": {
                                         "p_page": {
-                                            "value": "@variables('v_current_page')",
+                                            "value": "@string(variables('v_current_page'))",
                                             "type": "Expression"
                                         },
                                         "p_page_size": {
@@ -481,6 +601,10 @@
                                         },
                                         "p_updated_after": {
                                             "value": "@variables('v_last_watermark')",
+                                            "type": "Expression"
+                                        },
+                                        "p_token": {
+                                            "value": "@variables('v_token')",
                                             "type": "Expression"
                                         }
                                     }
@@ -509,10 +633,15 @@
                             "dependsOn": [
                                 {
                                     "activity": "act_copy_page",
-                                    "dependencyConditions": [ "Succeeded" ]
+                                    "dependencyConditions": [
+                                        "Succeeded"
+                                    ]
                                 }
                             ],
-                            "policy": { "secureOutput": false, "secureInput": false },
+                            "policy": {
+                                "secureOutput": false,
+                                "secureInput": false
+                            },
                             "userProperties": [],
                             "typeProperties": {
                                 "variableName": "v_next_page",
@@ -528,10 +657,15 @@
                             "dependsOn": [
                                 {
                                     "activity": "act_increment_page",
-                                    "dependencyConditions": [ "Succeeded" ]
+                                    "dependencyConditions": [
+                                        "Succeeded"
+                                    ]
                                 }
                             ],
-                            "policy": { "secureOutput": false, "secureInput": false },
+                            "policy": {
+                                "secureOutput": false,
+                                "secureInput": false
+                            },
                             "userProperties": [],
                             "typeProperties": {
                                 "variableName": "v_current_page",
@@ -551,7 +685,9 @@
                 "dependsOn": [
                     {
                         "activity": "Until",
-                        "dependencyConditions": [ "Succeeded" ]
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
                     }
                 ],
                 "policy": {
@@ -592,17 +728,39 @@
             }
         },
         "variables": {
-            "v_token":          { "type": "String" },
-            "v_endpoint":       { "type": "String" },
-            "v_sink_base_path": { "type": "String" },
-            "v_file_prefix":    { "type": "String" },
-            "v_page_size":      { "type": "String" },
-            "v_last_watermark": { "type": "String" },
-            "v_ingestion_date": { "type": "String" },
-            "v_current_page":   { "type": "Integer" },
-            "v_next_page":      { "type": "Integer" },
-            "v_total_pages":    { "type": "Integer" },
-            "v_run_ts":         { "type": "String" }
+            "v_token": {
+                "type": "String"
+            },
+            "v_endpoint": {
+                "type": "String"
+            },
+            "v_sink_base_path": {
+                "type": "String"
+            },
+            "v_file_prefix": {
+                "type": "String"
+            },
+            "v_page_size": {
+                "type": "String"
+            },
+            "v_last_watermark": {
+                "type": "String"
+            },
+            "v_ingestion_date": {
+                "type": "String"
+            },
+            "v_current_page": {
+                "type": "Integer"
+            },
+            "v_next_page": {
+                "type": "Integer"
+            },
+            "v_total_pages": {
+                "type": "Integer"
+            },
+            "v_run_ts": {
+                "type": "String"
+            }
         },
         "annotations": []
     }

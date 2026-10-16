@@ -284,10 +284,15 @@
                 "dependsOn": [
                     {
                         "activity": "act_read_ctl",
-                        "dependencyConditions": [ "Succeeded" ]
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
                     }
                 ],
-                "policy": { "secureOutput": false, "secureInput": false },
+                "policy": {
+                    "secureOutput": false,
+                    "secureInput": false
+                },
                 "userProperties": [],
                 "typeProperties": {
                     "variableName": "v_sink_base_path",
@@ -303,10 +308,15 @@
                 "dependsOn": [
                     {
                         "activity": "act_read_ctl",
-                        "dependencyConditions": [ "Succeeded" ]
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
                     }
                 ],
-                "policy": { "secureOutput": false, "secureInput": false },
+                "policy": {
+                    "secureOutput": false,
+                    "secureInput": false
+                },
                 "userProperties": [],
                 "typeProperties": {
                     "variableName": "v_file_prefix",
@@ -322,10 +332,15 @@
                 "dependsOn": [
                     {
                         "activity": "act_read_ctl",
-                        "dependencyConditions": [ "Succeeded" ]
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
                     }
                 ],
-                "policy": { "secureOutput": false, "secureInput": false },
+                "policy": {
+                    "secureOutput": false,
+                    "secureInput": false
+                },
                 "userProperties": [],
                 "typeProperties": {
                     "variableName": "v_ingestion_date",
@@ -341,10 +356,15 @@
                 "dependsOn": [
                     {
                         "activity": "act_read_ctl",
-                        "dependencyConditions": [ "Succeeded" ]
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
                     }
                 ],
-                "policy": { "secureOutput": false, "secureInput": false },
+                "policy": {
+                    "secureOutput": false,
+                    "secureInput": false
+                },
                 "userProperties": [],
                 "typeProperties": {
                     "variableName": "v_run_ts",
@@ -358,14 +378,42 @@
                 "name": "Copy data1",
                 "type": "Copy",
                 "dependsOn": [
-                    { "activity": "act_set_total_pages",    "dependencyConditions": [ "Succeeded" ] },
-                    { "activity": "act_set_sink_path",      "dependencyConditions": [ "Succeeded" ] },
-                    { "activity": "act_set_file_prefix",    "dependencyConditions": [ "Succeeded" ] },
-                    { "activity": "act_set_ingestion_date", "dependencyConditions": [ "Succeeded" ] },
-                    { "activity": "act_set_run_ts",         "dependencyConditions": [ "Succeeded" ] },
-                    { "activity": "act_set_endpoint",       "dependencyConditions": [ "Succeeded" ] },
-                    { "activity": "act_set_page_size",      "dependencyConditions": [ "Succeeded" ] },
-                    { "activity": "act_set_watermark",      "dependencyConditions": [ "Succeeded" ] }
+                    {
+                        "activity": "act_set_total_pages",
+                        "dependencyConditions": [ "Succeeded" ]
+                    },
+                    {
+                        "activity": "act_set_sink_path",
+                        "dependencyConditions": [ "Succeeded" ]
+                    },
+                    {
+                        "activity": "act_set_file_prefix",
+                        "dependencyConditions": [ "Succeeded" ]
+                    },
+                    {
+                        "activity": "act_set_ingestion_date",
+                        "dependencyConditions": [ "Succeeded" ]
+                    },
+                    {
+                        "activity": "act_set_run_ts",
+                        "dependencyConditions": [ "Succeeded" ]
+                    },
+                    {
+                        "activity": "act_set_endpoint",
+                        "dependencyConditions": [ "Succeeded" ]
+                    },
+                    {
+                        "activity": "act_set_page_size",
+                        "dependencyConditions": [ "Succeeded" ]
+                    },
+                    {
+                        "activity": "act_set_watermark",
+                        "dependencyConditions": [ "Succeeded" ]
+                    },
+                    {
+                        "activity": "act_set_token",
+                        "dependencyConditions": [ "Succeeded" ]
+                    }
                 ],
                 "policy": {
                     "timeout": "0.12:00:00",
@@ -380,13 +428,7 @@
                         "type": "RestSource",
                         "httpRequestTimeout": "00:01:40",
                         "requestInterval": "00.00:00:00.010",
-                        "requestMethod": "GET",
-                        "additionalHeaders": {
-                            "Authorization": {
-                                "value": "@concat('Token ', variables('v_token'))",
-                                "type": "Expression"
-                            }
-                        }
+                        "requestMethod": "GET"
                     },
                     "sink": {
                         "type": "JsonSink",
@@ -419,6 +461,10 @@
                             "p_updated_after": {
                                 "value": "@variables('v_last_watermark')",
                                 "type": "Expression"
+                            },
+                            "p_token": {
+                                "value": "@variables('v_token')",
+                                "type": "Expression"
                             }
                         }
                     }
@@ -428,14 +474,8 @@
                         "referenceName": "ds_bronze_payments_sink",
                         "type": "DatasetReference",
                         "parameters": {
-                            "p_folder": {
-                                "value": "@concat(variables('v_sink_base_path'), '/ingestion_date=', variables('v_ingestion_date'))",
-                                "type": "Expression"
-                            },
-                            "p_file": {
-                                "value": "@concat(variables('v_file_prefix'), '_page_1.json')",
-                                "type": "Expression"
-                            }
+                            "p_folder": "api/payments/ingestion_date=2026-10-16",
+                            "p_file": "payments_page_1.json"
                         }
                     }
                 ]
@@ -447,7 +487,8 @@
                 "defaultValue": "payments"
             },
             "p_load_type_override": {
-                "type": "string"
+                "type": "string",
+                "defaultValue": ""
             }
         },
         "variables": {

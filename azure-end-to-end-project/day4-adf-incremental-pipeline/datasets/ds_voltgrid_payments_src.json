@@ -3,7 +3,13 @@
     "properties": {
         "linkedServiceName": {
             "referenceName": "ls_voltgrid_api",
-            "type": "LinkedServiceReference"
+            "type": "LinkedServiceReference",
+            "parameters": {
+                "p_token": {
+                    "value": "@dataset().p_token",
+                    "type": "Expression"
+                }
+            }
         },
         "parameters": {
             "p_page": {
@@ -21,6 +27,10 @@
             "p_updated_after": {
                 "type": "string",
                 "defaultValue": "1900-01-01T00:00:00Z"
+            },
+            "p_token": {
+                "type": "string",
+                "defaultValue": ""
             }
         },
         "annotations": [],
