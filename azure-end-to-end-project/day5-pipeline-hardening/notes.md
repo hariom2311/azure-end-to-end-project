@@ -26,62 +26,63 @@ Same values as Day 4. Replace all instructor-specific values before publishing.
 
 ```
 Day 4 pipeline (pl_bronze_incremental_load):
-  Copy data1 (page 1)
+  Copy data1 (page 1)           ← BUG: always runs even when total_pages = 0
   act_set_current_page_2  (v_current_page = 2)
-  Until  ← exit: v_current_page >= total_pages + 1  ← BUG: body always runs once
-    act_copy_page
+  Until  ← exit: v_current_page >= total_pages + 1
+    act_copy_page               ← BUG: ran when total_pages = 1 (page 2 = 404)
     act_increment_page
     act_set_current_page
   act_update_watermark
 
 Day 5 pipeline (pl_bronze_incremental_load_v2):
-  Copy data1 (page 1)
-  act_set_current_page_2  (v_current_page = 2)
-  Until  ← exit: v_current_page > total_pages   ← FIX 1: exits before body when total=1
+  act_set_current_page_1  (v_current_page = 1)  ← replaces Copy data1 on main canvas
+  Until  ← exit: v_current_page > total_pages   ← FIX 1: exits BEFORE body if total=0
     act_relogin            ← FIX 2: fresh token every iteration (no nesting needed)
     act_set_loop_token     ← update v_token from relogin
-    act_copy_page          ← depends on act_set_loop_token (uses fresh token)
+    act_copy_page          ← copies page v_current_page (1, 2, 3 ... N)
     act_increment_page
     act_set_current_page
   act_update_watermark
 
-Removed: p_token_refresh_every parameter, v_pages_since_refresh, v_next_refresh_counter
-         (counter-based approach replaced by per-iteration relogin — simpler, no nesting)
+Key design change: page 1 is now copied INSIDE the loop (not by a separate Copy data1).
+Loop starts at page 1, handles all pages uniformly, exits before running when total=0.
 ```
 
 ---
 
-## Bug 1 — 404 When Data Has Only One Page
+## Bug 1 — 404 When Data Has Zero or One Page
 
 ### What Happened
 
-When the API returns only 1 page of data, the Day 4 loop tried to fetch page 2 → 404 Not Found → pipeline failed.
+The error `{"detail":"Invalid page."}` with HTTP 404 occurs when the API is asked for a page that doesn't exist. Two scenarios trigger this:
+
+- **Zero pages** (`total_pages = 0`): No records match the watermark filter. Day 4's `Copy data1` always ran page 1 → 404 because page 1 doesn't exist.
+- **One page** (`total_pages = 1`): Day 4's Until loop always started at page 2 → 404 because only page 1 existed.
 
 ### Root Cause
 
-The Day 4 Until exit condition was:
-```
-@greaterOrEquals(variables('v_current_page'), add(variables('v_total_pages'), 1))
-```
+Day 4 had `Copy data1` (always copies page 1) as a separate activity BEFORE the Until loop. This meant page 1 was always fetched regardless of `total_pages`. When `total_pages = 0`, even page 1 returns 404.
 
-ADF evaluates the Until condition **before each iteration**. With `total_pages = 1` and `v_current_page = 2`:
-- Condition: `2 >= (1 + 1)` → `2 >= 2` → `true` → loop should exit
+### Fix — Move Page 1 Inside the Loop, Start at Page 1
 
-However — ADF runs the loop body **at least once** before the first condition check. So `act_copy_page` for page 2 always ran, regardless of `total_pages`.
+Instead of a separate `Copy data1`, the loop now starts at `v_current_page = 1` and handles all pages (including page 1) uniformly.
 
-### Fix — Change the Exit Condition
-
-The new exit condition is:
+**Exit condition:**
 ```
 @greater(variables('v_current_page'), variables('v_total_pages'))
 ```
 
-With `total_pages = 1` and `v_current_page = 2`:
-- Condition: `2 > 1` → `true` → loop exits **before** the first iteration runs
+ADF evaluates this condition **before** each iteration (including the very first). So:
 
-No IfCondition wrapper needed. The Until loop itself handles the single-page case cleanly.
+| total_pages | v_current_page at start | Condition | Result |
+|---|---|---|---|
+| `0` | `1` | `1 > 0 = true` | Loop exits immediately — nothing copied |
+| `1` | `1` | `1 > 1 = false` | Copies page 1, increments to 2, `2 > 1 = true` → exits |
+| `321` | `1` | `1 > 321 = false` | Copies pages 1–321, exits when `322 > 321` |
 
-> **Why not IfCondition around the loop?** ADF does not allow a container activity (IfCondition, Until, ForEach) to be nested inside another container activity. Wrapping the Until inside an IfCondition causes the error: `Container activity cannot include another container activity`. The exit condition fix is the correct ADF-native approach.
+No IfCondition wrapper, no extra activities — just the loop handles every case.
+
+> **Why not IfCondition around the loop?** ADF does not allow a container activity nested inside another container activity. Wrapping Until inside IfCondition causes: `Container activity cannot include another container activity`.
 
 ---
 
@@ -149,22 +150,22 @@ act_get_username    act_get_password     act_read_ctl
                       │
                       └──────────────────────┬─────────────────────┘
                                              ▼  ◄── JOIN POINT 2
-                                         Copy data1
-                                         (page 1, always)
-                                             │
-                                             ▼
-                                  act_set_current_page_2
-                                  (v_current_page = 2)
+                                  act_set_current_page_1
+                                  (v_current_page = 1)
                                              │
                                              ▼
                               ┌──── Until ──────────────────────────┐
                               │  Exit BEFORE body:                  │
                               │  v_current_page > v_total_pages     │
-                              │  (exits immediately if total = 1)   │
+                              │                                     │
+                              │  total=0: 1>0=true → exits, 0 files │
+                              │  total=1: 1>1=false → copies pg 1,  │
+                              │           2>1=true → exits, 1 file  │
+                              │  total=N: copies pg 1..N, exits     │
                               │                                     │
                               │  act_relogin  ← fresh login POST    │
                               │  act_set_loop_token ← update v_token│
-                              │  act_copy_page ← copy page N        │
+                              │  act_copy_page ← copy v_current_page│
                               │  act_increment_page                 │
                               │  act_set_current_page               │
                               └──────────── ↑ loop back ────────────┘
@@ -172,8 +173,8 @@ act_get_username    act_get_password     act_read_ctl
                                              ▼
                                     act_update_watermark
                                     (Databricks — always runs
-                                     after Until, even if it
-                                     exited immediately)
+                                     after Until, even if loop
+                                     exited with 0 iterations)
                                              │
                                              ▼
                                         PIPELINE END
@@ -191,17 +192,17 @@ act_get_username    act_get_password     act_read_ctl
 | 4–10 | `act_set_*` (7 SetVars) | SetVariable | No | Store config in variables |
 | 11 | `act_api_login` | Web POST | No | Login at pipeline start |
 | 12 | `act_set_token` | SetVariable | No | Store initial token |
-| 13 | `act_fetch_page1_meta` | Web GET | No | Get total_pages from page 1 |
+| 13 | `act_fetch_page1_meta` | Web GET | No | Get total_pages from page 1 response |
 | 14 | `act_set_total_pages` | SetVariable | No | Store total_pages |
-| 15 | `Copy data1` | Copy | No | Copy page 1 → Bronze |
-| 16 | `act_set_current_page_2` | SetVariable | No | Init loop counter to 2 |
-| 17 | `Until` | Until | **YES — exit condition fixed** | Loop pages 2..N |
-| ↳ | `act_relogin` | Web POST | **NEW** | Re-login every iteration |
+| — | ~~`Copy data1`~~ | ~~Copy~~ | **REMOVED** | Moved inside loop as `act_copy_page` |
+| 15 | `act_set_current_page_1` | SetVariable | **NEW (replaces act_set_current_page_2)** | Init loop counter to **1** (not 2) |
+| 16 | `Until` | Until | **YES — exit condition + starts at page 1** | Loop ALL pages 1..N |
+| ↳ | `act_relogin` | Web POST | **NEW** | Re-login every iteration — fresh token |
 | ↳ | `act_set_loop_token` | SetVariable | **NEW** | Update v_token from relogin |
-| ↳ | `act_copy_page` | Copy | **YES — depends on act_set_loop_token** | Copy page N → Bronze |
-| ↳ | `act_increment_page` | SetVariable | No | v_next_page = N + 1 |
+| ↳ | `act_copy_page` | Copy | **YES — now copies page 1 too** | Copy v_current_page → Bronze |
+| ↳ | `act_increment_page` | SetVariable | No | v_next_page = current + 1 |
 | ↳ | `act_set_current_page` | SetVariable | No | v_current_page = v_next_page |
-| 18 | `act_update_watermark` | Databricks | No | Write new watermark |
+| 17 | `act_update_watermark` | Databricks | No | Write new watermark |
 
 ---
 
@@ -238,9 +239,13 @@ This is why the counter-based token refresh (which needed `IfCondition` inside `
 
 ## Verify: Day 5 Checklist
 
-**Single-page guard:**
-- [ ] Until exit condition is `@greater(variables('v_current_page'), variables('v_total_pages'))` (not `greaterOrEquals(..., add(..., 1))`)
-- [ ] Test: set watermark to a recent timestamp so API returns 0 or 1 pages → pipeline must complete without 404
+**Single-page / zero-page guard:**
+- [ ] `Copy data1` removed from main canvas
+- [ ] `act_set_current_page_1` sets `v_current_page = 1` (not 2)
+- [ ] Until exit condition is `@greater(variables('v_current_page'), variables('v_total_pages'))`
+- [ ] `act_copy_page` inside loop uses `@string(variables('v_current_page'))` for `p_page` — copies pages 1, 2, 3 … N
+- [ ] Test zero pages: set watermark to `utcnow()` — pipeline completes with 0 files copied, no 404
+- [ ] Test one page: set watermark so only a handful of records exist — pipeline copies exactly 1 file, no 404
 
 **Token refresh:**
 - [ ] `act_relogin` is first activity inside Until (no dependency)
@@ -255,6 +260,6 @@ This is why the counter-based token refresh (which needed `IfCondition` inside `
 | Error | Cause | Fix |
 |---|---|---|
 | `Container activity cannot include another container activity` | IfCondition nested inside Until (or Until inside IfCondition inside Until) | ADF allows only one container level. Remove inner container — use exit condition logic or per-iteration calls instead |
-| `404 Not Found` on page 2 | Old exit condition `greaterOrEquals(..., add(...,1))` — loop body still ran when total=1 | Use `@greater(v_current_page, v_total_pages)` — exits before the first iteration when total=1 |
+| `404 Not Found` on page 1 (total=0) or page 2 (total=1) | Day 4 `Copy data1` always ran page 1; loop always started at 2 | v2: start loop at page 1, exit condition `@greater(v_current_page, v_total_pages)` — handles 0 and 1 page with no copies |
 | `401 Unauthorized` after many pages | Token expired mid-run | `act_relogin` at the start of each loop iteration guarantees a fresh token per page |
 | `act_relogin` fails — activity output not found | ADF cannot resolve `activity('act_get_username')` inside Until | This should work — ADF propagates main-canvas activity outputs into nested containers. Verify the activity name spelling matches exactly |
