@@ -1,11 +1,11 @@
 {
     "name": "pl_bronze_master_parallel",
     "properties": {
-        "description": "Dynamic master pipeline (parallel, batchCount=5). Same notebook pattern as pl_bronze_master_foreach but ForEach runs up to 5 sources simultaneously. No Delta Lake linked service needed — uses ls_databricks (same as Day 5).",
+        "description": "Dynamic master pipeline (parallel, batchCount=5). Same notebook pattern as pl_bronze_master_foreach — ForEach items reads directly from notebook runOutput using @json(string(...)). No SetVariable needed. Up to 5 sources run simultaneously.",
         "activities": [
             {
                 "name": "act_list_sources",
-                "description": "Run nb_list_active_sources notebook — returns JSON array of active source_names",
+                "description": "Run nb_list_active_sources notebook — exits with json.dumps([source_names]) string",
                 "type": "DatabricksNotebook",
                 "dependsOn": [],
                 "policy": {
@@ -24,37 +24,18 @@
                 }
             },
             {
-                "name": "act_set_sources",
-                "description": "Store the notebook output (JSON array string) in v_sources variable",
-                "type": "SetVariable",
+                "name": "act_foreach_source_parallel",
+                "description": "Run up to 5 sources simultaneously. string() forces runOutput to string before json() parses it.",
+                "type": "ForEach",
                 "dependsOn": [
                     {
                         "activity": "act_list_sources",
                         "dependencyConditions": ["Succeeded"]
                     }
                 ],
-                "policy": { "secureOutput": false, "secureInput": false },
-                "typeProperties": {
-                    "variableName": "v_sources",
-                    "value": {
-                        "value": "@activity('act_list_sources').output.runOutput",
-                        "type": "Expression"
-                    }
-                }
-            },
-            {
-                "name": "act_foreach_source_parallel",
-                "description": "Run up to 5 sources simultaneously. isSequential=false, batchCount=5.",
-                "type": "ForEach",
-                "dependsOn": [
-                    {
-                        "activity": "act_set_sources",
-                        "dependencyConditions": ["Succeeded"]
-                    }
-                ],
                 "typeProperties": {
                     "items": {
-                        "value": "@json(variables('v_sources'))",
+                        "value": "@json(string(activity('act_list_sources').output.runOutput))",
                         "type": "Expression"
                     },
                     "isSequential": false,
@@ -93,12 +74,7 @@
                 "description": "Pass 'full' to force full reload for all sources. Leave empty to use each source's load_type from the control table."
             }
         },
-        "variables": {
-            "v_sources": {
-                "type": "String",
-                "defaultValue": "[]"
-            }
-        },
+        "variables": {},
         "folder": {
             "name": "bronze"
         },

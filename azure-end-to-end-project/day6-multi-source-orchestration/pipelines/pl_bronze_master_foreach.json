@@ -1,11 +1,11 @@
 {
     "name": "pl_bronze_master_foreach",
     "properties": {
-        "description": "Dynamic master pipeline (sequential). nb_list_active_sources notebook reads all active source_names from the control table and returns a JSON array. A SetVariable stores it, ForEach iterates over it calling pl_bronze_incremental_load_v2 for each source. No Delta Lake linked service needed — uses ls_databricks (same as Day 5).",
+        "description": "Dynamic master pipeline (sequential). nb_list_active_sources notebook reads all active source_names from the control table and returns a JSON array string. ForEach iterates over it directly using @json(string(activity output)). No SetVariable needed — avoids ADF String/Array type conflict.",
         "activities": [
             {
                 "name": "act_list_sources",
-                "description": "Run nb_list_active_sources notebook — returns JSON array of active source_names e.g. [\"payments\",\"fleet\",\"weather\"]",
+                "description": "Run nb_list_active_sources notebook — exits with json.dumps([source_names]) string",
                 "type": "DatabricksNotebook",
                 "dependsOn": [],
                 "policy": {
@@ -24,37 +24,18 @@
                 }
             },
             {
-                "name": "act_set_sources",
-                "description": "Store the notebook output (JSON array string) in v_sources variable for ForEach",
-                "type": "SetVariable",
+                "name": "act_foreach_source",
+                "description": "Iterate sequentially over each active source_name. string() forces runOutput to a string before json() parses it — avoids the Array type conflict on SetVariable.",
+                "type": "ForEach",
                 "dependsOn": [
                     {
                         "activity": "act_list_sources",
                         "dependencyConditions": ["Succeeded"]
                     }
                 ],
-                "policy": { "secureOutput": false, "secureInput": false },
-                "typeProperties": {
-                    "variableName": "v_sources",
-                    "value": {
-                        "value": "@activity('act_list_sources').output.runOutput",
-                        "type": "Expression"
-                    }
-                }
-            },
-            {
-                "name": "act_foreach_source",
-                "description": "Iterate sequentially over each active source_name. json() parses the stored array string into a real array for ForEach.",
-                "type": "ForEach",
-                "dependsOn": [
-                    {
-                        "activity": "act_set_sources",
-                        "dependencyConditions": ["Succeeded"]
-                    }
-                ],
                 "typeProperties": {
                     "items": {
-                        "value": "@json(variables('v_sources'))",
+                        "value": "@json(string(activity('act_list_sources').output.runOutput))",
                         "type": "Expression"
                     },
                     "isSequential": true,
@@ -92,12 +73,7 @@
                 "description": "Pass 'full' to force full reload for all sources. Leave empty to use each source's load_type from the control table."
             }
         },
-        "variables": {
-            "v_sources": {
-                "type": "String",
-                "defaultValue": "[]"
-            }
-        },
+        "variables": {},
         "folder": {
             "name": "bronze"
         },
