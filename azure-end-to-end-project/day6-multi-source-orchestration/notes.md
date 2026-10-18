@@ -100,29 +100,119 @@ All DB endpoints support `updated_after` (via `UpdatedAtFilterSet` in the API). 
 
 ---
 
-## Part 2 — Import and Configure the Master Pipeline
+## Part 2 — Create the Master Pipeline `pl_bronze_master`
 
-### 2.1 Import from JSON
+> **Option A — Import from JSON (fastest):** ADF Studio → Author → Pipelines → `...` menu on the Pipelines heading → **Import from JSON** → upload `pipelines/pl_bronze_master.json`. Skip to Section 2.4 to verify.
+>
+> **Option B — Build manually (recommended for learning):** Follow Sections 2.1 through 2.3 below step by step.
 
-ADF Studio → Author → Pipelines → `...` menu → Import from JSON → upload `pipelines/pl_bronze_master.json`.
+---
 
-Or create manually: add 19 `Execute Pipeline` activities in sequence, each calling `pl_bronze_incremental_load_v2`.
+### 2.1 Create the Pipeline and Add the Parameter
 
-### 2.2 Pipeline Structure
+1. ADF Studio → **Author** → Pipelines → **+** → **New pipeline**
+2. Rename it: in the Properties panel (right side) set the name to `pl_bronze_master`
+3. Optionally set the folder to `bronze` (Properties → Folder)
+4. Click the **Parameters** tab (bottom of the canvas):
+   - **+ New** → Name: `p_load_type_override` · Type: `String` · Default value: *(leave empty — do not write null)*
+5. Click anywhere on the canvas to deselect — do NOT save yet, add all activities first
 
-The master pipeline has:
-- **1 parameter:** `p_load_type_override` (string, default `""`)
-- **19 activities** — all type `ExecutePipeline`
-- **waitOnCompletion = true** on every activity (this is what makes them sequential)
-- Each activity depends on the previous one with `dependencyConditions: ["Succeeded"]`
+> **Why `p_load_type_override`?** Passing `"full"` at trigger time forces every child pipeline to do a full reload, ignoring the watermark stored in the control table. Useful for the initial load and for data repairs. Empty string means each source uses its own `load_type` from the control table.
 
-### 2.3 Verify the Chain
+---
 
-In ADF Studio after import, the pipeline canvas should show a linear chain of 19 boxes connected by green arrows (success arrows). If any box shows without an arrow connecting it to the next, check the `dependsOn` settings.
+### 2.2 Add the First Execute Pipeline Activity
 
-### 2.4 Publish
+Every activity in this pipeline follows the same pattern. Add the first one in full detail, then repeat for the remaining 18.
 
-Publish all. Both the master pipeline and `pl_bronze_incremental_load_v2` must be in a published state before triggering.
+1. In the Activities search box (left panel) type `Execute` → drag **Execute Pipeline** onto the canvas
+2. Click the activity to select it → Properties panel opens at the bottom
+
+**General tab:**
+- Name: `act_run_payments`
+- Description: `File-based payments (load scenarios 1-5)`
+
+**Settings tab:**
+- Invoked pipeline → click the dropdown → select `pl_bronze_incremental_load_v2`
+- **Wait on completion: ON** — this is critical. If this is off, the master pipeline will fire all sources simultaneously without waiting for each one to finish.
+
+**Parameters tab** (appears after selecting the invoked pipeline):
+
+| Name | Value | Type |
+|---|---|---|
+| `p_source_name` | `payments` | Expression *(or just type the string — no `@` needed for a literal)* |
+| `p_load_type_override` | `@pipeline().parameters.p_load_type_override` | Expression |
+
+> `@pipeline().parameters.p_load_type_override` passes the master pipeline's override parameter down to every child. This is what lets you control all 20 sources with a single trigger parameter.
+
+---
+
+### 2.3 Add the Remaining 18 Activities and Chain Them
+
+For each subsequent activity, the steps are:
+1. Drag a new **Execute Pipeline** onto the canvas
+2. Set the **Name**, **Invoked pipeline**, **Wait on completion ON**, and **Parameters** as shown in the table below
+3. **Connect** it to the previous activity: hover over the previous activity box → a small arrow appears on the right edge → drag it to the new activity. The arrow must be **green** (success condition). If it appears red or blue, right-click the arrow → **On success**
+
+Repeat for all 19 activities in order:
+
+| # | Activity Name | `p_source_name` value | Depends On (previous activity) |
+|---|---|---|---|
+| 1 | `act_run_payments` | `payments` | — (pipeline start) |
+| 2 | `act_run_fleet` | `fleet` | `act_run_payments` |
+| 3 | `act_run_weather` | `weather` | `act_run_fleet` |
+| 4 | `act_run_db_payments` | `db_payments` | `act_run_weather` |
+| 5 | `act_run_db_sessions` | `db_sessions` | `act_run_db_payments` |
+| 6 | `act_run_db_energy_prices` | `db_energy_prices` | `act_run_db_sessions` |
+| 7 | `act_run_db_complaints` | `db_complaints` | `act_run_db_energy_prices` |
+| 8 | `act_run_db_maintenance_events` | `db_maintenance_events` | `act_run_db_complaints` |
+| 9 | `act_run_db_pipeline_audit` | `db_pipeline_audit` | `act_run_db_maintenance_events` |
+| 10 | `act_run_db_customers` | `db_customers` | `act_run_db_pipeline_audit` |
+| 11 | `act_run_db_vehicles` | `db_vehicles` | `act_run_db_customers` |
+| 12 | `act_run_db_chargers` | `db_chargers` | `act_run_db_vehicles` |
+| 13 | `act_run_db_charge_cards` | `db_charge_cards` | `act_run_db_chargers` |
+| 14 | `act_run_db_partners` | `db_partners` | `act_run_db_charge_cards` |
+| 15 | `act_run_db_employees` | `db_employees` | `act_run_db_partners` |
+| 16 | `act_run_db_states` | `db_states` | `act_run_db_employees` |
+| 17 | `act_run_db_cities` | `db_cities` | `act_run_db_states` |
+| 18 | `act_run_db_tariffs` | `db_tariffs` | `act_run_db_cities` |
+| 19 | `act_run_db_stations` | `db_stations` | `act_run_db_tariffs` |
+
+> **All 19 activities use the same Settings tab configuration:**
+> - Invoked pipeline: `pl_bronze_incremental_load_v2`
+> - Wait on completion: **ON**
+> - Parameter `p_load_type_override`: `@pipeline().parameters.p_load_type_override`
+>
+> **Only `p_source_name` differs** per activity — it is the literal string value from the table above (e.g. `payments`, `fleet`, `db_payments`, etc.).
+
+**Dependency condition — how to set it correctly:**
+
+When you drag an arrow from activity A to activity B, ADF defaults to `Succeeded`. To verify:
+- Click the arrow between two activities → Properties panel shows the condition
+- It must say **On success** (green arrow, condition = `Succeeded`)
+- Do NOT use `Completed` (runs even if previous failed) or `Failed`
+
+---
+
+### 2.4 Verify the Canvas
+
+After adding all 19 activities, the canvas should look like a single horizontal (or vertical) chain of 19 boxes, each connected to the next by a **green arrow**. Use **Fit to screen** (the four-corner icon in the canvas toolbar) to see the full chain at once.
+
+Quick verification checklist:
+- [ ] 19 activities on the canvas
+- [ ] Every activity is connected with a **green** (success) arrow to the next
+- [ ] No activity is disconnected or floating on its own
+- [ ] Click each activity → Settings tab → **Wait on completion** is checked **ON**
+- [ ] Click each activity → Parameters tab → `p_source_name` has the correct literal value for that source
+- [ ] Click each activity → Parameters tab → `p_load_type_override` value is `@pipeline().parameters.p_load_type_override` (expression mode)
+
+---
+
+### 2.5 Publish
+
+Click **Publish all**. ADF will validate the pipeline before publishing — if any activity has a missing required field, validation will fail and highlight the activity.
+
+Both `pl_bronze_master` and `pl_bronze_incremental_load_v2` must be in a published state. If `pl_bronze_incremental_load_v2` is not yet published, publish it first.
 
 ---
 
