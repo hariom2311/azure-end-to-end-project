@@ -1,37 +1,60 @@
 {
     "name": "pl_bronze_master_parallel",
     "properties": {
-        "description": "Parallel master pipeline using Lookup + ForEach (parallel, batchCount=5). Reads all active source_names from ev_catalog.ctl.pipeline_control and runs up to 5 sources simultaneously. Use when sources are independent and Databricks cluster can handle concurrent job submissions. batchCount controls max parallelism — tune based on cluster size.",
+        "description": "Dynamic master pipeline (parallel, batchCount=5). Same notebook pattern as pl_bronze_master_foreach but ForEach runs up to 5 sources simultaneously. No Delta Lake linked service needed — uses ls_databricks (same as Day 5).",
         "activities": [
             {
-                "name": "act_lookup_sources",
-                "description": "Read all active source names from the control table. ForEach will iterate over the returned rows.",
-                "type": "Lookup",
+                "name": "act_list_sources",
+                "description": "Run nb_list_active_sources notebook — returns JSON array of active source_names",
+                "type": "DatabricksNotebook",
+                "dependsOn": [],
+                "policy": {
+                    "timeout": "0.01:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
                 "typeProperties": {
-                    "source": {
-                        "type": "AzureDatabricksDeltaLakeSource",
-                        "query": "SELECT source_name FROM ev_catalog.ctl.pipeline_control WHERE is_active = true ORDER BY source_name"
-                    },
-                    "dataset": {
-                        "referenceName": "ds_pipeline_control",
-                        "type": "DatasetReference"
-                    },
-                    "firstRowOnly": false
+                    "notebookPath": "/Users/hariomsuryawanshi68258@gmail.com/nb_list_active_sources"
+                },
+                "linkedServiceName": {
+                    "referenceName": "ls_databricks",
+                    "type": "LinkedServiceReference"
+                }
+            },
+            {
+                "name": "act_set_sources",
+                "description": "Store the notebook output (JSON array string) in v_sources variable",
+                "type": "SetVariable",
+                "dependsOn": [
+                    {
+                        "activity": "act_list_sources",
+                        "dependencyConditions": ["Succeeded"]
+                    }
+                ],
+                "policy": { "secureOutput": false, "secureInput": false },
+                "typeProperties": {
+                    "variableName": "v_sources",
+                    "value": {
+                        "value": "@activity('act_list_sources').output.runOutput",
+                        "type": "Expression"
+                    }
                 }
             },
             {
                 "name": "act_foreach_source_parallel",
-                "description": "Run up to 5 sources at the same time. isSequential=false, batchCount=5. Each iteration calls the child pipeline independently.",
+                "description": "Run up to 5 sources simultaneously. isSequential=false, batchCount=5.",
                 "type": "ForEach",
                 "dependsOn": [
                     {
-                        "activity": "act_lookup_sources",
+                        "activity": "act_set_sources",
                         "dependencyConditions": ["Succeeded"]
                     }
                 ],
                 "typeProperties": {
                     "items": {
-                        "value": "@activity('act_lookup_sources').output.value",
+                        "value": "@json(variables('v_sources'))",
                         "type": "Expression"
                     },
                     "isSequential": false,
@@ -39,7 +62,7 @@
                     "activities": [
                         {
                             "name": "act_run_source",
-                            "description": "Call the incremental load pipeline for this iteration's source_name",
+                            "description": "Call pl_bronze_incremental_load_v2 for the current source_name",
                             "type": "ExecutePipeline",
                             "typeProperties": {
                                 "pipeline": {
@@ -48,7 +71,7 @@
                                 },
                                 "parameters": {
                                     "p_source_name": {
-                                        "value": "@item().source_name",
+                                        "value": "@item()",
                                         "type": "Expression"
                                     },
                                     "p_load_type_override": {
@@ -68,6 +91,12 @@
                 "type": "string",
                 "defaultValue": "",
                 "description": "Pass 'full' to force full reload for all sources. Leave empty to use each source's load_type from the control table."
+            }
+        },
+        "variables": {
+            "v_sources": {
+                "type": "String",
+                "defaultValue": "[]"
             }
         },
         "folder": {

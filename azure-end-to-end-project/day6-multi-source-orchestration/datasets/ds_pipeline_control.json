@@ -1,15 +1,4 @@
 {
-    "name": "ds_pipeline_control",
-    "properties": {
-        "description": "Points to ev_catalog.ctl.pipeline_control in Unity Catalog. Used by the Lookup activity in pl_bronze_master_foreach and pl_bronze_master_parallel to read all active source_names at runtime.",
-        "linkedServiceName": {
-            "referenceName": "ls_databricks",
-            "type": "LinkedServiceReference"
-        },
-        "type": "AzureDatabricksDeltaLakeDataset",
-        "typeProperties": {
-            "database": "ev_catalog.ctl",
-            "table": "pipeline_control"
-        }
-    }
+    "_OBSOLETE": true,
+    "_NOTE": "This dataset was designed for a Lookup activity pattern that required a Delta Lake linked service (AzureDatabricksDeltaLake). Since that linked service is not available, the ForEach pipelines were redesigned to use a DatabricksNotebook activity (ls_databricks) instead. The notebook nb_list_active_sources reads the control table and returns a JSON array string — no separate dataset needed. This file is kept only as a reference and should NOT be imported into ADF."
 }
