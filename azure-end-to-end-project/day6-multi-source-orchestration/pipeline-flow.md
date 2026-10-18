@@ -1,205 +1,274 @@
 # pl_bronze_master — Pipeline Flow
 
 **Pipeline:** `pl_bronze_master`
-**Purpose:** Orchestrates all three Bronze sources — payments, fleet, weather — sequentially by calling `pl_bronze_incremental_load_v2` three times with different `p_source_name` values. Each child pipeline reads its full configuration from the control table.
+**Purpose:** Orchestrates all 20 VoltGrid Bronze sources sequentially by calling `pl_bronze_incremental_load_v2` with a different `p_source_name` for each. All config lives in the control table — the master pipeline is just a chain of 20 Execute Pipeline activities.
 
 ---
 
 ## Design Principle — Control Table Driven
 
-All source-specific configuration (endpoint, sink path, file prefix, page size, load type, watermark) lives in **`ev_catalog.ctl.pipeline_control`**, not in any pipeline. The master pipeline only knows source names. To add a 4th source:
-
-1. `INSERT` one row into the control table
-2. Add one `ExecutePipeline` activity to `pl_bronze_master`
-
-No other changes needed.
+Every source-specific detail (endpoint, sink path, load type, watermark) lives in `ev_catalog.ctl.pipeline_control`. The master pipeline only passes the source name. Adding a 21st source = 1 INSERT + 1 new ExecutePipeline activity.
 
 ---
 
-## Quick Summary
+## Source Inventory (20 Sources)
 
-```
-pl_bronze_master
-  │
-  ▼  STEP 1 (sequential)
-  act_run_payments  → calls pl_bronze_incremental_load_v2 (p_source_name='payments')
-  │                   waits for completion
-  ▼  STEP 2 (only runs if payments succeeded)
-  act_run_fleet     → calls pl_bronze_incremental_load_v2 (p_source_name='fleet')
-  │                   waits for completion
-  ▼  STEP 3 (only runs if fleet succeeded)
-  act_run_weather   → calls pl_bronze_incremental_load_v2 (p_source_name='weather')
-                      waits for completion
-```
+### Group 1 — File-Based Scenario APIs (3 sources)
+
+| # | source_name | Endpoint | load_type | What it is |
+|---|---|---|---|---|
+| 1 | `payments` | `/api/db/payments/` | incremental | Payment transactions (load scenarios 1–5) |
+| 2 | `fleet` | `/api/fleet/` | full | Fleet vehicle usage scenarios |
+| 3 | `weather` | `/api/weather/` | full | Weather observation scenarios |
+
+### Group 2 — DB CRUD: Fact / High-Frequency Tables (6 sources)
+
+| # | source_name | Endpoint | load_type | What it is |
+|---|---|---|---|---|
+| 4 | `db_payments` | `/api/db/payments/` | incremental | Payment transactions (live DB) |
+| 5 | `db_sessions` | `/api/db/sessions/` | incremental | EV charging sessions (fact) |
+| 6 | `db_energy_prices` | `/api/db/energy-prices/` | incremental | Hourly energy pricing feed |
+| 7 | `db_complaints` | `/api/db/complaints/` | incremental | Customer complaints |
+| 8 | `db_maintenance_events` | `/api/db/maintenance-events/` | incremental | Charger maintenance events |
+| 9 | `db_pipeline_audit` | `/api/db/pipeline-audit/` | incremental | Pipeline run observability log |
+
+### Group 3 — DB CRUD: Dimension Tables (6 sources, slow-changing)
+
+| # | source_name | Endpoint | load_type | What it is |
+|---|---|---|---|---|
+| 10 | `db_customers` | `/api/db/customers/` | incremental | Customer profiles (loyalty tier, contact) |
+| 11 | `db_vehicles` | `/api/db/vehicles/` | incremental | Vehicle dim, SCD Type 2 |
+| 12 | `db_chargers` | `/api/db/chargers/` | incremental | Charger equipment per station |
+| 13 | `db_charge_cards` | `/api/db/charge-cards/` | incremental | Customer RFID / charge cards |
+| 14 | `db_partners` | `/api/db/partners/` | incremental | Franchise partners |
+| 15 | `db_employees` | `/api/db/employees/` | incremental | Staff (department, station assignment) |
+
+### Group 4 — DB CRUD: Reference Tables (5 sources, full load)
+
+| # | source_name | Endpoint | load_type | What it is |
+|---|---|---|---|---|
+| 16 | `db_states` | `/api/db/states/` | full | Australian states/territories (8 rows) |
+| 17 | `db_cities` | `/api/db/cities/` | full | City to postcode / state mapping |
+| 18 | `db_tariffs` | `/api/db/tariffs/` | full | Energy tariff rate schedules |
+| 19 | `db_stations` | `/api/db/stations/` | full | Charging station infrastructure |
+
+> Note: source #19 is `db_stations` — total is 19 DB sources + 3 file-based = 20 total (payments listed once as file-based, once as DB).
 
 ---
 
 ## Master Pipeline Flow Diagram
 
 ```
-╔══════════════════════════════════════════════════════════════════════╗
-║                        pl_bronze_master                              ║
-║   Parameter: p_load_type_override (string, default "")               ║
-╚══════════════════════════════════════════════════════════════════════╝
-                             │
-                             ▼
-          ┌──────────────────────────────────────────┐
-          │            act_run_payments               │
-          │   type: ExecutePipeline                   │
-          │   calls: pl_bronze_incremental_load_v2    │
-          │   p_source_name  = "payments"             │
-          │   p_load_type_override = (passed through) │
-          │   waitOnCompletion: true                  │
-          └──────────────────┬───────────────────────┘
-                             │ Succeeded
-                             ▼
-          ┌──────────────────────────────────────────┐
-          │            act_run_fleet                  │
-          │   type: ExecutePipeline                   │
-          │   calls: pl_bronze_incremental_load_v2    │
-          │   p_source_name  = "fleet"                │
-          │   p_load_type_override = (passed through) │
-          │   waitOnCompletion: true                  │
-          └──────────────────┬───────────────────────┘
-                             │ Succeeded
-                             ▼
-          ┌──────────────────────────────────────────┐
-          │            act_run_weather                │
-          │   type: ExecutePipeline                   │
-          │   calls: pl_bronze_incremental_load_v2    │
-          │   p_source_name  = "weather"              │
-          │   p_load_type_override = (passed through) │
-          │   waitOnCompletion: true                  │
-          └──────────────────┬───────────────────────┘
-                             │
-                             ▼
-                       PIPELINE END
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                           pl_bronze_master                                   ║
+║          Parameter: p_load_type_override (string, default "")                ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+                                    │
+          ══════════════════════════╪══ GROUP 1: File-based scenarios ══════════
+                                    │
+                    ┌───────────────┴──────────────────────┐
+                    │         act_run_payments              │
+                    │   p_source_name = "payments"          │
+                    │   → /api/db/payments/ (incremental)   │
+                    └───────────────┬──────────────────────┘
+                                    │ Succeeded
+                    ┌───────────────┴──────────────────────┐
+                    │         act_run_fleet                 │
+                    │   p_source_name = "fleet"             │
+                    │   → /api/fleet/ (full)                │
+                    └───────────────┬──────────────────────┘
+                                    │ Succeeded
+                    ┌───────────────┴──────────────────────┐
+                    │         act_run_weather               │
+                    │   p_source_name = "weather"           │
+                    │   → /api/weather/ (full)              │
+                    └───────────────┬──────────────────────┘
+                                    │
+          ══════════════════════════╪══ GROUP 2: DB Facts (incremental) ════════
+                                    │
+                    ┌───────────────┴──────────────────────┐
+                    │       act_run_db_payments             │
+                    │   p_source_name = "db_payments"       │
+                    │   → /api/db/payments/ (incremental)   │
+                    └───────────────┬──────────────────────┘
+                                    │ Succeeded
+                    ┌───────────────┴──────────────────────┐
+                    │       act_run_db_sessions             │
+                    │   p_source_name = "db_sessions"       │
+                    │   → /api/db/sessions/ (incremental)   │
+                    └───────────────┬──────────────────────┘
+                                    │ Succeeded
+                    ┌───────────────┴──────────────────────┐
+                    │     act_run_db_energy_prices          │
+                    │   p_source_name = "db_energy_prices"  │
+                    │   → /api/db/energy-prices/ (incr.)    │
+                    └───────────────┬──────────────────────┘
+                                    │ Succeeded
+                    ┌───────────────┴──────────────────────┐
+                    │      act_run_db_complaints            │
+                    │   p_source_name = "db_complaints"     │
+                    │   → /api/db/complaints/ (incremental) │
+                    └───────────────┬──────────────────────┘
+                                    │ Succeeded
+                    ┌───────────────┴──────────────────────┐
+                    │   act_run_db_maintenance_events       │
+                    │   p_source_name = "db_maint_events"   │
+                    │   → /api/db/maintenance-events/ (i.)  │
+                    └───────────────┬──────────────────────┘
+                                    │ Succeeded
+                    ┌───────────────┴──────────────────────┐
+                    │     act_run_db_pipeline_audit         │
+                    │   p_source_name = "db_pipeline_audit" │
+                    │   → /api/db/pipeline-audit/ (incr.)   │
+                    └───────────────┬──────────────────────┘
+                                    │
+          ══════════════════════════╪══ GROUP 3: DB Dims (incremental) ═════════
+                                    │
+                    ┌───────────────┴──────────────────────┐
+                    │      act_run_db_customers             │
+                    │   p_source_name = "db_customers"      │
+                    └───────────────┬──────────────────────┘
+                                    │ Succeeded
+                    ┌───────────────┴──────────────────────┐
+                    │      act_run_db_vehicles              │
+                    │   p_source_name = "db_vehicles"       │
+                    │   (SCD Type 2 dim)                    │
+                    └───────────────┬──────────────────────┘
+                                    │ Succeeded
+                    ┌───────────────┴──────────────────────┐
+                    │      act_run_db_chargers              │
+                    │   p_source_name = "db_chargers"       │
+                    └───────────────┬──────────────────────┘
+                                    │ Succeeded
+                    ┌───────────────┴──────────────────────┐
+                    │      act_run_db_charge_cards          │
+                    │   p_source_name = "db_charge_cards"   │
+                    └───────────────┬──────────────────────┘
+                                    │ Succeeded
+                    ┌───────────────┴──────────────────────┐
+                    │      act_run_db_partners              │
+                    │   p_source_name = "db_partners"       │
+                    └───────────────┬──────────────────────┘
+                                    │ Succeeded
+                    ┌───────────────┴──────────────────────┐
+                    │      act_run_db_employees             │
+                    │   p_source_name = "db_employees"      │
+                    └───────────────┬──────────────────────┘
+                                    │
+          ══════════════════════════╪══ GROUP 4: DB Reference (full load) ══════
+                                    │
+                    ┌───────────────┴──────────────────────┐
+                    │       act_run_db_states               │
+                    │   p_source_name = "db_states"         │
+                    │   → /api/db/states/ (full)            │
+                    └───────────────┬──────────────────────┘
+                                    │ Succeeded
+                    ┌───────────────┴──────────────────────┐
+                    │       act_run_db_cities               │
+                    │   p_source_name = "db_cities"         │
+                    │   → /api/db/cities/ (full)            │
+                    └───────────────┬──────────────────────┘
+                                    │ Succeeded
+                    ┌───────────────┴──────────────────────┐
+                    │       act_run_db_tariffs              │
+                    │   p_source_name = "db_tariffs"        │
+                    │   → /api/db/tariffs/ (full)           │
+                    └───────────────┬──────────────────────┘
+                                    │ Succeeded
+                    ┌───────────────┴──────────────────────┐
+                    │       act_run_db_stations             │
+                    │   p_source_name = "db_stations"       │
+                    │   → /api/db/stations/ (full)          │
+                    └───────────────┬──────────────────────┘
+                                    │
+                                    ▼
+                              PIPELINE END
+                   (all 20 sources landed in Bronze)
 ```
 
 ---
 
-## What Each Child Pipeline Does
+## Activity Reference Table
 
-Each `ExecutePipeline` call triggers `pl_bronze_incremental_load_v2` which:
-
-1. Fetches credentials from Key Vault
-2. Reads config for `p_source_name` from `ev_catalog.ctl.pipeline_control`
-3. Logs in → gets token
-4. Fetches page 1 metadata → gets `total_pages`
-5. Loops pages 1..N → copies each page → Bronze ADLS
-6. Updates watermark in control table
-
-The child pipeline is **completely self-contained** — master just passes the source name.
-
----
-
-## Control Table: All Three Sources
-
-```sql
-SELECT source_name, endpoint, sink_base_path, load_type, last_watermark
-FROM ev_catalog.ctl.pipeline_control
-ORDER BY source_name;
-```
-
-| source_name | endpoint | sink_base_path | load_type | last_watermark |
-|---|---|---|---|---|
-| fleet | `/api/fleet/` | `api/fleet` | full | `1900-01-01T00:00:00Z` |
-| payments | `/api/db/payments/` | `api/payments` | incremental | `<last run ts>` |
-| weather | `/api/weather/` | `api/weather` | full | `1900-01-01T00:00:00Z` |
+| # | Activity Name | source_name | Endpoint | load_type | Depends On |
+|---|---|---|---|---|---|
+| 1 | `act_run_payments` | `payments` | `/api/db/payments/` | incremental | — |
+| 2 | `act_run_fleet` | `fleet` | `/api/fleet/` | full | #1 |
+| 3 | `act_run_weather` | `weather` | `/api/weather/` | full | #2 |
+| 4 | `act_run_db_payments` | `db_payments` | `/api/db/payments/` | incremental | #3 |
+| 5 | `act_run_db_sessions` | `db_sessions` | `/api/db/sessions/` | incremental | #4 |
+| 6 | `act_run_db_energy_prices` | `db_energy_prices` | `/api/db/energy-prices/` | incremental | #5 |
+| 7 | `act_run_db_complaints` | `db_complaints` | `/api/db/complaints/` | incremental | #6 |
+| 8 | `act_run_db_maintenance_events` | `db_maintenance_events` | `/api/db/maintenance-events/` | incremental | #7 |
+| 9 | `act_run_db_pipeline_audit` | `db_pipeline_audit` | `/api/db/pipeline-audit/` | incremental | #8 |
+| 10 | `act_run_db_customers` | `db_customers` | `/api/db/customers/` | incremental | #9 |
+| 11 | `act_run_db_vehicles` | `db_vehicles` | `/api/db/vehicles/` | incremental | #10 |
+| 12 | `act_run_db_chargers` | `db_chargers` | `/api/db/chargers/` | incremental | #11 |
+| 13 | `act_run_db_charge_cards` | `db_charge_cards` | `/api/db/charge-cards/` | incremental | #12 |
+| 14 | `act_run_db_partners` | `db_partners` | `/api/db/partners/` | incremental | #13 |
+| 15 | `act_run_db_employees` | `db_employees` | `/api/db/employees/` | incremental | #14 |
+| 16 | `act_run_db_states` | `db_states` | `/api/db/states/` | full | #15 |
+| 17 | `act_run_db_cities` | `db_cities` | `/api/db/cities/` | full | #16 |
+| 18 | `act_run_db_tariffs` | `db_tariffs` | `/api/db/tariffs/` | full | #17 |
+| 19 | `act_run_db_stations` | `db_stations` | `/api/db/stations/` | full | #18 |
 
 ---
 
 ## Bronze Output After a Full Run
 
 ```
-bronze/
-├── api/
-│   ├── payments/
-│   │   └── ingestion_date=2026-10-18/
-│   │       ├── payments_page_1.json
-│   │       ├── payments_page_2.json
-│   │       └── ... (N pages)
-│   ├── fleet/
-│   │   └── ingestion_date=2026-10-18/
-│   │       ├── fleet_page_1.json
-│   │       └── ... (N pages)
-│   └── weather/
-│       └── ingestion_date=2026-10-18/
-│           ├── weather_page_1.json
-│           └── ... (N pages)
+ADLS bronze container
+└── api/
+    ├── payments/              ingestion_date=<today>/  payments_page_*.json
+    ├── fleet/                 ingestion_date=<today>/  fleet_page_*.json
+    ├── weather/               ingestion_date=<today>/  weather_page_*.json
+    └── db/
+        ├── payments/          ingestion_date=<today>/  db_payments_page_*.json
+        ├── sessions/          ingestion_date=<today>/  db_sessions_page_*.json
+        ├── energy_prices/     ingestion_date=<today>/  db_energy_prices_page_*.json
+        ├── complaints/        ingestion_date=<today>/  db_complaints_page_*.json
+        ├── maintenance_events/ingestion_date=<today>/  db_maintenance_events_page_*.json
+        ├── pipeline_audit/    ingestion_date=<today>/  db_pipeline_audit_page_*.json
+        ├── customers/         ingestion_date=<today>/  db_customers_page_*.json
+        ├── vehicles/          ingestion_date=<today>/  db_vehicles_page_*.json
+        ├── chargers/          ingestion_date=<today>/  db_chargers_page_*.json
+        ├── charge_cards/      ingestion_date=<today>/  db_charge_cards_page_*.json
+        ├── partners/          ingestion_date=<today>/  db_partners_page_*.json
+        ├── employees/         ingestion_date=<today>/  db_employees_page_*.json
+        ├── states/            ingestion_date=<today>/  db_states_page_*.json
+        ├── cities/            ingestion_date=<today>/  db_cities_page_*.json
+        ├── tariffs/           ingestion_date=<today>/  db_tariffs_page_*.json
+        └── stations/          ingestion_date=<today>/  db_stations_page_*.json
 ```
 
 ---
 
 ## Failure Behaviour
 
-| Failure point | Result |
+Each `ExecutePipeline` has `dependencyConditions: ["Succeeded"]`. If source N fails:
+- Sources N+1 onwards are **skipped**
+- Sources 1 to N-1 already completed — their data is in Bronze and watermarks updated
+- Re-run the master: completed sources will have 0 new pages (watermark is current), failed source retries from its last watermark
+
+---
+
+## Execution Modes
+
+| `p_load_type_override` | Behaviour |
 |---|---|
-| `act_run_payments` fails | `act_run_fleet` and `act_run_weather` are **skipped** — dependency condition is `Succeeded` |
-| `act_run_fleet` fails | `act_run_weather` is skipped, payments data is in Bronze |
-| `act_run_weather` fails | Fleet and payments data are in Bronze; only weather watermark not updated |
+| `""` (empty, default) | Each source uses its own `load_type` from the control table |
+| `"full"` | All 20 sources do full reload regardless of load_type |
 
-> If a child run fails mid-way, the child's watermark is NOT updated (watermark update is the last step). Re-run the master — the failed source retries from the last successful watermark.
-
----
-
-## Execution Mode
-
-| Parameter | How to Set | Behaviour |
-|---|---|---|
-| `p_load_type_override = ""` (default) | Trigger without params | Each source uses its own `load_type` from control table |
-| `p_load_type_override = "full"` | Pass "full" at trigger | All three sources do a full reload (ignores control table watermark) |
+Use `"full"` for the initial run when Bronze is empty, or for repairs.
 
 ---
 
-## How to Add a New Source
+## Why Sequential?
 
-1. **Insert a row** into `ev_catalog.ctl.pipeline_control`:
-   ```sql
-   INSERT INTO ev_catalog.ctl.pipeline_control
-       (source_name, endpoint, sink_base_path, file_prefix, page_size, load_type, last_watermark, is_active)
-   VALUES
-       ('my_new_source', '/api/my-source/', 'api/my-source', 'my_source', 1000, 'full', '1900-01-01T00:00:00Z', true);
-   ```
+The 20 sources could be parallelised. Sequential is used here because:
+1. **Shared Databricks cluster** — parallel runs would queue or trigger multiple job clusters
+2. **Debuggability** — ADF Monitor shows exactly which source is running and which failed
+3. **Watermark integrity** — each source updates its own watermark independently; no race condition
+4. **Beginner-friendly** — one thing at a time is easier to reason about
 
-2. **Add one ExecutePipeline activity** to `pl_bronze_master`:
-   ```json
-   {
-       "name": "act_run_my_new_source",
-       "type": "ExecutePipeline",
-       "dependsOn": [{ "activity": "act_run_weather", "dependencyConditions": ["Succeeded"] }],
-       "typeProperties": {
-           "pipeline": { "referenceName": "pl_bronze_incremental_load_v2", "type": "PipelineReference" },
-           "parameters": {
-               "p_source_name": { "value": "my_new_source", "type": "Expression" },
-               "p_load_type_override": { "value": "@pipeline().parameters.p_load_type_override", "type": "Expression" }
-           },
-           "waitOnCompletion": true
-       }
-   }
-   ```
-
-3. Publish. The child pipeline `pl_bronze_incremental_load_v2` needs no changes.
-
----
-
-## Activity Reference Table
-
-| Activity | Type | Depends On | Child Pipeline | p_source_name |
-|---|---|---|---|---|
-| `act_run_payments` | ExecutePipeline | — (runs first) | `pl_bronze_incremental_load_v2` | `"payments"` |
-| `act_run_fleet` | ExecutePipeline | `act_run_payments` Succeeded | `pl_bronze_incremental_load_v2` | `"fleet"` |
-| `act_run_weather` | ExecutePipeline | `act_run_fleet` Succeeded | `pl_bronze_incremental_load_v2` | `"weather"` |
-
----
-
-## Why Sequential, Not Parallel?
-
-The three sources could run in parallel (ForEach or 3 independent Execute Pipeline activities with no dependsOn). Sequential is chosen here for:
-
-- **Simplicity** — easy to see which source is running in the ADF monitoring view
-- **Controlled resource usage** — Databricks cluster shared across all three sources; parallel runs would spin up multiple job clusters or queue
-- **Predictable watermark updates** — if one source fails, it's clear exactly which one and from where to re-run
-- **Beginner-friendly** — one thing at a time is easier to debug
-
-For production with large data volumes, consider running sources in parallel using three independent trigger-scheduled pipelines or a ForEach over a source list.
+For production at scale, group the sources into independent batches (facts parallel with dims, reference tables parallel with facts) using multiple master pipelines triggered simultaneously.

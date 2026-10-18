@@ -1,218 +1,236 @@
-# Day 6 — Multi-Source Orchestration: Fleet, Weather + Master Pipeline
+# Day 6 — Multi-Source Orchestration: All 20 VoltGrid API Sources
 
-**Duration:** 1.5 hours | **Goal:** Extend the Bronze layer to ingest all three VoltGrid data sources — payments (existing), fleet (new), and weather (new) — using a single master pipeline that calls the Day 5 child pipeline sequentially for each source.
+**Duration:** 2 hours | **Goal:** Register all 20 VoltGrid API sources in the control table and run a single master pipeline that ingests every source — file-based scenarios, DB facts, DB dimensions, and reference tables — into Bronze in one scheduled run.
 
-> **Prerequisites:** Day 5 complete — `pl_bronze_incremental_load_v2` deployed and tested. Day 6 adds new control table rows and a new `pl_bronze_master` pipeline that calls it.
+> **Prerequisites:** Day 5 complete — `pl_bronze_incremental_load_v2` deployed and tested for payments. Day 6 adds 17 new control table rows and expands `pl_bronze_master` to chain all 20 sources.
 
 ---
 
 ## BEFORE YOU START — Student Customization Guide
 
-No new linked services or datasets are needed. Day 6 reuses everything from Day 4/5.
+No new linked services or datasets needed — Day 6 reuses everything from Day 4/5.
 
-| Where | What to Check | Instructor's Value |
-|---|---|---|
-| Control table catalog path | Your Unity Catalog name | `ev_catalog.ctl.pipeline_control` |
-| `pl_bronze_master` → each `ExecutePipeline` | Child pipeline name must match exactly | `pl_bronze_incremental_load_v2` |
-| ADF Pipeline folder | Optional — instructor uses `bronze` folder | `bronze` |
-| ADF MI Application ID (for new GRANTs if needed) | Your ADF MI App ID | `9245da2f-7129-4e0c-92c4-134fe896e294` |
-
----
-
-## Overview: What Day 6 Adds
-
-```
-Day 4 / 5 (payments only):
-  pl_bronze_incremental_load_v2 → runs for payments → writes Bronze
-
-Day 6 (all sources):
-  pl_bronze_master
-    ├─ act_run_payments  → pl_bronze_incremental_load_v2 (p_source_name='payments')
-    ├─ act_run_fleet     → pl_bronze_incremental_load_v2 (p_source_name='fleet')    [NEW]
-    └─ act_run_weather   → pl_bronze_incremental_load_v2 (p_source_name='weather')  [NEW]
-
-Control table additions:
-  INSERT fleet row   → endpoint=/api/fleet/,   load_type=full
-  INSERT weather row → endpoint=/api/weather/, load_type=full
-```
-
-The child pipeline `pl_bronze_incremental_load_v2` is **unchanged**. It reads all config from the control table using `p_source_name` as the lookup key. Adding fleet and weather sources is purely a data operation (INSERT) plus a new orchestrator pipeline.
+| What to Check | Instructor's Value |
+|---|---|
+| Unity Catalog control table path | `ev_catalog.ctl.pipeline_control` |
+| Child pipeline name in every ExecutePipeline | `pl_bronze_incremental_load_v2` |
+| ADF pipeline folder (optional) | `bronze` |
+| ADF MI Application ID (if table permissions need re-granting) | `9245da2f-7129-4e0c-92c4-134fe896e294` |
 
 ---
 
-## Part 1 — Register New Sources in the Control Table
+## API Source Overview
 
-### 1.1 API Endpoints Overview
+The VoltGrid API exposes 20 data sources across four groups:
 
-Three data sources are available from the VoltGrid API:
+### Group 1 — File-Based Scenario APIs (3)
+These serve static load files (scenarios 1–5). Each run fetches the same records unless the load scenario changes.
 
-| Source | Endpoint | Primary Key | Notes |
+| source_name | Endpoint | load_type | Primary Key |
 |---|---|---|---|
-| Payments | `/api/db/payments/` | `payment_id` | Incremental — supports `updated_after` filter |
-| Fleet | `/api/fleet/` | `vehicle_id` | Full load — no `updated_after` support |
-| Weather | `/api/weather/` | `city_id` | Full load — no `updated_after` support |
+| `payments` | `/api/db/payments/` | incremental | `payment_id` |
+| `fleet` | `/api/fleet/` | full | `vehicle_id` |
+| `weather` | `/api/weather/` | full | `city_id` |
 
-All three support `load` (1–5, controls dataset scenario), `page`, and `page_size` query parameters.
+### Group 2 — DB Fact / High-Frequency Tables (6)
+Live database rows — change frequently. Use `updated_after` watermark to fetch only new/changed rows.
 
-> **Fleet and weather are full loads** because the API does not expose an `updated_after` filter for them. Every run fetches all data. The watermark is still written to the control table (keeps the schema consistent) but is not used in the API call.
+| source_name | Endpoint | load_type | Primary Key | Fields |
+|---|---|---|---|---|
+| `db_payments` | `/api/db/payments/` | incremental | `payment_id` | payment_id, session_id, customer_id, gateway, amount_aud, gst, payment_mode, status, processed_at |
+| `db_sessions` | `/api/db/sessions/` | incremental | `session_id` | session_id, vehicle_id, station_id, customer_id, started_at, ended_at, duration_min, energy_kwh, cost_aud, peak_power_kw, connector_type, session_status, payment_id |
+| `db_energy_prices` | `/api/db/energy-prices/` | incremental | `price_id` | price_id, station_id, state_code, price_per_kwh, off_peak_price, peak_price, currency, effective_from, effective_to, tariff_type |
+| `db_complaints` | `/api/db/complaints/` | incremental | `complaint_id` | complaint_id, customer_id, station_id, category, priority, sla_breach, status, created_ts, resolved_ts |
+| `db_maintenance_events` | `/api/db/maintenance-events/` | incremental | `event_id` | event_id, charger_id, station_id, employee_id, root_cause, mttr_hours, event_ts |
+| `db_pipeline_audit` | `/api/db/pipeline-audit/` | incremental | `run_id` | run_id, pipeline_name, source_name, load_type, status, rows_read, rows_written, rows_rejected, started_at, ended_at, duration_sec, error_message, sla_met, watermark_value |
 
-### 1.2 Run the INSERT Statements
+### Group 3 — DB Dimension Tables (6, slow-changing)
+Change less often but may have profile updates — incremental to catch them.
 
-Open Databricks → SQL editor (or a SQL cell in a notebook):
+| source_name | Endpoint | load_type | Primary Key | Key Fields |
+|---|---|---|---|---|
+| `db_customers` | `/api/db/customers/` | incremental | `customer_id` | customer_id, full_name, email, phone, loyalty_tier, signup_date |
+| `db_vehicles` | `/api/db/vehicles/` | incremental | `vehicle_id` | vehicle_id, make, model, year, battery_capacity_kwh, range_km, vehicle_type, registration_state, partner_id, effective_from, effective_to, is_current *(SCD2)* |
+| `db_chargers` | `/api/db/chargers/` | incremental | `charger_id` | charger_id, station_id, connector_type, max_kw, firmware_version, install_date, status |
+| `db_charge_cards` | `/api/db/charge-cards/` | incremental | `card_id` | card_id, customer_id, rfid_uid, card_number, card_type, status |
+| `db_partners` | `/api/db/partners/` | incremental | `partner_id` | partner_id, partner_name, state, status, revenue_share_pct, contract_start, contract_end |
+| `db_employees` | `/api/db/employees/` | incremental | `employee_id` | employee_id, name, department, station_id, state, hire_date |
+
+### Group 4 — DB Reference Tables (4, full load)
+Rarely change — full load keeps them simple. Small row counts.
+
+| source_name | Endpoint | load_type | Primary Key | What it is |
+|---|---|---|---|---|
+| `db_states` | `/api/db/states/` | full | `state_code` | 8 Australian states/territories |
+| `db_cities` | `/api/db/cities/` | full | `city_id` | City → postcode → state mapping |
+| `db_tariffs` | `/api/db/tariffs/` | full | `tariff_id` | Energy tariff rate schedules |
+| `db_stations` | `/api/db/stations/` | full | `station_id` | Charging station infrastructure |
+
+---
+
+## Part 1 — Register All Sources in the Control Table
+
+### 1.1 Run the INSERT Statements
+
+Open Databricks → SQL editor → run `control-table-setup.sql` (in this folder).
+
+The script inserts **17 new rows** (the 3 file-based sources — payments, fleet, weather — were inserted in the earlier Day 6 step).
+
+After running, verify:
 
 ```sql
--- Fleet source
-INSERT INTO ev_catalog.ctl.pipeline_control
-    (source_name, endpoint, sink_base_path, file_prefix, page_size, load_type, last_watermark, is_active)
-VALUES
-    ('fleet', '/api/fleet/', 'api/fleet', 'fleet', 1000, 'full', '1900-01-01T00:00:00Z', true);
-
--- Weather source
-INSERT INTO ev_catalog.ctl.pipeline_control
-    (source_name, endpoint, sink_base_path, file_prefix, page_size, load_type, last_watermark, is_active)
-VALUES
-    ('weather', '/api/weather/', 'api/weather', 'weather', 1000, 'full', '1900-01-01T00:00:00Z', true);
-```
-
-Verify all three rows exist:
-```sql
-SELECT source_name, endpoint, sink_base_path, load_type, last_watermark, is_active
+SELECT source_name, endpoint, load_type, is_active
 FROM ev_catalog.ctl.pipeline_control
 ORDER BY source_name;
 ```
 
-Expected result:
+You should see **20 rows** (or 19 if `payments` and `db_payments` are counted as one — they share the same endpoint but have separate `source_name` keys and independent watermarks).
 
-| source_name | endpoint | sink_base_path | load_type | is_active |
-|---|---|---|---|---|
-| fleet | `/api/fleet/` | `api/fleet` | full | true |
-| payments | `/api/db/payments/` | `api/payments` | incremental | true |
-| weather | `/api/weather/` | `api/weather` | full | true |
+### 1.2 load_type Decision Guide
 
-### 1.3 Verify ADF MI Access (if needed)
+| Scenario | Use `incremental` | Use `full` |
+|---|---|---|
+| Table has `updated_at` column | Yes | — |
+| API supports `?updated_after=` filter | Yes | — |
+| Table has < 10k rows and changes infrequently | — | Yes |
+| Table is append-only (audit logs, events) | Yes | — |
+| Table is a lookup / reference (states, postcodes) | — | Yes |
 
-The GRANT statements from Day 4 already cover the control table for all rows — no additional grants are needed. If you recreated the table:
-
-```sql
-GRANT USAGE ON CATALOG ev_catalog TO `9245da2f-7129-4e0c-92c4-134fe896e294`;
-GRANT USAGE ON SCHEMA ev_catalog.ctl TO `9245da2f-7129-4e0c-92c4-134fe896e294`;
-GRANT SELECT, MODIFY ON TABLE ev_catalog.ctl.pipeline_control TO `9245da2f-7129-4e0c-92c4-134fe896e294`;
-```
+All DB endpoints support `updated_after` (via `UpdatedAtFilterSet` in the API). Reference tables (states, cities, tariffs, stations) are set to `full` because they are tiny and rarely change — simpler to just reload them.
 
 ---
 
-## Part 2 — Create the Master Pipeline
+## Part 2 — Import and Configure the Master Pipeline
 
-### 2.1 What Is a Master Pipeline?
+### 2.1 Import from JSON
 
-`pl_bronze_master` is an **orchestrator** — it has no data movement activities. It only contains `ExecutePipeline` activities that call `pl_bronze_incremental_load_v2` with different parameters.
+ADF Studio → Author → Pipelines → `...` menu → Import from JSON → upload `pipelines/pl_bronze_master.json`.
 
-This pattern is called **pipeline chaining** and is the standard ADF approach for running multiple sources one after another in a controlled sequence.
+Or create manually: add 19 `Execute Pipeline` activities in sequence, each calling `pl_bronze_incremental_load_v2`.
 
-### 2.2 Import from JSON
+### 2.2 Pipeline Structure
 
-Go to ADF Studio → **Author** → Pipelines → New pipeline from template (or use the `...` menu → Import from JSON) → upload `pipelines/pl_bronze_master.json`.
+The master pipeline has:
+- **1 parameter:** `p_load_type_override` (string, default `""`)
+- **19 activities** — all type `ExecutePipeline`
+- **waitOnCompletion = true** on every activity (this is what makes them sequential)
+- Each activity depends on the previous one with `dependencyConditions: ["Succeeded"]`
 
-Alternatively, create manually:
-1. Create new pipeline named `pl_bronze_master`
-2. Add 3 `Execute Pipeline` activities (from Activity toolbar → General)
-3. Name them `act_run_payments`, `act_run_fleet`, `act_run_weather`
-4. Configure each (see Section 2.3)
-5. Connect them: `act_run_payments` → `act_run_fleet` → `act_run_weather` (drag success arrow)
+### 2.3 Verify the Chain
 
-### 2.3 Configure Each Execute Pipeline Activity
+In ADF Studio after import, the pipeline canvas should show a linear chain of 19 boxes connected by green arrows (success arrows). If any box shows without an arrow connecting it to the next, check the `dependsOn` settings.
 
-Each activity has the same configuration pattern — only `p_source_name` differs.
+### 2.4 Publish
 
-**Settings tab:**
-- Invoked pipeline: `pl_bronze_incremental_load_v2`
-- Wait on completion: **Yes** (critical — ensures sequential execution)
-
-**Parameters tab:**
-
-| Parameter | Value (Expression) |
-|---|---|
-| `p_source_name` | `payments` / `fleet` / `weather` (literal string — no expression needed) |
-| `p_load_type_override` | `@pipeline().parameters.p_load_type_override` |
-
-> **Why pass `p_load_type_override` from parent?** This lets you trigger `pl_bronze_master` with `p_load_type_override="full"` to force a full reload of all sources (useful for initial load or data repairs) without touching individual pipelines.
-
-### 2.4 Add the Master Pipeline Parameter
-
-In `pl_bronze_master`, go to **Parameters** tab → add:
-
-| Name | Type | Default value |
-|---|---|---|
-| `p_load_type_override` | String | *(empty)* |
-
-### 2.5 Publish
-
-Click **Publish all**. Both `pl_bronze_master` and (if not already published) `pl_bronze_incremental_load_v2` must be published before the first run.
+Publish all. Both the master pipeline and `pl_bronze_incremental_load_v2` must be in a published state before triggering.
 
 ---
 
 ## Part 3 — Running the Master Pipeline
 
-### 3.1 First Run — Full Load of All Sources
+### 3.1 Initial Full Load (First Run)
 
 **Trigger now** → Parameters:
 - `p_load_type_override`: `full`
 
-This forces all three sources to use `load_type=full`, ignoring whatever is in the control table. Useful for the first run when the Bronze container is empty.
+This forces all 20 sources to do a full load regardless of their control table `load_type`. Use this when Bronze is empty or after a full reset.
 
-Expected run time: depends on number of pages for each source. Monitor in ADF Studio → **Monitor** → Pipeline runs.
+### 3.2 Daily Scheduled Run (After Initial Load)
 
-### 3.2 Subsequent Runs — Incremental (Payments) + Full (Fleet/Weather)
+**Trigger now / Add trigger** → Parameters:
+- `p_load_type_override`: *(empty)*
 
-**Trigger now** → Parameters:
-- `p_load_type_override`: *(leave empty)*
+Each source uses its own `load_type`:
+- Incremental sources fetch only records with `updated_at > last_watermark`
+- Full sources re-fetch everything (small tables — this is fine)
 
-Each source uses its own `load_type` from the control table:
-- **Payments** → incremental (fetches records updated since last watermark)
-- **Fleet** → full (fetches all fleet records every run)
-- **Weather** → full (fetches all weather records every run)
+### 3.3 Estimated Run Order and Times
 
-### 3.3 Monitoring
+| Order | Source | load_type | Expected pages | Notes |
+|---|---|---|---|---|
+| 1 | payments | incremental | 1–10 | Only new transactions since last run |
+| 2 | fleet | full | 1–5 | All vehicle records every run |
+| 3 | weather | full | 1–3 | All city observations every run |
+| 4 | db_payments | incremental | 1–10 | Live DB transactions |
+| 5 | db_sessions | incremental | 1–20 | High volume — one row per charge session |
+| 6 | db_energy_prices | incremental | 1–50 | Hourly rows — high volume |
+| 7 | db_complaints | incremental | 1–5 | Lower volume |
+| 8 | db_maintenance_events | incremental | 1–5 | Lower volume |
+| 9 | db_pipeline_audit | incremental | 1–5 | One row per pipeline run |
+| 10 | db_customers | incremental | 1–10 | Slow-changing |
+| 11 | db_vehicles | incremental | 1–10 | SCD2 rows, slow-changing |
+| 12 | db_chargers | incremental | 1–5 | Slow-changing |
+| 13 | db_charge_cards | incremental | 1–10 | Slow-changing |
+| 14 | db_partners | incremental | 1–3 | Very slow-changing |
+| 15 | db_employees | incremental | 1–5 | Very slow-changing |
+| 16 | db_states | full | 1 | 8 rows — trivial |
+| 17 | db_cities | full | 1–5 | Small reference |
+| 18 | db_tariffs | full | 1–3 | Small reference |
+| 19 | db_stations | full | 1–10 | Medium reference |
 
-In ADF Monitor → Pipeline runs, find `pl_bronze_master`. Click the pipeline name to see child runs — each `ExecutePipeline` activity shows as a link to the child pipeline run. Click through to see individual activity status inside the child.
+### 3.4 Monitoring
+
+ADF Monitor → Pipeline runs → find `pl_bronze_master` → click it → each of the 19 activities links to its child `pl_bronze_incremental_load_v2` run. Drill through to see individual activities inside the child.
 
 ---
 
-## Part 4 — Bronze Output Structure After Day 6
+## Part 4 — Bronze Output Structure
 
 ```
 ADLS bronze container
 └── api/
-    ├── payments/
-    │   └── ingestion_date=2026-10-18/
-    │       ├── payments_page_1.json
-    │       └── payments_page_N.json
-    ├── fleet/
-    │   └── ingestion_date=2026-10-18/
-    │       ├── fleet_page_1.json
-    │       └── fleet_page_N.json
-    └── weather/
-        └── ingestion_date=2026-10-18/
-            ├── weather_page_1.json
-            └── weather_page_N.json
+    ├── payments/              ingestion_date=<today>/  payments_page_*.json
+    ├── fleet/                 ingestion_date=<today>/  fleet_page_*.json
+    ├── weather/               ingestion_date=<today>/  weather_page_*.json
+    └── db/
+        ├── payments/          ingestion_date=<today>/  db_payments_page_*.json
+        ├── sessions/          ingestion_date=<today>/  db_sessions_page_*.json
+        ├── energy_prices/     ingestion_date=<today>/  db_energy_prices_page_*.json
+        ├── complaints/        ingestion_date=<today>/  db_complaints_page_*.json
+        ├── maintenance_events/ingestion_date=<today>/  db_maintenance_events_page_*.json
+        ├── pipeline_audit/    ingestion_date=<today>/  db_pipeline_audit_page_*.json
+        ├── customers/         ingestion_date=<today>/  db_customers_page_*.json
+        ├── vehicles/          ingestion_date=<today>/  db_vehicles_page_*.json
+        ├── chargers/          ingestion_date=<today>/  db_chargers_page_*.json
+        ├── charge_cards/      ingestion_date=<today>/  db_charge_cards_page_*.json
+        ├── partners/          ingestion_date=<today>/  db_partners_page_*.json
+        ├── employees/         ingestion_date=<today>/  db_employees_page_*.json
+        ├── states/            ingestion_date=<today>/  db_states_page_*.json
+        ├── cities/            ingestion_date=<today>/  db_cities_page_*.json
+        ├── tariffs/           ingestion_date=<today>/  db_tariffs_page_*.json
+        └── stations/          ingestion_date=<today>/  db_stations_page_*.json
 ```
 
 ---
 
-## Part 5 — How the Child Pipeline Handles Fleet and Weather
+## Part 5 — How to Add a New Source
 
-The child pipeline `pl_bronze_incremental_load_v2` was designed to be generic — it reads all config from the control table and uses `p_source_name` as the key. This is how each step behaves for fleet and weather:
+1. **INSERT one row** into the control table:
+   ```sql
+   INSERT INTO ev_catalog.ctl.pipeline_control
+       (source_name, endpoint, sink_base_path, file_prefix, page_size, load_type, last_watermark, is_active)
+   VALUES
+       ('my_source', '/api/db/my-source/', 'api/db/my_source', 'my_source', 1000, 'incremental', '1900-01-01T00:00:00Z', true);
+   ```
 
-| Step | Payments | Fleet / Weather |
-|---|---|---|
-| `act_read_ctl` | Reads payments row | Reads fleet/weather row — different endpoint + path |
-| `v_endpoint` | `/api/db/payments/` | `/api/fleet/` or `/api/weather/` |
-| `v_sink_base_path` | `api/payments` | `api/fleet` or `api/weather` |
-| `act_set_watermark` | Uses `last_watermark` from control table | Same — but `load_type='full'` sets watermark to `1900-01-01` |
-| API call `?updated_after=...` | Used for incremental filter | `1900-01-01` = fetches all records (same as full load) |
-| Watermark update | Writes current run timestamp | Writes current run timestamp (but next run ignores it for full load) |
+2. **Add one ExecutePipeline activity** to `pl_bronze_master` — depends on the last existing activity:
+   ```json
+   {
+       "name": "act_run_my_source",
+       "type": "ExecutePipeline",
+       "dependsOn": [{ "activity": "act_run_db_stations", "dependencyConditions": ["Succeeded"] }],
+       "typeProperties": {
+           "pipeline": { "referenceName": "pl_bronze_incremental_load_v2", "type": "PipelineReference" },
+           "parameters": {
+               "p_source_name": { "value": "my_source", "type": "Expression" },
+               "p_load_type_override": { "value": "@pipeline().parameters.p_load_type_override", "type": "Expression" }
+           },
+           "waitOnCompletion": true
+       }
+   }
+   ```
 
-> For fleet and weather, `load_type = 'full'` in the control table means the Databricks notebook sets `v_last_watermark = '1900-01-01T00:00:00Z'` regardless of the stored watermark — the API call always fetches all records.
+3. **Publish** — no changes needed to the child pipeline or any dataset.
 
 ---
 
@@ -220,62 +238,30 @@ The child pipeline `pl_bronze_incremental_load_v2` was designed to be generic �
 
 | Error | Cause | Fix |
 |---|---|---|
-| Child pipeline not found | `pl_bronze_incremental_load_v2` not published yet | Publish child pipeline before running master |
-| `act_read_ctl` fails for fleet/weather | Control table row not inserted | Run the INSERT statements in Section 1.2 and verify with SELECT |
-| `404 Not Found` on fleet or weather | Wrong endpoint in control table (e.g. `/api/fleet` missing trailing slash) | UPDATE the control table row: `UPDATE ev_catalog.ctl.pipeline_control SET endpoint='/api/fleet/' WHERE source_name='fleet'` |
-| Master pipeline fails on `act_run_fleet` with `act_run_payments` still succeeded | Check child pipeline logs for fleet — likely a config or auth issue | Open Monitor → act_run_fleet → view child run |
-| All sources ran but no files in Bronze | Check `is_active = true` for each source in control table | `SELECT source_name, is_active FROM ev_catalog.ctl.pipeline_control` |
+| `act_read_ctl` fails — source not found | Control table row missing for that source_name | Run INSERT for that source in `control-table-setup.sql` |
+| `404 Not Found` on API call | Wrong endpoint in control table (hyphen vs underscore, missing trailing slash) | `UPDATE ev_catalog.ctl.pipeline_control SET endpoint='...' WHERE source_name='...'` |
+| All child runs succeed but wrong watermark written | The Databricks watermark notebook uses `source_name` to look up the row — must match exactly | Verify source_name in control table matches exactly what is passed as `p_source_name` |
+| Sources N+1..19 skipped | Source N failed — downstream activities skipped due to `dependencyConditions: Succeeded` | Fix source N, re-run master — completed sources have 0 new pages (no-op), failed source retries |
+| Master pipeline times out | 19 sequential sources takes longer than 12h default ADF timeout | Increase pipeline timeout in Settings tab, or split into two master pipelines |
 
 ---
 
 ## Day 6 Checklist
 
 **Control table:**
-- [ ] Fleet row inserted with `endpoint='/api/fleet/'`, `load_type='full'`
-- [ ] Weather row inserted with `endpoint='/api/weather/'`, `load_type='full'`
-- [ ] All three rows visible in `SELECT * FROM ev_catalog.ctl.pipeline_control`
+- [ ] All 17 new rows inserted (run `control-table-setup.sql`)
+- [ ] Verify 20 rows total in `SELECT * FROM ev_catalog.ctl.pipeline_control`
+- [ ] Each row has correct `endpoint`, `sink_base_path`, `file_prefix`, `load_type`, `is_active=true`
 
 **Master pipeline:**
-- [ ] `pl_bronze_master` created with 3 Execute Pipeline activities
-- [ ] `act_run_fleet` depends on `act_run_payments` (success)
-- [ ] `act_run_weather` depends on `act_run_fleet` (success)
-- [ ] `waitOnCompletion: true` on all three activities
-- [ ] `p_load_type_override` parameter added to master pipeline
+- [ ] `pl_bronze_master` has 19 ExecutePipeline activities
+- [ ] All activities have `waitOnCompletion: true`
+- [ ] Chain is correct: each activity depends on the previous one
+- [ ] `p_load_type_override` parameter added
 - [ ] Published successfully
 
 **Testing:**
-- [ ] Full load run (`p_load_type_override="full"`) completes — all three sources show files in Bronze
-- [ ] Check fleet Bronze: `bronze/api/fleet/ingestion_date=<today>/fleet_page_1.json` exists
-- [ ] Check weather Bronze: `bronze/api/weather/ingestion_date=<today>/weather_page_1.json` exists
-- [ ] Incremental run (empty override) completes — payments picks up only new records; fleet/weather do full load again
-
----
-
-## Architecture Summary
-
-```
-Trigger / Schedule
-       │
-       ▼
-pl_bronze_master   ← orchestrator (no data movement)
-  p_load_type_override=""
-       │
-       ├─ act_run_payments ─────────────────────┐
-       │    pl_bronze_incremental_load_v2        │
-       │    p_source_name="payments"             │
-       │                                         ▼
-       │                              ev_catalog.ctl.pipeline_control
-       │                              row: payments, incremental, <watermark>
-       │
-       ├─ act_run_fleet (after payments) ───────┐
-       │    pl_bronze_incremental_load_v2        │
-       │    p_source_name="fleet"                │
-       │                                         ▼
-       │                              row: fleet, full, 1900-01-01
-       │
-       └─ act_run_weather (after fleet) ────────┐
-            pl_bronze_incremental_load_v2        │
-            p_source_name="weather"              │
-                                                 ▼
-                                      row: weather, full, 1900-01-01
-```
+- [ ] Full load run (`p_load_type_override="full"`) completes for all 20 sources
+- [ ] All 19 Bronze folders created and populated
+- [ ] Incremental run (empty override) completes — incremental sources pick up 0 pages (no new data since full run), full sources reload
+- [ ] Monitor shows correct child pipeline runs for each source

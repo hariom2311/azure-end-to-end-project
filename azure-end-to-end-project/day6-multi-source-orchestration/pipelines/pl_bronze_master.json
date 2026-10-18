@@ -1,96 +1,299 @@
 {
     "name": "pl_bronze_master",
     "properties": {
-        "description": "Master orchestrator pipeline. Runs pl_bronze_incremental_load_v2 sequentially for each active source: payments → fleet → weather. Add new sources to the control table — no pipeline changes needed.",
+        "description": "Master orchestrator: calls pl_bronze_incremental_load_v2 sequentially for all 20 sources. Add new sources to the control table — no pipeline changes needed (except adding one ExecutePipeline activity here).",
         "activities": [
+
             {
                 "name": "act_run_payments",
-                "description": "Load payments source (incremental, /api/db/payments/)",
+                "description": "File-based payments (load scenarios 1-5)",
                 "type": "ExecutePipeline",
                 "typeProperties": {
-                    "pipeline": {
-                        "referenceName": "pl_bronze_incremental_load_v2",
-                        "type": "PipelineReference"
-                    },
+                    "pipeline": { "referenceName": "pl_bronze_incremental_load_v2", "type": "PipelineReference" },
                     "parameters": {
-                        "p_source_name": {
-                            "value": "payments",
-                            "type": "Expression"
-                        },
-                        "p_load_type_override": {
-                            "value": "@pipeline().parameters.p_load_type_override",
-                            "type": "Expression"
-                        }
+                        "p_source_name": { "value": "payments", "type": "Expression" },
+                        "p_load_type_override": { "value": "@pipeline().parameters.p_load_type_override", "type": "Expression" }
                     },
                     "waitOnCompletion": true
                 }
             },
+
             {
                 "name": "act_run_fleet",
-                "description": "Load fleet source (full load, /api/fleet/)",
+                "description": "File-based fleet vehicle usage",
                 "type": "ExecutePipeline",
-                "dependsOn": [
-                    {
-                        "activity": "act_run_payments",
-                        "dependencyConditions": [
-                            "Succeeded"
-                        ]
-                    }
-                ],
+                "dependsOn": [{ "activity": "act_run_payments", "dependencyConditions": ["Succeeded"] }],
                 "typeProperties": {
-                    "pipeline": {
-                        "referenceName": "pl_bronze_incremental_load_v2",
-                        "type": "PipelineReference"
-                    },
+                    "pipeline": { "referenceName": "pl_bronze_incremental_load_v2", "type": "PipelineReference" },
                     "parameters": {
-                        "p_source_name": {
-                            "value": "fleet",
-                            "type": "Expression"
-                        },
-                        "p_load_type_override": {
-                            "value": "@pipeline().parameters.p_load_type_override",
-                            "type": "Expression"
-                        }
+                        "p_source_name": { "value": "fleet", "type": "Expression" },
+                        "p_load_type_override": { "value": "@pipeline().parameters.p_load_type_override", "type": "Expression" }
                     },
                     "waitOnCompletion": true
                 }
             },
+
             {
                 "name": "act_run_weather",
-                "description": "Load weather source (full load, /api/weather/)",
+                "description": "File-based weather observations",
                 "type": "ExecutePipeline",
-                "dependsOn": [
-                    {
-                        "activity": "act_run_fleet",
-                        "dependencyConditions": [
-                            "Succeeded"
-                        ]
-                    }
-                ],
+                "dependsOn": [{ "activity": "act_run_fleet", "dependencyConditions": ["Succeeded"] }],
                 "typeProperties": {
-                    "pipeline": {
-                        "referenceName": "pl_bronze_incremental_load_v2",
-                        "type": "PipelineReference"
-                    },
+                    "pipeline": { "referenceName": "pl_bronze_incremental_load_v2", "type": "PipelineReference" },
                     "parameters": {
-                        "p_source_name": {
-                            "value": "weather",
-                            "type": "Expression"
-                        },
-                        "p_load_type_override": {
-                            "value": "@pipeline().parameters.p_load_type_override",
-                            "type": "Expression"
-                        }
+                        "p_source_name": { "value": "weather", "type": "Expression" },
+                        "p_load_type_override": { "value": "@pipeline().parameters.p_load_type_override", "type": "Expression" }
+                    },
+                    "waitOnCompletion": true
+                }
+            },
+
+            {
+                "name": "act_run_db_payments",
+                "description": "DB fact: payment transactions (incremental)",
+                "type": "ExecutePipeline",
+                "dependsOn": [{ "activity": "act_run_weather", "dependencyConditions": ["Succeeded"] }],
+                "typeProperties": {
+                    "pipeline": { "referenceName": "pl_bronze_incremental_load_v2", "type": "PipelineReference" },
+                    "parameters": {
+                        "p_source_name": { "value": "db_payments", "type": "Expression" },
+                        "p_load_type_override": { "value": "@pipeline().parameters.p_load_type_override", "type": "Expression" }
+                    },
+                    "waitOnCompletion": true
+                }
+            },
+
+            {
+                "name": "act_run_db_sessions",
+                "description": "DB fact: charging sessions (incremental)",
+                "type": "ExecutePipeline",
+                "dependsOn": [{ "activity": "act_run_db_payments", "dependencyConditions": ["Succeeded"] }],
+                "typeProperties": {
+                    "pipeline": { "referenceName": "pl_bronze_incremental_load_v2", "type": "PipelineReference" },
+                    "parameters": {
+                        "p_source_name": { "value": "db_sessions", "type": "Expression" },
+                        "p_load_type_override": { "value": "@pipeline().parameters.p_load_type_override", "type": "Expression" }
+                    },
+                    "waitOnCompletion": true
+                }
+            },
+
+            {
+                "name": "act_run_db_energy_prices",
+                "description": "DB fact: hourly energy pricing (incremental)",
+                "type": "ExecutePipeline",
+                "dependsOn": [{ "activity": "act_run_db_sessions", "dependencyConditions": ["Succeeded"] }],
+                "typeProperties": {
+                    "pipeline": { "referenceName": "pl_bronze_incremental_load_v2", "type": "PipelineReference" },
+                    "parameters": {
+                        "p_source_name": { "value": "db_energy_prices", "type": "Expression" },
+                        "p_load_type_override": { "value": "@pipeline().parameters.p_load_type_override", "type": "Expression" }
+                    },
+                    "waitOnCompletion": true
+                }
+            },
+
+            {
+                "name": "act_run_db_complaints",
+                "description": "DB operational: complaints (incremental)",
+                "type": "ExecutePipeline",
+                "dependsOn": [{ "activity": "act_run_db_energy_prices", "dependencyConditions": ["Succeeded"] }],
+                "typeProperties": {
+                    "pipeline": { "referenceName": "pl_bronze_incremental_load_v2", "type": "PipelineReference" },
+                    "parameters": {
+                        "p_source_name": { "value": "db_complaints", "type": "Expression" },
+                        "p_load_type_override": { "value": "@pipeline().parameters.p_load_type_override", "type": "Expression" }
+                    },
+                    "waitOnCompletion": true
+                }
+            },
+
+            {
+                "name": "act_run_db_maintenance_events",
+                "description": "DB operational: maintenance events (incremental)",
+                "type": "ExecutePipeline",
+                "dependsOn": [{ "activity": "act_run_db_complaints", "dependencyConditions": ["Succeeded"] }],
+                "typeProperties": {
+                    "pipeline": { "referenceName": "pl_bronze_incremental_load_v2", "type": "PipelineReference" },
+                    "parameters": {
+                        "p_source_name": { "value": "db_maintenance_events", "type": "Expression" },
+                        "p_load_type_override": { "value": "@pipeline().parameters.p_load_type_override", "type": "Expression" }
+                    },
+                    "waitOnCompletion": true
+                }
+            },
+
+            {
+                "name": "act_run_db_pipeline_audit",
+                "description": "DB observability: pipeline audit log (incremental)",
+                "type": "ExecutePipeline",
+                "dependsOn": [{ "activity": "act_run_db_maintenance_events", "dependencyConditions": ["Succeeded"] }],
+                "typeProperties": {
+                    "pipeline": { "referenceName": "pl_bronze_incremental_load_v2", "type": "PipelineReference" },
+                    "parameters": {
+                        "p_source_name": { "value": "db_pipeline_audit", "type": "Expression" },
+                        "p_load_type_override": { "value": "@pipeline().parameters.p_load_type_override", "type": "Expression" }
+                    },
+                    "waitOnCompletion": true
+                }
+            },
+
+            {
+                "name": "act_run_db_customers",
+                "description": "DB dim: customers (incremental)",
+                "type": "ExecutePipeline",
+                "dependsOn": [{ "activity": "act_run_db_pipeline_audit", "dependencyConditions": ["Succeeded"] }],
+                "typeProperties": {
+                    "pipeline": { "referenceName": "pl_bronze_incremental_load_v2", "type": "PipelineReference" },
+                    "parameters": {
+                        "p_source_name": { "value": "db_customers", "type": "Expression" },
+                        "p_load_type_override": { "value": "@pipeline().parameters.p_load_type_override", "type": "Expression" }
+                    },
+                    "waitOnCompletion": true
+                }
+            },
+
+            {
+                "name": "act_run_db_vehicles",
+                "description": "DB dim: vehicles SCD2 (incremental)",
+                "type": "ExecutePipeline",
+                "dependsOn": [{ "activity": "act_run_db_customers", "dependencyConditions": ["Succeeded"] }],
+                "typeProperties": {
+                    "pipeline": { "referenceName": "pl_bronze_incremental_load_v2", "type": "PipelineReference" },
+                    "parameters": {
+                        "p_source_name": { "value": "db_vehicles", "type": "Expression" },
+                        "p_load_type_override": { "value": "@pipeline().parameters.p_load_type_override", "type": "Expression" }
+                    },
+                    "waitOnCompletion": true
+                }
+            },
+
+            {
+                "name": "act_run_db_chargers",
+                "description": "DB dim: chargers (incremental)",
+                "type": "ExecutePipeline",
+                "dependsOn": [{ "activity": "act_run_db_vehicles", "dependencyConditions": ["Succeeded"] }],
+                "typeProperties": {
+                    "pipeline": { "referenceName": "pl_bronze_incremental_load_v2", "type": "PipelineReference" },
+                    "parameters": {
+                        "p_source_name": { "value": "db_chargers", "type": "Expression" },
+                        "p_load_type_override": { "value": "@pipeline().parameters.p_load_type_override", "type": "Expression" }
+                    },
+                    "waitOnCompletion": true
+                }
+            },
+
+            {
+                "name": "act_run_db_charge_cards",
+                "description": "DB dim: charge cards (incremental)",
+                "type": "ExecutePipeline",
+                "dependsOn": [{ "activity": "act_run_db_chargers", "dependencyConditions": ["Succeeded"] }],
+                "typeProperties": {
+                    "pipeline": { "referenceName": "pl_bronze_incremental_load_v2", "type": "PipelineReference" },
+                    "parameters": {
+                        "p_source_name": { "value": "db_charge_cards", "type": "Expression" },
+                        "p_load_type_override": { "value": "@pipeline().parameters.p_load_type_override", "type": "Expression" }
+                    },
+                    "waitOnCompletion": true
+                }
+            },
+
+            {
+                "name": "act_run_db_partners",
+                "description": "DB dim: franchise partners (incremental)",
+                "type": "ExecutePipeline",
+                "dependsOn": [{ "activity": "act_run_db_charge_cards", "dependencyConditions": ["Succeeded"] }],
+                "typeProperties": {
+                    "pipeline": { "referenceName": "pl_bronze_incremental_load_v2", "type": "PipelineReference" },
+                    "parameters": {
+                        "p_source_name": { "value": "db_partners", "type": "Expression" },
+                        "p_load_type_override": { "value": "@pipeline().parameters.p_load_type_override", "type": "Expression" }
+                    },
+                    "waitOnCompletion": true
+                }
+            },
+
+            {
+                "name": "act_run_db_employees",
+                "description": "DB dim: employees (incremental)",
+                "type": "ExecutePipeline",
+                "dependsOn": [{ "activity": "act_run_db_partners", "dependencyConditions": ["Succeeded"] }],
+                "typeProperties": {
+                    "pipeline": { "referenceName": "pl_bronze_incremental_load_v2", "type": "PipelineReference" },
+                    "parameters": {
+                        "p_source_name": { "value": "db_employees", "type": "Expression" },
+                        "p_load_type_override": { "value": "@pipeline().parameters.p_load_type_override", "type": "Expression" }
+                    },
+                    "waitOnCompletion": true
+                }
+            },
+
+            {
+                "name": "act_run_db_states",
+                "description": "DB ref: Australian states (full load)",
+                "type": "ExecutePipeline",
+                "dependsOn": [{ "activity": "act_run_db_employees", "dependencyConditions": ["Succeeded"] }],
+                "typeProperties": {
+                    "pipeline": { "referenceName": "pl_bronze_incremental_load_v2", "type": "PipelineReference" },
+                    "parameters": {
+                        "p_source_name": { "value": "db_states", "type": "Expression" },
+                        "p_load_type_override": { "value": "@pipeline().parameters.p_load_type_override", "type": "Expression" }
+                    },
+                    "waitOnCompletion": true
+                }
+            },
+
+            {
+                "name": "act_run_db_cities",
+                "description": "DB ref: cities/postcodes (full load)",
+                "type": "ExecutePipeline",
+                "dependsOn": [{ "activity": "act_run_db_states", "dependencyConditions": ["Succeeded"] }],
+                "typeProperties": {
+                    "pipeline": { "referenceName": "pl_bronze_incremental_load_v2", "type": "PipelineReference" },
+                    "parameters": {
+                        "p_source_name": { "value": "db_cities", "type": "Expression" },
+                        "p_load_type_override": { "value": "@pipeline().parameters.p_load_type_override", "type": "Expression" }
+                    },
+                    "waitOnCompletion": true
+                }
+            },
+
+            {
+                "name": "act_run_db_tariffs",
+                "description": "DB ref: tariff rate schedules (full load)",
+                "type": "ExecutePipeline",
+                "dependsOn": [{ "activity": "act_run_db_cities", "dependencyConditions": ["Succeeded"] }],
+                "typeProperties": {
+                    "pipeline": { "referenceName": "pl_bronze_incremental_load_v2", "type": "PipelineReference" },
+                    "parameters": {
+                        "p_source_name": { "value": "db_tariffs", "type": "Expression" },
+                        "p_load_type_override": { "value": "@pipeline().parameters.p_load_type_override", "type": "Expression" }
+                    },
+                    "waitOnCompletion": true
+                }
+            },
+
+            {
+                "name": "act_run_db_stations",
+                "description": "DB ref: charging station infrastructure (full load)",
+                "type": "ExecutePipeline",
+                "dependsOn": [{ "activity": "act_run_db_tariffs", "dependencyConditions": ["Succeeded"] }],
+                "typeProperties": {
+                    "pipeline": { "referenceName": "pl_bronze_incremental_load_v2", "type": "PipelineReference" },
+                    "parameters": {
+                        "p_source_name": { "value": "db_stations", "type": "Expression" },
+                        "p_load_type_override": { "value": "@pipeline().parameters.p_load_type_override", "type": "Expression" }
                     },
                     "waitOnCompletion": true
                 }
             }
+
         ],
         "parameters": {
             "p_load_type_override": {
                 "type": "string",
                 "defaultValue": "",
-                "description": "Pass 'full' to force full reload for all sources. Leave empty to use each source's load_type from the control table."
+                "description": "Pass 'full' to force full reload across all sources. Leave empty to use each source's load_type from the control table."
             }
         },
         "folder": {
