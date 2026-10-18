@@ -46,37 +46,37 @@ ORDER BY source_name;
 INSERT INTO ev_catalog.ctl.pipeline_control
     (source_name, endpoint, sink_base_path, file_prefix, page_size, load_type, last_watermark, is_active)
 VALUES
-    ('db_payments', '/api/db/payments/', 'api/db/payments', 'db_payments', 1000, 'incremental', '1900-01-01T00:00:00Z', true);
+    ('db_payments', '/api/db/payments/', 'api/payments', 'db_payments', 1000, 'incremental', '1900-01-01T00:00:00Z', true);
 
 -- DB Charging Sessions (fact — one row per charge session)
 INSERT INTO ev_catalog.ctl.pipeline_control
     (source_name, endpoint, sink_base_path, file_prefix, page_size, load_type, last_watermark, is_active)
 VALUES
-    ('db_sessions', '/api/db/sessions/', 'api/db/sessions', 'db_sessions', 1000, 'incremental', '1900-01-01T00:00:00Z', true);
+    ('db_sessions', '/api/db/sessions/', 'api/sessions', 'db_sessions', 1000, 'incremental', '1900-01-01T00:00:00Z', true);
 
 -- DB Energy Prices (hourly pricing feed — changes every hour)
 INSERT INTO ev_catalog.ctl.pipeline_control
     (source_name, endpoint, sink_base_path, file_prefix, page_size, load_type, last_watermark, is_active)
 VALUES
-    ('db_energy_prices', '/api/db/energy-prices/', 'api/db/energy_prices', 'db_energy_prices', 1000, 'incremental', '1900-01-01T00:00:00Z', true);
+    ('db_energy_prices', '/api/db/energy-prices/', 'api/energy_prices', 'db_energy_prices', 1000, 'incremental', '1900-01-01T00:00:00Z', true);
 
 -- DB Complaints (operational — status changes over lifecycle)
 INSERT INTO ev_catalog.ctl.pipeline_control
     (source_name, endpoint, sink_base_path, file_prefix, page_size, load_type, last_watermark, is_active)
 VALUES
-    ('db_complaints', '/api/db/complaints/', 'api/db/complaints', 'db_complaints', 1000, 'incremental', '1900-01-01T00:00:00Z', true);
+    ('db_complaints', '/api/db/complaints/', 'api/complaints', 'db_complaints', 1000, 'incremental', '1900-01-01T00:00:00Z', true);
 
 -- DB Maintenance Events (operational — resolved_ts updates over time)
 INSERT INTO ev_catalog.ctl.pipeline_control
     (source_name, endpoint, sink_base_path, file_prefix, page_size, load_type, last_watermark, is_active)
 VALUES
-    ('db_maintenance_events', '/api/db/maintenance-events/', 'api/db/maintenance_events', 'db_maintenance_events', 1000, 'incremental', '1900-01-01T00:00:00Z', true);
+    ('db_maintenance_events', '/api/db/maintenance-events/', 'api/maintenance_events', 'db_maintenance_events', 1000, 'incremental', '1900-01-01T00:00:00Z', true);
 
 -- DB Pipeline Audit (observability — every pipeline run is a row)
 INSERT INTO ev_catalog.ctl.pipeline_control
     (source_name, endpoint, sink_base_path, file_prefix, page_size, load_type, last_watermark, is_active)
 VALUES
-    ('db_pipeline_audit', '/api/db/pipeline-audit/', 'api/db/pipeline_audit', 'db_pipeline_audit', 1000, 'incremental', '1900-01-01T00:00:00Z', true);
+    ('db_pipeline_audit', '/api/db/pipeline-audit/', 'api/pipeline_audit', 'db_pipeline_audit', 1000, 'incremental', '1900-01-01T00:00:00Z', true);
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- DB CRUD — DIMENSION TABLES (incremental — slow-changing)
@@ -87,37 +87,37 @@ VALUES
 INSERT INTO ev_catalog.ctl.pipeline_control
     (source_name, endpoint, sink_base_path, file_prefix, page_size, load_type, last_watermark, is_active)
 VALUES
-    ('db_customers', '/api/db/customers/', 'api/db/customers', 'db_customers', 1000, 'incremental', '1900-01-01T00:00:00Z', true);
+    ('db_customers', '/api/db/customers/', 'api/customers', 'db_customers', 1000, 'incremental', '1900-01-01T00:00:00Z', true);
 
 -- DB Vehicles (dim — SCD2, battery specs, registration changes)
 INSERT INTO ev_catalog.ctl.pipeline_control
     (source_name, endpoint, sink_base_path, file_prefix, page_size, load_type, last_watermark, is_active)
 VALUES
-    ('db_vehicles', '/api/db/vehicles/', 'api/db/vehicles', 'db_vehicles', 1000, 'incremental', '1900-01-01T00:00:00Z', true);
+    ('db_vehicles', '/api/db/vehicles/', 'api/vehicles', 'db_vehicles', 1000, 'incremental', '1900-01-01T00:00:00Z', true);
 
 -- DB Chargers (dim — firmware updates, status changes)
 INSERT INTO ev_catalog.ctl.pipeline_control
     (source_name, endpoint, sink_base_path, file_prefix, page_size, load_type, last_watermark, is_active)
 VALUES
-    ('db_chargers', '/api/db/chargers/', 'api/db/chargers', 'db_chargers', 1000, 'incremental', '1900-01-01T00:00:00Z', true);
+    ('db_chargers', '/api/db/chargers/', 'api/chargers', 'db_chargers', 1000, 'incremental', '1900-01-01T00:00:00Z', true);
 
 -- DB Charge Cards (dim — status changes, new cards issued)
 INSERT INTO ev_catalog.ctl.pipeline_control
     (source_name, endpoint, sink_base_path, file_prefix, page_size, load_type, last_watermark, is_active)
 VALUES
-    ('db_charge_cards', '/api/db/charge-cards/', 'api/db/charge_cards', 'db_charge_cards', 1000, 'incremental', '1900-01-01T00:00:00Z', true);
+    ('db_charge_cards', '/api/db/charge-cards/', 'api/charge_cards', 'db_charge_cards', 1000, 'incremental', '1900-01-01T00:00:00Z', true);
 
 -- DB Partners (dim — revenue share, contract end updates)
 INSERT INTO ev_catalog.ctl.pipeline_control
     (source_name, endpoint, sink_base_path, file_prefix, page_size, load_type, last_watermark, is_active)
 VALUES
-    ('db_partners', '/api/db/partners/', 'api/db/partners', 'db_partners', 1000, 'incremental', '1900-01-01T00:00:00Z', true);
+    ('db_partners', '/api/db/partners/', 'api/partners', 'db_partners', 1000, 'incremental', '1900-01-01T00:00:00Z', true);
 
 -- DB Employees (dim — department, station assignment changes)
 INSERT INTO ev_catalog.ctl.pipeline_control
     (source_name, endpoint, sink_base_path, file_prefix, page_size, load_type, last_watermark, is_active)
 VALUES
-    ('db_employees', '/api/db/employees/', 'api/db/employees', 'db_employees', 1000, 'incremental', '1900-01-01T00:00:00Z', true);
+    ('db_employees', '/api/db/employees/', 'api/employees', 'db_employees', 1000, 'incremental', '1900-01-01T00:00:00Z', true);
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- DB CRUD — REFERENCE TABLES (full load)
@@ -128,25 +128,25 @@ VALUES
 INSERT INTO ev_catalog.ctl.pipeline_control
     (source_name, endpoint, sink_base_path, file_prefix, page_size, load_type, last_watermark, is_active)
 VALUES
-    ('db_states', '/api/db/states/', 'api/db/states', 'db_states', 1000, 'full', '1900-01-01T00:00:00Z', true);
+    ('db_states', '/api/db/states/', 'api/states', 'db_states', 1000, 'full', '1900-01-01T00:00:00Z', true);
 
 -- DB Cities (reference — postcode mapping, rarely changes)
 INSERT INTO ev_catalog.ctl.pipeline_control
     (source_name, endpoint, sink_base_path, file_prefix, page_size, load_type, last_watermark, is_active)
 VALUES
-    ('db_cities', '/api/db/cities/', 'api/db/cities', 'db_cities', 1000, 'full', '1900-01-01T00:00:00Z', true);
+    ('db_cities', '/api/db/cities/', 'api/cities', 'db_cities', 1000, 'full', '1900-01-01T00:00:00Z', true);
 
 -- DB Tariffs (reference — rate schedules, versioned, new versions added not updated)
 INSERT INTO ev_catalog.ctl.pipeline_control
     (source_name, endpoint, sink_base_path, file_prefix, page_size, load_type, last_watermark, is_active)
 VALUES
-    ('db_tariffs', '/api/db/tariffs/', 'api/db/tariffs', 'db_tariffs', 1000, 'full', '1900-01-01T00:00:00Z', true);
+    ('db_tariffs', '/api/db/tariffs/', 'api/tariffs', 'db_tariffs', 1000, 'full', '1900-01-01T00:00:00Z', true);
 
 -- DB Charging Stations (reference — infrastructure, new stations added rarely)
 INSERT INTO ev_catalog.ctl.pipeline_control
     (source_name, endpoint, sink_base_path, file_prefix, page_size, load_type, last_watermark, is_active)
 VALUES
-    ('db_stations', '/api/db/stations/', 'api/db/stations', 'db_stations', 1000, 'full', '1900-01-01T00:00:00Z', true);
+    ('db_stations', '/api/db/stations/', 'api/stations', 'db_stations', 1000, 'full', '1900-01-01T00:00:00Z', true);
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Verify all sources registered
