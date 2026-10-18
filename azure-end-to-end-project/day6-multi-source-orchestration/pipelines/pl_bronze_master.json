@@ -1,0 +1,101 @@
+{
+    "name": "pl_bronze_master",
+    "properties": {
+        "description": "Master orchestrator pipeline. Runs pl_bronze_incremental_load_v2 sequentially for each active source: payments → fleet → weather. Add new sources to the control table — no pipeline changes needed.",
+        "activities": [
+            {
+                "name": "act_run_payments",
+                "description": "Load payments source (incremental, /api/db/payments/)",
+                "type": "ExecutePipeline",
+                "typeProperties": {
+                    "pipeline": {
+                        "referenceName": "pl_bronze_incremental_load_v2",
+                        "type": "PipelineReference"
+                    },
+                    "parameters": {
+                        "p_source_name": {
+                            "value": "payments",
+                            "type": "Expression"
+                        },
+                        "p_load_type_override": {
+                            "value": "@pipeline().parameters.p_load_type_override",
+                            "type": "Expression"
+                        }
+                    },
+                    "waitOnCompletion": true
+                }
+            },
+            {
+                "name": "act_run_fleet",
+                "description": "Load fleet source (full load, /api/fleet/)",
+                "type": "ExecutePipeline",
+                "dependsOn": [
+                    {
+                        "activity": "act_run_payments",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "typeProperties": {
+                    "pipeline": {
+                        "referenceName": "pl_bronze_incremental_load_v2",
+                        "type": "PipelineReference"
+                    },
+                    "parameters": {
+                        "p_source_name": {
+                            "value": "fleet",
+                            "type": "Expression"
+                        },
+                        "p_load_type_override": {
+                            "value": "@pipeline().parameters.p_load_type_override",
+                            "type": "Expression"
+                        }
+                    },
+                    "waitOnCompletion": true
+                }
+            },
+            {
+                "name": "act_run_weather",
+                "description": "Load weather source (full load, /api/weather/)",
+                "type": "ExecutePipeline",
+                "dependsOn": [
+                    {
+                        "activity": "act_run_fleet",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "typeProperties": {
+                    "pipeline": {
+                        "referenceName": "pl_bronze_incremental_load_v2",
+                        "type": "PipelineReference"
+                    },
+                    "parameters": {
+                        "p_source_name": {
+                            "value": "weather",
+                            "type": "Expression"
+                        },
+                        "p_load_type_override": {
+                            "value": "@pipeline().parameters.p_load_type_override",
+                            "type": "Expression"
+                        }
+                    },
+                    "waitOnCompletion": true
+                }
+            }
+        ],
+        "parameters": {
+            "p_load_type_override": {
+                "type": "string",
+                "defaultValue": "",
+                "description": "Pass 'full' to force full reload for all sources. Leave empty to use each source's load_type from the control table."
+            }
+        },
+        "folder": {
+            "name": "bronze"
+        },
+        "annotations": []
+    }
+}
