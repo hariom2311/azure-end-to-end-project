@@ -200,18 +200,78 @@ GRANT SELECT, MODIFY ON TABLE ev_catalog.ctl.pipeline_control TO `9245da2f-7129-
 
 ### 1.4 Create Linked Service `ls_databricks`
 
-**ADF Studio → Manage → Linked services → + New → Azure Databricks:**
+**ADF Studio → Manage → Linked services → + New** → search `Azure Databricks` → select **Azure Databricks** → Continue.
 
-| Field | Value |
-|---|---|
-| Name | `ls_databricks` |
-| Databricks workspace | `dbw-ev-intelligence-dev` (your workspace) |
-| Select cluster | **New job cluster** |
-| Job cluster version | `15.4 LTS` |
-| Node type | `Standard_DS3_v2` |
-| Authentication type | `System Assigned Managed Identity` |
+---
 
-**Test connection** → green → **Create** → **Publish All**
+#### Step 1 — Name and Workspace
+
+| Field | Value | Note |
+|---|---|---|
+| Name | `ls_databricks` | |
+| Azure subscription | select yours | dropdown populates automatically |
+| Databricks workspace | `dbw-ev-intelligence-dev` | dropdown — workspace must exist and be in the same subscription |
+
+---
+
+#### Step 2 — Authentication
+
+| Field | Value | Note |
+|---|---|---|
+| Authentication type | **System Assigned Managed Identity** | Uses ADF's own identity — no tokens to rotate, no passwords to store |
+
+> **Why Managed Identity and not Access Token?**
+> An access token expires (typically 90 days). When it expires, the linked service silently breaks — the next pipeline run fails with `401 Unauthorized`. Managed Identity is credential-free and never expires. It requires Layers 1 and 2 from Parts 1.1 and 1.2 above to be complete first.
+
+> **Why not user-assigned MI?** System-assigned MI is tied to the ADF resource lifecycle — if ADF is deleted, the identity is deleted too. For a project-scoped Databricks connection this is fine and simpler to manage.
+
+---
+
+#### Step 3 — Select Cluster Type
+
+Click **Select cluster** dropdown → choose **New job cluster**.
+
+> **Do NOT select "Existing interactive cluster"** — reasons:
+> - An interactive cluster must be running at all times, billing even when idle
+> - If someone restarts or resizes it, the cluster ID changes and the linked service breaks
+> - Interactive clusters are shared — a runaway job from another user can affect your pipeline
+>
+> **New job cluster** means: ADF provisions a brand-new Databricks cluster each time a notebook activity runs, the notebook runs, then the cluster is automatically terminated. You pay only for the duration of the job. For a daily batch pipeline this is the correct choice.
+
+---
+
+#### Step 4 — Cluster Configuration
+
+After selecting **New job cluster**, two more fields appear:
+
+| Field | Value | Note |
+|---|---|---|
+| Job cluster version | `15.4 LTS` | Pick from dropdown — choose the LTS (Long Term Support) version. LTS means Databricks guarantees no breaking runtime changes for the life of the release. Avoid non-LTS versions for production. |
+| Cluster node type | `Standard_DS3_v2` | Pick from dropdown — 4 vCPU, 14 GB RAM. Sufficient for reading control table rows and writing Bronze JSON pages. You do not need a GPU or memory-optimised SKU for Bronze ingestion. |
+
+> **Why `Standard_DS3_v2`?**
+> Bronze ingestion is I/O-bound (read from API, write JSON to ADLS), not compute-bound. A single `Standard_DS3_v2` node handles this with headroom. You can scale up to `Standard_DS4_v2` (8 vCPU, 28 GB) if you see memory pressure on large sources, but start here.
+
+> **Single node vs multi-node:** ADF creates a single-node job cluster by default (driver = worker). For notebook activities that run SQL queries against the control table and write small JSON files, single-node is sufficient. Multi-node clusters are needed when Spark shuffle operations distribute data across workers — not applicable here.
+
+> **What you will NOT see in the dropdown if Layer 1 is missing:** If the ADF MI does not have `Contributor` on the Databricks workspace, the cluster version and node type dropdowns will be **empty**. ADF calls the Databricks API to populate these lists — without ARM-level access it cannot make that call. Fix: complete Part 1.1 before creating this linked service.
+
+---
+
+#### Step 5 — Test and Save
+
+1. Click **Test connection** — must show **Connection successful** before saving
+2. Click **Create**
+3. Click **Publish All** (top bar)
+
+**If test connection fails:**
+
+| Error shown | Cause | Fix |
+|---|---|---|
+| `AuthorizationFailed` | Layer 1 missing — ADF MI not a Contributor on the workspace | Complete Part 1.1 |
+| `User not authorized` | Layer 2 missing — ADF MI not added as Service Principal inside workspace | Complete Part 1.2 |
+| Cluster version dropdown empty | Layer 1 missing — ADF cannot call Databricks API to list runtimes | Complete Part 1.1 first, then reopen the linked service |
+| `MSI not enabled` | ADF instance does not have System Assigned Managed Identity enabled | Portal → ADF → Identity → System assigned → Status = On → Save |
 
 ---
 
