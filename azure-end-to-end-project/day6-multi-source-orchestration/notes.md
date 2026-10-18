@@ -326,10 +326,10 @@ Instead of 19 hardcoded `ExecutePipeline` activities, this pipeline uses **3 act
 act_list_sources    (DatabricksNotebook — nb_list_active_sources)
       │  exits with: '["payments","fleet","weather","db_payments",...]'
       ▼
-act_set_sources     (SetVariable — v_sources = notebook runOutput)
+act_set_sources     (SetVariable — v_sources = @json(runOutput)  ← Array variable)
       │
       ▼
-act_foreach_source  (ForEach — iterates over json(v_sources), isSequential=true)
+act_foreach_source  (ForEach — items = @variables('v_sources'), isSequential=true)
       └─ act_run_source  (ExecutePipeline — p_source_name = @item())
 ```
 
@@ -371,7 +371,7 @@ dbutils.notebook.exit(json.dumps(source_names))
  "db_tariffs","db_vehicles","fleet","payments","weather"]
 ```
 
-> This is the same `dbutils.notebook.exit()` pattern used in Day 3/4/5. ADF treats the exit value as a string — `runOutput` contains the raw string, not a parsed array. That is why the next step uses `SetVariable` + `json()` to convert it.
+> This is the same `dbutils.notebook.exit()` pattern used in Day 3/4/5. ADF treats the exit value as a string — `runOutput` contains the raw string, not a parsed array. The `SetVariable` uses `@json()` to parse it into an Array at write time, so the variable is already an Array when ForEach reads it.
 
 ---
 
@@ -381,10 +381,10 @@ Before adding activities, add a pipeline variable to hold the source list.
 
 **Variables tab (bottom of canvas):**
 - Name: `v_sources`
-- Type: `String`
+- Type: `Array`
 - Default value: `[]`
 
-> **Why a variable and not a direct expression?** ADF expressions in ForEach `items` cannot reference activity outputs directly when the ForEach depends on a SetVariable in between. The SetVariable acts as a bridge — store the output in a variable, then ForEach reads the variable.
+> **Why Array, not String?** ADF `SetVariable` enforces type matching — if the variable is `String` but you assign `@json(...)` (which produces an Array), ADF throws `variable of type 'String' cannot be initialized with value of type 'Array'`. Declaring `v_sources` as `Array` lets `@json(runOutput)` be stored directly, and ForEach `items` receives an Array without any further conversion.
 
 ---
 
@@ -398,7 +398,7 @@ Add parameter:
 - Name: `p_load_type_override` · Type: `String` · Default: *(empty)*
 
 Add variable:
-- Name: `v_sources` · Type: `String` · Default: `[]`
+- Name: `v_sources` · Type: `Array` · Default: `[]`
 
 ---
 
@@ -423,10 +423,10 @@ Drag **Set Variable** onto the canvas → connect `act_list_sources` → `act_se
 - **General tab** → Name: `act_set_sources`
 - **Variables tab:**
   - Variable: `v_sources`
-  - Value: `@activity('act_list_sources').output.runOutput` (Expression)
+  - Value: `@json(activity('act_list_sources').output.runOutput)` (Expression)
 - Depends on: `act_list_sources` (Succeeded)
 
-> `output.runOutput` is the string that `dbutils.notebook.exit()` returned — the raw JSON array string like `["payments","fleet",...]`. It is stored as a String variable here.
+> `output.runOutput` is the string that `dbutils.notebook.exit()` returned — e.g. `["payments","fleet",...]`. Wrapping it in `@json()` parses it into an Array at write time, matching the `Array` type of `v_sources`.
 
 ---
 
@@ -436,13 +436,12 @@ Drag **ForEach** onto the canvas → connect `act_set_sources` → `act_foreach_
 
 - **General tab** → Name: `act_foreach_source`
 - **Settings tab:**
-  - Items: `@json(variables('v_sources'))` (Expression)
+  - Items: `@variables('v_sources')` (Expression)
   - Sequential: **checked ON**
   - Batch count: *(leave empty — not used when sequential)*
 - Depends on: `act_set_sources` (Succeeded)
 
-> **Why `@json(variables('v_sources'))` and not just `variables('v_sources')`?**
-> `v_sources` holds a **string** — ADF ForEach `items` requires an **array**. `json()` parses the string into a real array so ForEach can iterate over it. Without this, ADF throws `The expression 'variables(v_sources)' cannot be evaluated because type 'String' cannot be converted to type 'Array'`.
+> `v_sources` is declared as `Array` and already holds a parsed array (set by `@json()` in `act_set_sources`). ForEach `items` reads it directly with `@variables('v_sources')` — no second `@json()` call needed.
 
 ---
 
@@ -492,13 +491,13 @@ Disabling a source temporarily = `UPDATE ev_catalog.ctl.pipeline_control SET is_
 
 > **Pipeline:** `pl_bronze_master_parallel` · **File:** `pipelines/pl_bronze_master_parallel.json`
 
-Identical structure to Part 6 — same notebook, same SetVariable, same `@json(variables('v_sources'))` expression — but the ForEach runs up to 5 sources simultaneously instead of one at a time.
+Identical structure to Part 6 — same notebook, same SetVariable with `@json()`, same `@variables('v_sources')` in ForEach — but the ForEach runs up to 5 sources simultaneously instead of one at a time.
 
 ```
 act_list_sources           (DatabricksNotebook — nb_list_active_sources)
       │
       ▼
-act_set_sources            (SetVariable — v_sources = runOutput)
+act_set_sources            (SetVariable — v_sources = @json(runOutput)  ← Array variable)
       │
       ▼
 act_foreach_source_parallel (ForEach — isSequential=false, batchCount=5)
@@ -515,7 +514,7 @@ Follow Part 6 Steps 1–5 exactly, with these two differences when configuring t
   - Sequential: **unchecked OFF**
   - Batch count: `5`
 
-Everything else — the notebook, the variable, the `@json()` expression, the `@item()` in the child parameters — is identical.
+Everything else — the notebook, the variable type (`Array`), the `@json()` in SetVariable, the `@item()` in child parameters — is identical.
 
 ### How Parallelism Works
 
@@ -597,7 +596,7 @@ If source D fails while A, B, C, E are still running:
 |---|---|---|
 | `nb_list_active_sources` returns empty list | No rows with `is_active = true` in control table | Run `control-table-setup.sql`, verify with `SELECT * FROM ev_catalog.ctl.pipeline_control` |
 | ForEach runs but child pipeline not found | `pl_bronze_incremental_load_v2` not published | Publish the child pipeline before triggering the master |
-| `String cannot be converted to Array` on ForEach | `v_sources` passed directly without `json()` | ForEach items must be `@json(variables('v_sources'))` not `variables('v_sources')` |
+| `variable of type 'String' cannot be initialized with value of type 'Array'` | `v_sources` declared as String but SetVariable assigns `@json()` output (Array) | Change `v_sources` variable type to `Array` in the pipeline Variables tab |
 | `@item()` is an object, not a string | Notebook returned array of objects e.g. `[{"source_name":"payments"}]` | Change notebook to return flat array `["payments","fleet",...]` — or change parameter to `@item().source_name` |
 | `act_list_sources` fails — notebook not found | Notebook path wrong or notebook not saved | Update the notebook path in the activity to match your Databricks email path |
 | Notebook exits with no output | Exception before `dbutils.notebook.exit()` | Wrap query in try/except and always call exit, even on error — check Databricks notebook run logs |
@@ -626,10 +625,10 @@ If source D fails while A, B, C, E are still running:
 - [ ] Published
 
 **`pl_bronze_master_foreach` (dynamic sequential):**
-- [ ] Pipeline variable `v_sources` (String, default `[]`) added
+- [ ] Pipeline variable `v_sources` type = **Array**, default `[]`
 - [ ] `act_list_sources`: linked service `ls_databricks`, notebook path correct, no base parameters
-- [ ] `act_set_sources`: variable `v_sources` = `@activity('act_list_sources').output.runOutput`
-- [ ] `act_foreach_source`: items = `@json(variables('v_sources'))`, Sequential = **ON**
+- [ ] `act_set_sources`: variable `v_sources` = `@json(activity('act_list_sources').output.runOutput)`
+- [ ] `act_foreach_source`: items = `@variables('v_sources')`, Sequential = **ON**
 - [ ] `act_run_source` inside ForEach: `p_source_name = @item()`, wait on completion = **ON**
 - [ ] Published
 

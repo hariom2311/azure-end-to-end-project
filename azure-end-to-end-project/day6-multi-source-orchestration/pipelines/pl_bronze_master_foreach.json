@@ -37,7 +37,7 @@
                 "typeProperties": {
                     "variableName": "v_sources",
                     "value": {
-                        "value": "@activity('act_list_sources').output.runOutput",
+                        "value": "@json(activity('act_list_sources').output.runOutput)",
                         "type": "Expression"
                     }
                 }
@@ -54,7 +54,7 @@
                 ],
                 "typeProperties": {
                     "items": {
-                        "value": "@json(variables('v_sources'))",
+                        "value": "@variables('v_sources')",
                         "type": "Expression"
                     },
                     "isSequential": true,
@@ -94,8 +94,8 @@
         },
         "variables": {
             "v_sources": {
-                "type": "String",
-                "defaultValue": "[]"
+                "type": "Array",
+                "defaultValue": []
             }
         },
         "folder": {
