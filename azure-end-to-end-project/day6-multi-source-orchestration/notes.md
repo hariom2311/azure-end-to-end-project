@@ -295,32 +295,251 @@ ADLS bronze container
 
 ## Part 5 — How to Add a New Source
 
-1. **INSERT one row** into the control table:
-   ```sql
-   INSERT INTO ev_catalog.ctl.pipeline_control
-       (source_name, endpoint, sink_base_path, file_prefix, page_size, load_type, last_watermark, is_active)
-   VALUES
-       ('my_source', '/api/db/my-source/', 'api/db/my_source', 'my_source', 1000, 'incremental', '1900-01-01T00:00:00Z', true);
-   ```
+**For `pl_bronze_master` (static chain):**
+1. INSERT one row into the control table
+2. Add one `ExecutePipeline` activity at the end of the chain → publish
 
-2. **Add one ExecutePipeline activity** to `pl_bronze_master` — depends on the last existing activity:
-   ```json
-   {
-       "name": "act_run_my_source",
-       "type": "ExecutePipeline",
-       "dependsOn": [{ "activity": "act_run_db_stations", "dependencyConditions": ["Succeeded"] }],
-       "typeProperties": {
-           "pipeline": { "referenceName": "pl_bronze_incremental_load_v2", "type": "PipelineReference" },
-           "parameters": {
-               "p_source_name": { "value": "my_source", "type": "Expression" },
-               "p_load_type_override": { "value": "@pipeline().parameters.p_load_type_override", "type": "Expression" }
-           },
-           "waitOnCompletion": true
-       }
-   }
-   ```
+**For `pl_bronze_master_foreach` or `pl_bronze_master_parallel` (dynamic):**
+1. INSERT one row into the control table with `is_active = true`
+2. That's it — no pipeline change needed. The Lookup reads all active rows at runtime.
 
-3. **Publish** — no changes needed to the child pipeline or any dataset.
+```sql
+INSERT INTO ev_catalog.ctl.pipeline_control
+    (source_name, endpoint, sink_base_path, file_prefix, page_size, load_type, last_watermark, is_active)
+VALUES
+    ('my_source', '/api/db/my-source/', 'api/db/my_source', 'my_source', 1000, 'incremental', '1900-01-01T00:00:00Z', true);
+```
+
+This is the key advantage of the ForEach design — the pipeline never needs to be touched again.
+
+---
+
+## Part 6 — Alternative Design: Dynamic ForEach (Sequential)
+
+> **Pipeline:** `pl_bronze_master_foreach` · **File:** `pipelines/pl_bronze_master_foreach.json`
+
+Instead of 19 hardcoded `ExecutePipeline` activities, this pipeline uses **2 activities total**:
+
+```
+act_lookup_sources   (Lookup — reads control table at runtime)
+      │
+      ▼
+act_foreach_source   (ForEach — isSequential=true, one source at a time)
+      └─ act_run_source  (ExecutePipeline — p_source_name = @item().source_name)
+```
+
+### How It Works
+
+**Step 1 — `act_lookup_sources` (Lookup Activity)**
+
+Queries the control table and returns all active source names as a list:
+
+```sql
+SELECT source_name
+FROM ev_catalog.ctl.pipeline_control
+WHERE is_active = true
+ORDER BY source_name
+```
+
+Output: `activity('act_lookup_sources').output.value` — an array of objects like:
+```json
+[
+  { "source_name": "db_charge_cards" },
+  { "source_name": "db_chargers" },
+  { "source_name": "db_cities" },
+  ...
+]
+```
+
+**Step 2 — `act_foreach_source` (ForEach Activity)**
+
+- **Items:** `@activity('act_lookup_sources').output.value`
+- **isSequential:** `true` — one source runs at a time (same as the static chain, but driven by data)
+- **Inside the loop — `act_run_source`:**
+  - Invoked pipeline: `pl_bronze_incremental_load_v2`
+  - `p_source_name`: `@item().source_name` — current row from the Lookup output
+  - `p_load_type_override`: `@pipeline().parameters.p_load_type_override`
+  - Wait on completion: **ON**
+
+### New Dataset Required — `ds_pipeline_control`
+
+The Lookup activity needs a dataset that points to the Delta control table. This is a new dataset not needed in Day 4/5.
+
+**ADF Studio → Author → Datasets → + New → Azure Databricks Delta Lake:**
+
+| Field | Value |
+|---|---|
+| Name | `ds_pipeline_control` |
+| Linked service | `ls_databricks` |
+| Database | `ev_catalog.ctl` |
+| Table | `pipeline_control` |
+
+> The JSON for this dataset is in `datasets/ds_pipeline_control.json`.
+
+### Build Manually — Step by Step
+
+**1. Create the `ds_pipeline_control` dataset (do this first)**
+
+ADF Studio → Author → Datasets → **+ New** → search `Delta Lake` → select **Azure Databricks Delta Lake**:
+- Name: `ds_pipeline_control`
+- Linked service: `ls_databricks`
+- Database: `ev_catalog.ctl`
+- Table: `pipeline_control`
+- **Publish**
+
+**2. Create pipeline `pl_bronze_master_foreach`**
+
+ADF Studio → Author → Pipelines → **+ New pipeline** → rename to `pl_bronze_master_foreach`
+
+Add parameter `p_load_type_override` (String, default empty) — same as `pl_bronze_master`.
+
+**3. Add `act_lookup_sources` (Lookup Activity)**
+
+Drag **Lookup** from the Activities panel onto the canvas:
+- **General tab** → Name: `act_lookup_sources`
+- **Settings tab:**
+  - Source dataset: `ds_pipeline_control`
+  - Use query: **Query**
+  - Query:
+    ```sql
+    SELECT source_name FROM ev_catalog.ctl.pipeline_control WHERE is_active = true ORDER BY source_name
+    ```
+  - First row only: **OFF** — must be off, otherwise only 1 source is returned
+
+**4. Add `act_foreach_source` (ForEach Activity)**
+
+Drag **ForEach** onto the canvas → connect `act_lookup_sources` → `act_foreach_source` (green success arrow):
+- **General tab** → Name: `act_foreach_source`
+- **Settings tab:**
+  - Items: `@activity('act_lookup_sources').output.value` (Expression)
+  - Sequential: **checked ON**
+  - Batch count: *(leave empty — not used when sequential)*
+
+**5. Add `act_run_source` inside the ForEach**
+
+Click the **pencil icon** on `act_foreach_source` to open the inner canvas. Drag **Execute Pipeline** into it:
+- **General tab** → Name: `act_run_source`
+- **Settings tab:**
+  - Invoked pipeline: `pl_bronze_incremental_load_v2`
+  - Wait on completion: **ON**
+- **Parameters tab:**
+
+  | Name | Value |
+  |---|---|
+  | `p_source_name` | `@item().source_name` |
+  | `p_load_type_override` | `@pipeline().parameters.p_load_type_override` |
+
+Click the **back arrow** (top-left of inner canvas) to return to the main canvas → **Publish all**.
+
+### Why `@item().source_name`?
+
+In a ForEach loop, `@item()` is the current element from the items array. Since the Lookup returned rows like `{ "source_name": "db_payments" }`, `@item().source_name` gives the string value of the `source_name` column for the current iteration.
+
+### Key Advantage Over Static Chain
+
+Adding a 21st source: **INSERT one row, done.** The pipeline reads the control table fresh every run — no ADF Studio, no publish needed.
+
+### Limitation
+
+`isSequential=true` on ForEach means the order depends on the `ORDER BY` in the SQL query. Currently `ORDER BY source_name` (alphabetical). If source ordering matters (e.g. sessions depend on payments already being in Bronze), adjust the `ORDER BY` or add a `run_order` column to the control table.
+
+---
+
+## Part 7 — Alternative Design: Parallel ForEach
+
+> **Pipeline:** `pl_bronze_master_parallel` · **File:** `pipelines/pl_bronze_master_parallel.json`
+
+Same structure as Part 6 but with `isSequential: false` and `batchCount: 5` — up to 5 sources run simultaneously.
+
+```
+act_lookup_sources      (Lookup — reads control table)
+      │
+      ▼
+act_foreach_source_parallel  (ForEach — isSequential=false, batchCount=5)
+      └─ act_run_source  (ExecutePipeline — runs up to 5 in parallel)
+```
+
+### How Parallelism Works in ADF ForEach
+
+`batchCount` controls how many iterations run at the same time. ADF queues all items and starts up to `batchCount` of them simultaneously. As each one finishes, the next queued item starts.
+
+```
+Items: [A, B, C, D, E, F, G, H]   batchCount=5
+
+t=0:  A B C D E  ← 5 start simultaneously
+t=1:  F G H      ← as slots free up, next items start
+t=2:  (all done)
+
+Wall-clock time = slowest single-item time × ceil(total_items / batchCount)
+Sequential time = sum of all item times
+```
+
+For 20 sources where each takes ~5 minutes: sequential ≈ 100 min, parallel(5) ≈ 25 min.
+
+### batchCount — What to Set
+
+| Cluster type | Recommended batchCount | Why |
+|---|---|---|
+| Single shared cluster (job cluster) | `3–5` | Each child pipeline submits a Databricks notebook job — shared cluster queues jobs; too many concurrent submissions causes timeouts |
+| Interactive cluster (always-on) | `5–10` | More capacity, but ADF ForEach hard cap is 50 |
+| Separate job cluster per source | `10–20` | Each child spins up its own cluster — expensive but fully isolated |
+| ADF default max | `50` | Hard limit — ADF will not allow more than 50 |
+
+> **Start with `batchCount=5`** and adjust based on Databricks cluster size and job queue depth. Watch the Monitor → child pipeline duration — if jobs are queuing (start time significantly later than parent start), reduce batchCount.
+
+### Build Manually — Step by Step
+
+Same as Part 6 Steps 1–3. At Step 4, when configuring the ForEach:
+
+- **Sequential:** **unchecked OFF**
+- **Batch count:** `5`
+
+Then add `act_run_source` inside exactly the same way as Part 6 Step 5.
+
+The only difference from `pl_bronze_master_foreach` is:
+- Name: `pl_bronze_master_parallel`
+- ForEach activity name: `act_foreach_source_parallel`
+- `isSequential: false`
+- `batchCount: 5`
+
+### Important: Parallel Watermark Behaviour
+
+Each source has its own row in the control table — watermarks are independent. Two sources running in parallel cannot interfere with each other's watermark update because:
+- Each child pipeline reads its own `source_name` row from the control table
+- The Databricks watermark notebook updates only the row for the given `source_name`
+- Delta Lake row-level transactions prevent write conflicts
+
+**Safe to run in parallel.** ✓
+
+### Failure in Parallel Mode
+
+If source D fails while A, B, C, E are still running:
+- A, B, C, E continue to completion — their watermarks are updated
+- D's watermark is NOT updated — next run retries from the last successful watermark
+- ForEach continues iterating remaining items (F, G, H...) unless you set `dependencyConditions: Failed` on downstream activities
+- The ForEach itself is marked `Failed` after all items complete, which means any activity after `act_foreach_source_parallel` will be skipped
+
+---
+
+## Part 8 — Comparing All Three Master Pipeline Designs
+
+| | `pl_bronze_master` (static) | `pl_bronze_master_foreach` (dynamic sequential) | `pl_bronze_master_parallel` (dynamic parallel) |
+|---|---|---|---|
+| **Activities on canvas** | 19 | 2 | 2 |
+| **Execution order** | Fixed (hardcoded chain) | Controlled by `ORDER BY` in SQL | Uncontrolled within each batch |
+| **Add new source** | INSERT + new activity + publish | INSERT only | INSERT only |
+| **Disable a source** | Edit dependsOn chain + publish | Set `is_active = false` in control table | Set `is_active = false` in control table |
+| **Run time (20 sources)** | Sequential, slowest | Sequential, same wall-clock | ~5× faster with batchCount=5 |
+| **Failure isolation** | Source N fails → N+1..19 skipped | ForEach continues other items | ForEach continues other items |
+| **Monitoring in ADF** | 19 named activities — easy to read | One ForEach box — drill in to see iterations | Same — one box, drill in |
+| **Databricks cluster pressure** | 1 job at a time | 1 job at a time | Up to batchCount jobs at once |
+| **Best for** | Teaching, explicit ordering | Production with frequent new sources | Production with independent sources + larger cluster |
+
+### Which One to Use
+
+- **Learning / classroom:** `pl_bronze_master` — every source is visible on the canvas
+- **Production (simple):** `pl_bronze_master_foreach` — zero maintenance when adding sources, sequential is safe
+- **Production (performance):** `pl_bronze_master_parallel` — when run time matters and cluster can handle concurrent jobs
 
 ---
 
@@ -328,11 +547,15 @@ ADLS bronze container
 
 | Error | Cause | Fix |
 |---|---|---|
-| `act_read_ctl` fails — source not found | Control table row missing for that source_name | Run INSERT for that source in `control-table-setup.sql` |
-| `404 Not Found` on API call | Wrong endpoint in control table (hyphen vs underscore, missing trailing slash) | `UPDATE ev_catalog.ctl.pipeline_control SET endpoint='...' WHERE source_name='...'` |
-| All child runs succeed but wrong watermark written | The Databricks watermark notebook uses `source_name` to look up the row — must match exactly | Verify source_name in control table matches exactly what is passed as `p_source_name` |
-| Sources N+1..19 skipped | Source N failed — downstream activities skipped due to `dependencyConditions: Succeeded` | Fix source N, re-run master — completed sources have 0 new pages (no-op), failed source retries |
-| Master pipeline times out | 19 sequential sources takes longer than 12h default ADF timeout | Increase pipeline timeout in Settings tab, or split into two master pipelines |
+| Lookup returns 0 rows | No rows with `is_active = true` in control table | Run `control-table-setup.sql`, verify rows with `SELECT * FROM ev_catalog.ctl.pipeline_control` |
+| ForEach runs but child pipeline not found | `pl_bronze_incremental_load_v2` not published | Publish the child pipeline first |
+| `@item().source_name` is null | Lookup query column alias doesn't match — ADF is case-sensitive | Ensure column name in query is exactly `source_name` (lowercase, underscore) |
+| `ds_pipeline_control` not found | Dataset not created or not published | Create dataset from `datasets/ds_pipeline_control.json`, publish |
+| ForEach `First row only` error | Lookup returns only 1 row | Open Lookup activity → Settings → uncheck **First row only** |
+| `act_read_ctl` fails — source not found | Child pipeline can't find row for `source_name` | Verify `source_name` in control table matches exactly what the Lookup returns |
+| Parallel: Databricks jobs queuing | batchCount too high for cluster size | Reduce batchCount — start at 3, increase if cluster handles it |
+| `404 Not Found` on API call | Wrong endpoint in control table | `UPDATE ev_catalog.ctl.pipeline_control SET endpoint='...' WHERE source_name='...'` |
+| Master pipeline times out (static) | 19 sequential sources > 12h ADF default timeout | Increase timeout in pipeline Settings tab, or switch to ForEach design |
 
 ---
 
@@ -340,18 +563,31 @@ ADLS bronze container
 
 **Control table:**
 - [ ] All 17 new rows inserted (run `control-table-setup.sql`)
-- [ ] Verify 20 rows total in `SELECT * FROM ev_catalog.ctl.pipeline_control`
+- [ ] Verify rows in `SELECT source_name, endpoint, load_type, is_active FROM ev_catalog.ctl.pipeline_control ORDER BY source_name`
 - [ ] Each row has correct `endpoint`, `sink_base_path`, `file_prefix`, `load_type`, `is_active=true`
 
-**Master pipeline:**
-- [ ] `pl_bronze_master` has 19 ExecutePipeline activities
-- [ ] All activities have `waitOnCompletion: true`
-- [ ] Chain is correct: each activity depends on the previous one
-- [ ] `p_load_type_override` parameter added
-- [ ] Published successfully
+**Dataset (for ForEach pipelines):**
+- [ ] `ds_pipeline_control` created — linked service `ls_databricks`, database `ev_catalog.ctl`, table `pipeline_control`
+- [ ] `ds_pipeline_control` published
+
+**`pl_bronze_master` (static chain):**
+- [ ] 19 ExecutePipeline activities, linear chain with green success arrows
+- [ ] All activities: `waitOnCompletion=true`, correct `p_source_name` literal, `p_load_type_override` passed through
+- [ ] Published
+
+**`pl_bronze_master_foreach` (dynamic sequential):**
+- [ ] `act_lookup_sources`: dataset = `ds_pipeline_control`, query returns `source_name`, **First row only = OFF**
+- [ ] `act_foreach_source`: items = `@activity('act_lookup_sources').output.value`, Sequential = **ON**
+- [ ] `act_run_source` inside ForEach: `p_source_name = @item().source_name`, wait on completion = **ON**
+- [ ] Published
+
+**`pl_bronze_master_parallel` (dynamic parallel):**
+- [ ] Same as ForEach except Sequential = **OFF**, batchCount = `5`
+- [ ] Published
 
 **Testing:**
-- [ ] Full load run (`p_load_type_override="full"`) completes for all 20 sources
-- [ ] All 19 Bronze folders created and populated
-- [ ] Incremental run (empty override) completes — incremental sources pick up 0 pages (no new data since full run), full sources reload
-- [ ] Monitor shows correct child pipeline runs for each source
+- [ ] `pl_bronze_master` full load run completes — all 19 Bronze folders populated
+- [ ] `pl_bronze_master_foreach` full load run completes — same Bronze output
+- [ ] `pl_bronze_master_parallel` full load run completes — Monitor shows multiple child runs starting close together
+- [ ] Incremental run (empty override) on any pipeline — incremental sources pick up 0 pages, full sources reload
+- [ ] Disable one source: `UPDATE ev_catalog.ctl.pipeline_control SET is_active=false WHERE source_name='db_states'` → ForEach pipelines skip it automatically; static master still runs it (manual edit needed)

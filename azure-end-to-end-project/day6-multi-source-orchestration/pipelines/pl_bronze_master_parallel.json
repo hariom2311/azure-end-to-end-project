@@ -1,0 +1,78 @@
+{
+    "name": "pl_bronze_master_parallel",
+    "properties": {
+        "description": "Parallel master pipeline using Lookup + ForEach (parallel, batchCount=5). Reads all active source_names from ev_catalog.ctl.pipeline_control and runs up to 5 sources simultaneously. Use when sources are independent and Databricks cluster can handle concurrent job submissions. batchCount controls max parallelism — tune based on cluster size.",
+        "activities": [
+            {
+                "name": "act_lookup_sources",
+                "description": "Read all active source names from the control table. ForEach will iterate over the returned rows.",
+                "type": "Lookup",
+                "typeProperties": {
+                    "source": {
+                        "type": "AzureDatabricksDeltaLakeSource",
+                        "query": "SELECT source_name FROM ev_catalog.ctl.pipeline_control WHERE is_active = true ORDER BY source_name"
+                    },
+                    "dataset": {
+                        "referenceName": "ds_pipeline_control",
+                        "type": "DatasetReference"
+                    },
+                    "firstRowOnly": false
+                }
+            },
+            {
+                "name": "act_foreach_source_parallel",
+                "description": "Run up to 5 sources at the same time. isSequential=false, batchCount=5. Each iteration calls the child pipeline independently.",
+                "type": "ForEach",
+                "dependsOn": [
+                    {
+                        "activity": "act_lookup_sources",
+                        "dependencyConditions": ["Succeeded"]
+                    }
+                ],
+                "typeProperties": {
+                    "items": {
+                        "value": "@activity('act_lookup_sources').output.value",
+                        "type": "Expression"
+                    },
+                    "isSequential": false,
+                    "batchCount": 5,
+                    "activities": [
+                        {
+                            "name": "act_run_source",
+                            "description": "Call the incremental load pipeline for this iteration's source_name",
+                            "type": "ExecutePipeline",
+                            "typeProperties": {
+                                "pipeline": {
+                                    "referenceName": "pl_bronze_incremental_load_v2",
+                                    "type": "PipelineReference"
+                                },
+                                "parameters": {
+                                    "p_source_name": {
+                                        "value": "@item().source_name",
+                                        "type": "Expression"
+                                    },
+                                    "p_load_type_override": {
+                                        "value": "@pipeline().parameters.p_load_type_override",
+                                        "type": "Expression"
+                                    }
+                                },
+                                "waitOnCompletion": true
+                            }
+                        }
+                    ]
+                }
+            }
+        ],
+        "parameters": {
+            "p_load_type_override": {
+                "type": "string",
+                "defaultValue": "",
+                "description": "Pass 'full' to force full reload for all sources. Leave empty to use each source's load_type from the control table."
+            }
+        },
+        "folder": {
+            "name": "bronze"
+        },
+        "annotations": []
+    }
+}

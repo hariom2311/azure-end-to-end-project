@@ -1,0 +1,15 @@
+{
+    "name": "ds_pipeline_control",
+    "properties": {
+        "description": "Points to ev_catalog.ctl.pipeline_control in Unity Catalog. Used by the Lookup activity in pl_bronze_master_foreach and pl_bronze_master_parallel to read all active source_names at runtime.",
+        "linkedServiceName": {
+            "referenceName": "ls_databricks",
+            "type": "LinkedServiceReference"
+        },
+        "type": "AzureDatabricksDeltaLakeDataset",
+        "typeProperties": {
+            "database": "ev_catalog.ctl",
+            "table": "pipeline_control"
+        }
+    }
+}
