@@ -72,6 +72,10 @@
             "storeSettings": {
               "type": "AzureBlobStorageReadSettings",
               "recursive": false,
+              "wildcardFolderPath": {
+                "value": "@concat('invoices/', formatDateTime(addDays(utcnow(), -1), 'yyyy/MM/dd'))",
+                "type": "Expression"
+              },
               "wildcardFileName": "*.pdf",
               "enablePartitionDiscovery": false
             }
@@ -87,13 +91,7 @@
         "inputs": [
           {
             "referenceName": "ds_blob_invoices_src",
-            "type": "DatasetReference",
-            "parameters": {
-              "p_date": {
-                "value": "@formatDateTime(addDays(utcnow(), -1), 'yyyy/MM/dd')",
-                "type": "Expression"
-              }
-            }
+            "type": "DatasetReference"
           }
         ],
         "outputs": [
@@ -127,6 +125,10 @@
             "storeSettings": {
               "type": "AzureBlobStorageReadSettings",
               "recursive": false,
+              "wildcardFolderPath": {
+                "value": "@concat('reports/', formatDateTime(utcnow(), 'yyyy/MM'))",
+                "type": "Expression"
+              },
               "wildcardFileName": "*.json",
               "enablePartitionDiscovery": false
             }
@@ -142,13 +144,7 @@
         "inputs": [
           {
             "referenceName": "ds_blob_reports_src",
-            "type": "DatasetReference",
-            "parameters": {
-              "p_year_month": {
-                "value": "@formatDateTime(utcnow(), 'yyyy/MM')",
-                "type": "Expression"
-              }
-            }
+            "type": "DatasetReference"
           }
         ],
         "outputs": [

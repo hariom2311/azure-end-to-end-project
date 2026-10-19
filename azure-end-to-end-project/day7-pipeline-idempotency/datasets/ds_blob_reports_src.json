@@ -7,21 +7,11 @@
       "referenceName": "ls_blob_source",
       "type": "LinkedServiceReference"
     },
-    "parameters": {
-      "p_year_month": {
-        "type": "String",
-        "defaultValue": ""
-      }
-    },
     "type": "Binary",
     "typeProperties": {
       "location": {
         "type": "AzureBlobStorageLocation",
-        "container": "source",
-        "folderPath": {
-          "value": "@concat('reports/', dataset().p_year_month)",
-          "type": "Expression"
-        }
+        "container": "source"
       }
     },
     "annotations": []

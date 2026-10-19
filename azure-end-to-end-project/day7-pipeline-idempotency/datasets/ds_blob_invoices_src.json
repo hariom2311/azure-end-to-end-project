@@ -7,21 +7,11 @@
       "referenceName": "ls_blob_source",
       "type": "LinkedServiceReference"
     },
-    "parameters": {
-      "p_date": {
-        "type": "String",
-        "defaultValue": ""
-      }
-    },
     "type": "Binary",
     "typeProperties": {
       "location": {
         "type": "AzureBlobStorageLocation",
-        "container": "source",
-        "folderPath": {
-          "value": "@concat('invoices/', dataset().p_date)",
-          "type": "Expression"
-        }
+        "container": "source"
       }
     },
     "annotations": []
