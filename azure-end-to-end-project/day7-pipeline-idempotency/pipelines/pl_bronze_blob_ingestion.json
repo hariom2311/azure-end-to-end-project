@@ -17,17 +17,12 @@
         },
         "typeProperties": {
           "source": {
-            "type": "XmlSource",
+            "type": "BinarySource",
             "storeSettings": {
               "type": "AzureBlobStorageReadSettings",
               "recursive": false,
               "wildcardFileName": "*.xml",
               "enablePartitionDiscovery": false
-            },
-            "formatSettings": {
-              "type": "XmlReadSettings",
-              "validationMode": "none",
-              "namespaces": true
             }
           },
           "sink": {
@@ -128,15 +123,12 @@
         },
         "typeProperties": {
           "source": {
-            "type": "JsonSource",
+            "type": "BinarySource",
             "storeSettings": {
               "type": "AzureBlobStorageReadSettings",
               "recursive": false,
               "wildcardFileName": "*.json",
               "enablePartitionDiscovery": false
-            },
-            "formatSettings": {
-              "type": "JsonReadSettings"
             }
           },
           "sink": {

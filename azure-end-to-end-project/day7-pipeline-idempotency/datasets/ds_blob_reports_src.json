@@ -13,7 +13,7 @@
         "defaultValue": ""
       }
     },
-    "type": "Json",
+    "type": "Binary",
     "typeProperties": {
       "location": {
         "type": "AzureBlobStorageLocation",

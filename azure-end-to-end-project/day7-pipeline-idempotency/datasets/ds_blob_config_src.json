@@ -7,7 +7,7 @@
       "referenceName": "ls_blob_source",
       "type": "LinkedServiceReference"
     },
-    "type": "Xml",
+    "type": "Binary",
     "typeProperties": {
       "location": {
         "type": "AzureBlobStorageLocation",
