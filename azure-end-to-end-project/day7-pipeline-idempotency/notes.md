@@ -249,13 +249,25 @@ This storage account is external — you do not own it and cannot use Managed Id
 **Why a separate linked service:**
 `ls_adls_bronze` connects to your own ADLS Gen2 account using Managed Identity. That identity has no access to the vendor's storage account. SAS authentication is the standard pattern for cross-tenant, read-only access to an external Blob Storage container.
 
+**Connection details:**
+
+| Property | Value |
+|---|---|
+| Storage account | `dataenggdailystorage` |
+| Container | `source` |
+| Blob endpoint | `https://dataenggdailystorage.blob.core.windows.net` |
+| SAS token | `sp=rl&st=2026-10-19T14:19:08Z&se=2027-10-19T22:34:08Z&spr=https&sv=2026-02-06&sr=c&sig=htxUXkd2knSowSujglmMYRoGWHQkCbXG2fh7bmi91No%3D` |
+| Full SAS URL | `https://dataenggdailystorage.blob.core.windows.net/source?sp=rl&st=2026-10-19T14:19:08Z&se=2027-10-19T22:34:08Z&spr=https&sv=2026-02-06&sr=c&sig=htxUXkd2knSowSujglmMYRoGWHQkCbXG2fh7bmi91No%3D` |
+| Expires | `2027-10-19T22:34:08Z` |
+| Permissions | Read + List only (`sp=rl`) |
+
 **ADF Studio → Manage → Linked services → + New → Azure Blob Storage**
 
 | Field | Value |
 |---|---|
 | Name | `ls_blob_source` |
 | Authentication method | SAS URI |
-| SAS URL | `https://dataenggdailystorage.blob.core.windows.net/source?sp=rl&st=2026-10-19T14:19:08Z&se=2027-10-19T22:34:08Z&spr=https&sv=2026-02-06&sr=c&sig=htxUXkd2knSowSujglmMYRoGWHQkCbXG2fh7bmi91No%3D` |
+| SAS URL | *(paste Full SAS URL from table above)* |
 
 Test connection → green → Create → Publish all.
 
