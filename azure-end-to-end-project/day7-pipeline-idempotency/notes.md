@@ -257,7 +257,7 @@ This storage account is external — you do not own it and cannot use Managed Id
 | Container | `source` |
 | Blob endpoint | `https://dataenggdailystorage.blob.core.windows.net` |
 | SAS token | `sp=rl&st=2026-10-19T14:19:08Z&se=2027-10-19T22:34:08Z&spr=https&sv=2026-02-06&sr=c&sig=htxUXkd2knSowSujglmMYRoGWHQkCbXG2fh7bmi91No%3D` |
-| Full SAS URL | `https://dataenggdailystorage.blob.core.windows.net/source?sp=rl&st=2026-10-19T14:19:08Z&se=2027-10-19T22:34:08Z&spr=https&sv=2026-02-06&sr=c&sig=htxUXkd2knSowSujglmMYRoGWHQkCbXG2fh7bmi91No%3D` |
+| Full SAS URL (for linked service) | `https://dataenggdailystorage.blob.core.windows.net/?sp=rl&st=2026-10-19T14:19:08Z&se=2027-10-19T22:34:08Z&spr=https&sv=2026-02-06&sr=c&sig=htxUXkd2knSowSujglmMYRoGWHQkCbXG2fh7bmi91No%3D` |
 | Expires | `2027-10-19T22:34:08Z` |
 | Permissions | Read + List only (`sp=rl`) |
 
@@ -271,7 +271,9 @@ This storage account is external — you do not own it and cannot use Managed Id
 
 Test connection → green → Create → Publish all.
 
-> **Note on the SAS URL:** The URL above uses `sr=c` (container-level), which allows listing and reading all blobs in `source/`. A blob-level SAS (`sr=b`) would only grant access to one specific file — not usable for folder reads.
+> **Important — account-level URL in linked service:** ADF's Azure Blob Storage linked service expects the SAS URI to point to the **storage account root** (`https://dataenggdailystorage.blob.core.windows.net/?...`), NOT the container (`/source?...`). Remove the container name from the URL — the container is specified in each dataset separately. Pasting the container-level URL (`/source?...`) causes a `Test connection failed` error in ADF.
+>
+> The SAS token itself uses `sr=c` (container-scoped permissions) — that is correct and allows listing/reading all blobs in `source/`. Only the base URL needs to be account-level.
 
 ---
 

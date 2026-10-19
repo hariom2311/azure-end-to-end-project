@@ -5,7 +5,7 @@
     "description": "Read-only access to the source Azure Blob Storage account (dataenggdailystorage) via SAS token. Contains config XML, invoice PDFs, and report JSON files.",
     "type": "AzureBlobStorage",
     "typeProperties": {
-      "sasUri": "https://dataenggdailystorage.blob.core.windows.net/?sv=2026-02-06&ss=b&srt=co&sp=rl&se=2027-10-19T22:34:08Z&st=2026-10-19T14:19:08Z&spr=https&sig=htxUXkd2knSowSujglmMYRoGWHQkCbXG2fh7bmi91No%3D"
+      "sasUri": "https://dataenggdailystorage.blob.core.windows.net/?sp=rl&st=2026-10-19T14:19:08Z&se=2027-10-19T22:34:08Z&spr=https&sv=2026-02-06&sr=c&sig=htxUXkd2knSowSujglmMYRoGWHQkCbXG2fh7bmi91No%3D"
     },
     "annotations": []
   }
