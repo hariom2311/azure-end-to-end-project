@@ -1,0 +1,30 @@
+{
+  "name": "tr_blob_ingestion_daily",
+  "type": "Microsoft.DataFactory/factories/triggers",
+  "properties": {
+    "description": "Daily schedule trigger for pl_bronze_blob_ingestion. Fires at 02:00 UTC every day. Config and reports are full load always. Invoices load the previous day's folder (so 02:00 UTC means yesterday AU time is fully closed).",
+    "type": "ScheduleTrigger",
+    "typeProperties": {
+      "recurrence": {
+        "frequency": "Day",
+        "interval": 1,
+        "startTime": "2026-10-20T02:00:00Z",
+        "timeZone": "UTC",
+        "schedule": {
+          "hours": [2],
+          "minutes": [0]
+        }
+      }
+    },
+    "pipelines": [
+      {
+        "pipelineReference": {
+          "referenceName": "pl_bronze_blob_ingestion",
+          "type": "PipelineReference"
+        },
+        "parameters": {}
+      }
+    ],
+    "annotations": []
+  }
+}

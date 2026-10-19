@@ -1,0 +1,29 @@
+{
+  "name": "ds_blob_invoices_src",
+  "type": "Microsoft.DataFactory/factories/datasets",
+  "properties": {
+    "description": "Source dataset for invoice PDF files in dataenggdailystorage/source/invoices/YYYY/MM/DD/. The p_date parameter (YYYY/MM/DD) determines which day folder is read — pipeline passes yesterday's date.",
+    "linkedServiceName": {
+      "referenceName": "ls_blob_source",
+      "type": "LinkedServiceReference"
+    },
+    "parameters": {
+      "p_date": {
+        "type": "String",
+        "defaultValue": ""
+      }
+    },
+    "type": "Binary",
+    "typeProperties": {
+      "location": {
+        "type": "AzureBlobStorageLocation",
+        "container": "source",
+        "folderPath": {
+          "value": "@concat('invoices/', dataset().p_date)",
+          "type": "Expression"
+        }
+      }
+    },
+    "annotations": []
+  }
+}

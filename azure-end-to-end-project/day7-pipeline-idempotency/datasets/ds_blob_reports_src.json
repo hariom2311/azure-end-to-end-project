@@ -1,0 +1,29 @@
+{
+  "name": "ds_blob_reports_src",
+  "type": "Microsoft.DataFactory/factories/datasets",
+  "properties": {
+    "description": "Source dataset for monthly report JSON files in dataenggdailystorage/source/reports/YYYY/MM/. Full load always — all files for current month copied every run.",
+    "linkedServiceName": {
+      "referenceName": "ls_blob_source",
+      "type": "LinkedServiceReference"
+    },
+    "parameters": {
+      "p_year_month": {
+        "type": "String",
+        "defaultValue": ""
+      }
+    },
+    "type": "Json",
+    "typeProperties": {
+      "location": {
+        "type": "AzureBlobStorageLocation",
+        "container": "source",
+        "folderPath": {
+          "value": "@concat('reports/', dataset().p_year_month)",
+          "type": "Expression"
+        }
+      }
+    },
+    "annotations": []
+  }
+}

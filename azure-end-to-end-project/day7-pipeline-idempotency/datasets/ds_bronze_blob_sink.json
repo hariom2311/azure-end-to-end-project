@@ -1,0 +1,29 @@
+{
+  "name": "ds_bronze_blob_sink",
+  "type": "Microsoft.DataFactory/factories/datasets",
+  "properties": {
+    "description": "Sink dataset for writing blob source files (config XML, invoice PDFs, report JSON) to the bronze ADLS Gen2 container. Parameterised folder and file pattern — each copy activity sets its own target path.",
+    "linkedServiceName": {
+      "referenceName": "ls_adls_bronze",
+      "type": "LinkedServiceReference"
+    },
+    "parameters": {
+      "p_folder": {
+        "type": "String",
+        "defaultValue": ""
+      }
+    },
+    "type": "Binary",
+    "typeProperties": {
+      "location": {
+        "type": "AzureBlobFSLocation",
+        "fileSystem": "bronze",
+        "folderPath": {
+          "value": "@dataset().p_folder",
+          "type": "Expression"
+        }
+      }
+    },
+    "annotations": []
+  }
+}
