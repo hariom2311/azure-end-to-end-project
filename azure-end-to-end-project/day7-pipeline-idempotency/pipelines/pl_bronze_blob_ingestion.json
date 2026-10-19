@@ -1,7 +1,17 @@
 {
   "name": "pl_bronze_blob_ingestion",
   "properties": {
-    "description": "Loads three blob source types from dataenggdailystorage/source into the bronze ADLS Gen2 container.\n  - config/      → full load always (all XML files)\n  - invoices/    → full load for previous day's date folder (YYYY/MM/DD)\n  - reports/     → full load always for current month (YYYY/MM)\nAll three copy activities run in parallel. Sink paths follow the medallion pattern with ingestion_date and run_id partitions.",
+    "description": "Loads three blob source types from dataenggdailystorage/source into the bronze ADLS Gen2 container.\n  - config/      → full load always (all XML files)\n  - invoices/    → full load for previous day's date folder (YYYY/MM/DD)\n  - reports/     → full load always for current month (YYYY/MM)\nAll three copy activities run in parallel. Sink paths follow the medallion pattern with ingestion_date and run_id partitions.\n\np_invoice_date: override for invoices folder (YYYY/MM/DD). Leave empty to use yesterday.\np_report_month: override for reports folder (YYYY/MM). Leave empty to use current month.",
+    "parameters": {
+      "p_invoice_date": {
+        "type": "String",
+        "defaultValue": ""
+      },
+      "p_report_month": {
+        "type": "String",
+        "defaultValue": ""
+      }
+    },
     "activities": [
       {
         "name": "act_copy_config",
@@ -73,7 +83,7 @@
               "type": "AzureBlobStorageReadSettings",
               "recursive": false,
               "wildcardFolderPath": {
-                "value": "@concat('invoices/', formatDateTime(addDays(utcnow(), -1), 'yyyy/MM/dd'))",
+                "value": "@concat('invoices/', if(empty(pipeline().parameters.p_invoice_date), formatDateTime(addDays(utcnow(), -1), 'yyyy/MM/dd'), pipeline().parameters.p_invoice_date))",
                 "type": "Expression"
               },
               "wildcardFileName": "*.pdf",
@@ -100,7 +110,7 @@
             "type": "DatasetReference",
             "parameters": {
               "p_folder": {
-                "value": "@concat('blob/invoices/ingestion_date=', formatDateTime(addDays(utcnow(), -1), 'yyyy-MM-dd'), '/run_id=', pipeline().RunId)",
+                "value": "@concat('blob/invoices/ingestion_date=', if(empty(pipeline().parameters.p_invoice_date), formatDateTime(addDays(utcnow(), -1), 'yyyy-MM-dd'), replace(pipeline().parameters.p_invoice_date, '/', '-')), '/run_id=', pipeline().RunId)",
                 "type": "Expression"
               }
             }
@@ -126,7 +136,7 @@
               "type": "AzureBlobStorageReadSettings",
               "recursive": false,
               "wildcardFolderPath": {
-                "value": "@concat('reports/', formatDateTime(utcnow(), 'yyyy/MM'))",
+                "value": "@concat('reports/', if(empty(pipeline().parameters.p_report_month), formatDateTime(utcnow(), 'yyyy/MM'), pipeline().parameters.p_report_month))",
                 "type": "Expression"
               },
               "wildcardFileName": "*.json",
@@ -153,7 +163,7 @@
             "type": "DatasetReference",
             "parameters": {
               "p_folder": {
-                "value": "@concat('blob/reports/ingestion_date=', formatDateTime(utcnow(), 'yyyy-MM-dd'), '/run_id=', pipeline().RunId)",
+                "value": "@concat('blob/reports/ingestion_date=', if(empty(pipeline().parameters.p_report_month), formatDateTime(utcnow(), 'yyyy-MM-dd'), concat(replace(pipeline().parameters.p_report_month, '/', '-'), '-01')), '/run_id=', pipeline().RunId)",
                 "type": "Expression"
               }
             }
