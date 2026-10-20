@@ -1,11 +1,17 @@
 {
   "name": "pl_bronze_blob_ingestion",
   "properties": {
-    "description": "Loads three blob source types from dataenggdailystorage/source into the bronze ADLS Gen2 container.\n  - config/    → all XML files (full load)\n  - invoices/  → all PDF files recursively (full load)\n  - reports/   → all JSON files recursively (full load)\nAll three copy activities run in parallel. Sink paths follow the medallion pattern with ingestion_date and run_id partitions.",
+    "description": "Loads blob source files from dataenggdailystorage/source into bronze ADLS Gen2.\n\np_load_type = full        : all files recursively, sink = blob/<type>/load_type=full/ (overwrite = no duplicates)\np_load_type = incremental : invoices = previous day, reports = previous month, sink = blob/<type>/ingestion_date=<date>/ (overwrite on re-run = idempotent)\nconfig/ is always full load regardless of p_load_type.",
+    "parameters": {
+      "p_load_type": {
+        "type": "String",
+        "defaultValue": "incremental"
+      }
+    },
     "activities": [
       {
         "name": "act_copy_config",
-        "description": "Full copy of all XML files from source/config/",
+        "description": "Config XML — always full load. Small reference data, always overwrite same fixed sink path.",
         "type": "Copy",
         "dependsOn": [],
         "policy": {
@@ -43,109 +49,236 @@
             "referenceName": "ds_bronze_blob_sink",
             "type": "DatasetReference",
             "parameters": {
-              "p_folder": {
-                "value": "@concat('blob/config/ingestion_date=', formatDateTime(utcnow(), 'yyyy-MM-dd'), '/run_id=', pipeline().RunId)",
-                "type": "Expression"
-              }
+              "p_folder": "blob/config/load_type=full"
             }
           }
         ]
       },
       {
-        "name": "act_copy_invoices",
-        "description": "Full copy of all PDF files from source/invoices/ recursively (all years/months/days)",
-        "type": "Copy",
+        "name": "act_load_invoices",
+        "description": "Routes invoice copy: full = all PDFs recursively, incremental = previous day only.",
+        "type": "IfCondition",
         "dependsOn": [],
-        "policy": {
-          "timeout": "0.02:00:00",
-          "retry": 2,
-          "retryIntervalInSeconds": 60,
-          "secureOutput": false,
-          "secureInput": false
-        },
         "typeProperties": {
-          "source": {
-            "type": "BinarySource",
-            "storeSettings": {
-              "type": "AzureBlobStorageReadSettings",
-              "recursive": true,
-              "enablePartitionDiscovery": false
-            }
+          "expression": {
+            "value": "@equals(toLower(pipeline().parameters.p_load_type), 'full')",
+            "type": "Expression"
           },
-          "sink": {
-            "type": "BinarySink",
-            "storeSettings": {
-              "type": "AzureBlobFSWriteSettings"
+          "ifTrueActivities": [
+            {
+              "name": "act_copy_invoices_full",
+              "description": "Full load — all PDFs from all date folders recursively. Sink fixed path, overwrite on re-run.",
+              "type": "Copy",
+              "dependsOn": [],
+              "policy": {
+                "timeout": "0.04:00:00",
+                "retry": 2,
+                "retryIntervalInSeconds": 60,
+                "secureOutput": false,
+                "secureInput": false
+              },
+              "typeProperties": {
+                "source": {
+                  "type": "BinarySource",
+                  "storeSettings": {
+                    "type": "AzureBlobStorageReadSettings",
+                    "recursive": true,
+                    "enablePartitionDiscovery": false
+                  }
+                },
+                "sink": {
+                  "type": "BinarySink",
+                  "storeSettings": {
+                    "type": "AzureBlobFSWriteSettings"
+                  }
+                },
+                "enableStaging": false
+              },
+              "inputs": [
+                {
+                  "referenceName": "ds_blob_invoices_src",
+                  "type": "DatasetReference"
+                }
+              ],
+              "outputs": [
+                {
+                  "referenceName": "ds_bronze_blob_sink",
+                  "type": "DatasetReference",
+                  "parameters": {
+                    "p_folder": "blob/invoices/load_type=full"
+                  }
+                }
+              ]
             }
-          },
-          "enableStaging": false
-        },
-        "inputs": [
-          {
-            "referenceName": "ds_blob_invoices_src",
-            "type": "DatasetReference"
-          }
-        ],
-        "outputs": [
-          {
-            "referenceName": "ds_bronze_blob_sink",
-            "type": "DatasetReference",
-            "parameters": {
-              "p_folder": {
-                "value": "@concat('blob/invoices/ingestion_date=', formatDateTime(utcnow(), 'yyyy-MM-dd'), '/run_id=', pipeline().RunId)",
-                "type": "Expression"
-              }
+          ],
+          "ifFalseActivities": [
+            {
+              "name": "act_copy_invoices_incremental",
+              "description": "Incremental — previous day PDFs only. Fixed sink path per date, re-run overwrites same folder.",
+              "type": "Copy",
+              "dependsOn": [],
+              "policy": {
+                "timeout": "0.02:00:00",
+                "retry": 2,
+                "retryIntervalInSeconds": 60,
+                "secureOutput": false,
+                "secureInput": false
+              },
+              "typeProperties": {
+                "source": {
+                  "type": "BinarySource",
+                  "storeSettings": {
+                    "type": "AzureBlobStorageReadSettings",
+                    "recursive": false,
+                    "wildcardFolderPath": {
+                      "value": "@concat('invoices/', formatDateTime(addDays(utcnow(), -1), 'yyyy/MM/dd'))",
+                      "type": "Expression"
+                    },
+                    "enablePartitionDiscovery": false
+                  }
+                },
+                "sink": {
+                  "type": "BinarySink",
+                  "storeSettings": {
+                    "type": "AzureBlobFSWriteSettings"
+                  }
+                },
+                "enableStaging": false
+              },
+              "inputs": [
+                {
+                  "referenceName": "ds_blob_invoices_src",
+                  "type": "DatasetReference"
+                }
+              ],
+              "outputs": [
+                {
+                  "referenceName": "ds_bronze_blob_sink",
+                  "type": "DatasetReference",
+                  "parameters": {
+                    "p_folder": {
+                      "value": "@concat('blob/invoices/ingestion_date=', formatDateTime(addDays(utcnow(), -1), 'yyyy-MM-dd'))",
+                      "type": "Expression"
+                    }
+                  }
+                }
+              ]
             }
-          }
-        ]
+          ]
+        }
       },
       {
-        "name": "act_copy_reports",
-        "description": "Full copy of all JSON files from source/reports/ recursively (all years/months)",
-        "type": "Copy",
+        "name": "act_load_reports",
+        "description": "Routes report copy: full = all JSONs recursively, incremental = previous month only.",
+        "type": "IfCondition",
         "dependsOn": [],
-        "policy": {
-          "timeout": "0.02:00:00",
-          "retry": 2,
-          "retryIntervalInSeconds": 60,
-          "secureOutput": false,
-          "secureInput": false
-        },
         "typeProperties": {
-          "source": {
-            "type": "BinarySource",
-            "storeSettings": {
-              "type": "AzureBlobStorageReadSettings",
-              "recursive": true,
-              "enablePartitionDiscovery": false
-            }
+          "expression": {
+            "value": "@equals(toLower(pipeline().parameters.p_load_type), 'full')",
+            "type": "Expression"
           },
-          "sink": {
-            "type": "BinarySink",
-            "storeSettings": {
-              "type": "AzureBlobFSWriteSettings"
+          "ifTrueActivities": [
+            {
+              "name": "act_copy_reports_full",
+              "description": "Full load — all JSONs from all month folders recursively. Sink fixed path, overwrite on re-run.",
+              "type": "Copy",
+              "dependsOn": [],
+              "policy": {
+                "timeout": "0.02:00:00",
+                "retry": 2,
+                "retryIntervalInSeconds": 60,
+                "secureOutput": false,
+                "secureInput": false
+              },
+              "typeProperties": {
+                "source": {
+                  "type": "BinarySource",
+                  "storeSettings": {
+                    "type": "AzureBlobStorageReadSettings",
+                    "recursive": true,
+                    "enablePartitionDiscovery": false
+                  }
+                },
+                "sink": {
+                  "type": "BinarySink",
+                  "storeSettings": {
+                    "type": "AzureBlobFSWriteSettings"
+                  }
+                },
+                "enableStaging": false
+              },
+              "inputs": [
+                {
+                  "referenceName": "ds_blob_reports_src",
+                  "type": "DatasetReference"
+                }
+              ],
+              "outputs": [
+                {
+                  "referenceName": "ds_bronze_blob_sink",
+                  "type": "DatasetReference",
+                  "parameters": {
+                    "p_folder": "blob/reports/load_type=full"
+                  }
+                }
+              ]
             }
-          },
-          "enableStaging": false
-        },
-        "inputs": [
-          {
-            "referenceName": "ds_blob_reports_src",
-            "type": "DatasetReference"
-          }
-        ],
-        "outputs": [
-          {
-            "referenceName": "ds_bronze_blob_sink",
-            "type": "DatasetReference",
-            "parameters": {
-              "p_folder": {
-                "value": "@concat('blob/reports/ingestion_date=', formatDateTime(utcnow(), 'yyyy-MM-dd'), '/run_id=', pipeline().RunId)",
-                "type": "Expression"
-              }
+          ],
+          "ifFalseActivities": [
+            {
+              "name": "act_copy_reports_incremental",
+              "description": "Incremental — previous month JSONs only. Fixed sink path per month, re-run overwrites same folder.",
+              "type": "Copy",
+              "dependsOn": [],
+              "policy": {
+                "timeout": "0.02:00:00",
+                "retry": 2,
+                "retryIntervalInSeconds": 60,
+                "secureOutput": false,
+                "secureInput": false
+              },
+              "typeProperties": {
+                "source": {
+                  "type": "BinarySource",
+                  "storeSettings": {
+                    "type": "AzureBlobStorageReadSettings",
+                    "recursive": false,
+                    "wildcardFolderPath": {
+                      "value": "@concat('reports/', formatDateTime(addDays(startOfMonth(utcnow()), -1), 'yyyy/MM'))",
+                      "type": "Expression"
+                    },
+                    "enablePartitionDiscovery": false
+                  }
+                },
+                "sink": {
+                  "type": "BinarySink",
+                  "storeSettings": {
+                    "type": "AzureBlobFSWriteSettings"
+                  }
+                },
+                "enableStaging": false
+              },
+              "inputs": [
+                {
+                  "referenceName": "ds_blob_reports_src",
+                  "type": "DatasetReference"
+                }
+              ],
+              "outputs": [
+                {
+                  "referenceName": "ds_bronze_blob_sink",
+                  "type": "DatasetReference",
+                  "parameters": {
+                    "p_folder": {
+                      "value": "@concat('blob/reports/ingestion_date=', formatDateTime(addDays(startOfMonth(utcnow()), -1), 'yyyy-MM'))",
+                      "type": "Expression"
+                    }
+                  }
+                }
+              ]
             }
-          }
-        ]
+          ]
+        }
       }
     ],
     "annotations": [],
