@@ -1,0 +1,234 @@
+# Databricks notebook: Bronze to Silver  |  sl_complaints
+# Source : /Volumes/ev_catalog/bronze/api/complaints/
+# Sink   : ev_catalog.silver.sl_complaints  (Delta, external)
+# Rules  : A-dedup  C-fault-mapping(category->fault_code)  I-SLA-breach(recompute)  G-timezone
+
+# ── Cell 1: imports and config ────────────────────────────────────────────────
+from pyspark.sql import functions as F, Window
+from delta.tables import DeltaTable
+
+BRONZE_VOL   = "/Volumes/ev_catalog/bronze/api/complaints/"
+SILVER_TABLE = "ev_catalog.silver.sl_complaints"
+SILVER_PATH  = "abfss://silver@evdatalakedev2.dfs.core.windows.net/complaints/"
+QUARANTINE   = "abfss://silver@evdatalakedev2.dfs.core.windows.net/quarantine/complaints/"
+
+# SLA thresholds in hours per priority level
+SLA_HOURS = {"P1": 4, "P2": 24, "P3": 72, "P4": 168}
+
+dbutils.widgets.text("p_run_date", "", "Run date YYYY-MM-DD (blank = full load)")
+run_date = dbutils.widgets.get("p_run_date").strip()
+
+# ── Cell 2: read bronze pages ─────────────────────────────────────────────────
+if run_date:
+    read_path = f"{BRONZE_VOL}ingestion_date={run_date}/"
+else:
+    read_path = BRONZE_VOL
+
+print(f"Reading from: {read_path}")
+
+df_pages = (
+    spark.read.format("json")
+    .option("multiline", "true")
+    .option("recursiveFileLookup", "true")
+    .load(read_path)
+    .withColumn("_src", F.col("_metadata.file_path"))
+)
+
+# ── Cell 3: explode data array → one row per complaint record ─────────────────
+df_exploded = (
+    df_pages
+    .withColumn("record", F.explode(F.col("data")))
+    .select(
+        F.col("record.id").cast("long")  .alias("id"),
+        F.col("record.complaint_id")     .alias("complaint_id"),
+        F.col("record.customer_id")      .alias("customer_id"),
+        F.col("record.station_id")       .alias("station_id"),
+        F.col("record.category")         .alias("category"),
+        F.col("record.priority")         .alias("priority"),
+        F.col("record.sla_breach")       .alias("sla_breach_source"),
+        F.col("record.status")           .alias("status"),
+        F.col("record.created_ts")       .alias("created_ts"),
+        F.col("record.resolved_ts")      .alias("resolved_ts"),
+        F.col("record.created_at")       .alias("created_at"),
+        F.col("record.updated_at")       .alias("updated_at"),
+        F.col("_src"),
+    )
+)
+
+total_records = df_exploded.count()
+print(f"Total records after explode: {total_records}")
+
+if total_records == 0:
+    print("All pages returned empty data arrays — nothing to process. Exiting.")
+    dbutils.notebook.exit("NO_DATA")
+
+df_exploded.show(3, truncate=80)
+
+# ── Cell 4: quality checks — split good vs bad, write quarantine ──────────────
+df_checked = df_exploded.withColumn(
+    "rejection_reason",
+    F.when(F.col("complaint_id").isNull(),  "null_complaint_id")
+     .when(F.col("customer_id").isNull(),   "null_customer_id")
+     .when(F.col("category").isNull(),      "null_category")
+     .when(F.col("priority").isNull(),      "null_priority")
+     .when(F.col("status").isNull(),        "null_status")
+     .when(F.col("created_ts").isNull(),    "null_created_ts")
+     .otherwise(None)
+)
+
+df_bad  = df_checked.filter(F.col("rejection_reason").isNotNull())
+df_good = df_checked.filter(F.col("rejection_reason").isNull()).drop("rejection_reason")
+
+bad_count = df_bad.count()
+if bad_count > 0:
+    (df_bad.withColumn("quarantine_ts", F.current_timestamp())
+     .write.format("delta").mode("append").save(QUARANTINE))
+    print(f"Quarantined: {bad_count} rows")
+else:
+    print("No bad rows — quarantine not written")
+
+# ── Cell 5: Rule A — dedup (latest record per complaint_id by updated_at) ─────
+w = Window.partitionBy("complaint_id").orderBy(F.col("updated_at").desc())
+df_dedup = (
+    df_good
+    .withColumn("_rn", F.row_number().over(w))
+    .filter(F.col("_rn") == 1)
+    .drop("_rn", "_src")
+)
+
+# ── Cell 6: Rule G — timezone (UTC to AEST/AEDT) ─────────────────────────────
+df_tz = (
+    df_dedup
+    .withColumn("created_ts_utc",   F.to_timestamp("created_ts"))
+    .withColumn("resolved_ts_utc",  F.to_timestamp("resolved_ts"))
+    .withColumn("created_at_utc",   F.to_timestamp("created_at"))
+    .withColumn("updated_at_utc",   F.to_timestamp("updated_at"))
+    .withColumn("created_ts_aest",  F.from_utc_timestamp("created_ts_utc",  "Australia/Sydney"))
+    .withColumn("resolved_ts_aest", F.from_utc_timestamp("resolved_ts_utc", "Australia/Sydney"))
+    .withColumn("created_at_aest",  F.from_utc_timestamp("created_at_utc",  "Australia/Sydney"))
+    .withColumn("updated_at_aest",  F.from_utc_timestamp("updated_at_utc",  "Australia/Sydney"))
+    .drop("created_ts", "resolved_ts", "created_at", "updated_at")
+)
+
+# ── Cell 7: Rule C — fault code mapping (category → fault_code) ───────────────
+df_fault = df_tz.withColumn(
+    "fault_code",
+    F.when(F.col("category").contains("Billing"),    "FAULT_BILLING")
+     .when(F.col("category").contains("Charger"),    "FAULT_CHARGER")
+     .when(F.col("category").contains("App"),        "FAULT_APP")
+     .when(F.col("category").contains("Payment"),    "FAULT_PAYMENT")
+     .when(F.col("category").contains("Session"),    "FAULT_SESSION")
+     .when(F.col("category").contains("Network"),    "FAULT_NETWORK")
+     .otherwise("FAULT_OTHER")
+)
+
+# ── Cell 8: Rule I — SLA breach (recomputed) ──────────────────────────────────
+# Resolved: resolution_hrs = resolved_ts - created_ts; breach if > SLA threshold
+# Open: age_hrs = current - created_ts; breach if > SLA threshold
+df_sla = df_fault.withColumn(
+    "sla_threshold_hrs",
+    F.when(F.col("priority") == "P1", F.lit(4))
+     .when(F.col("priority") == "P2", F.lit(24))
+     .when(F.col("priority") == "P3", F.lit(72))
+     .when(F.col("priority") == "P4", F.lit(168))
+     .otherwise(F.lit(168))
+).withColumn(
+    "age_hrs",
+    F.when(
+        F.col("resolved_ts_utc").isNotNull(),
+        (F.unix_timestamp("resolved_ts_utc") - F.unix_timestamp("created_ts_utc")) / 3600
+    ).otherwise(
+        (F.unix_timestamp(F.current_timestamp()) - F.unix_timestamp("created_ts_utc")) / 3600
+    )
+).withColumn(
+    "sla_breach_flag",
+    F.col("age_hrs") > F.col("sla_threshold_hrs")
+).drop("sla_breach_source")
+
+# ── Cell 9: silver metadata columns ──────────────────────────────────────────
+df_silver = (
+    df_sla
+    .withColumn("sl_ingested_at", F.current_timestamp())
+    .withColumn("sl_batch_id",    F.lit(run_date if run_date else "full"))
+)
+
+# ── Cell 10: CREATE TABLE IF NOT EXISTS ───────────────────────────────────────
+spark.sql(f"""
+CREATE TABLE IF NOT EXISTS {SILVER_TABLE} (
+    id                  LONG,
+    complaint_id        STRING,
+    customer_id         STRING,
+    station_id          STRING,
+    category            STRING,
+    fault_code          STRING,
+    priority            STRING,
+    status              STRING,
+    sla_threshold_hrs   DOUBLE,
+    age_hrs             DOUBLE,
+    sla_breach_flag     BOOLEAN,
+    created_ts_utc      TIMESTAMP,
+    created_ts_aest     TIMESTAMP,
+    resolved_ts_utc     TIMESTAMP,
+    resolved_ts_aest    TIMESTAMP,
+    created_at_utc      TIMESTAMP,
+    created_at_aest     TIMESTAMP,
+    updated_at_utc      TIMESTAMP,
+    updated_at_aest     TIMESTAMP,
+    sl_ingested_at      TIMESTAMP,
+    sl_batch_id         STRING
+)
+USING DELTA
+LOCATION '{SILVER_PATH}'
+""")
+
+# ── Cell 11: MERGE (upsert on complaint_id) ───────────────────────────────────
+tgt = DeltaTable.forName(spark, SILVER_TABLE)
+
+merge_result = (
+    tgt.alias("t")
+       .merge(df_silver.alias("s"), "t.complaint_id = s.complaint_id")
+       .whenMatchedUpdateAll()
+       .whenNotMatchedInsertAll()
+       .execute()
+)
+
+print(f"MERGE done: {SILVER_TABLE}")
+
+# ── Cell 12: run stats ────────────────────────────────────────────────────────
+merge_metrics  = merge_result.collect()[0]
+rows_inserted  = int(merge_metrics["num_inserted_rows"])
+rows_updated   = int(merge_metrics["num_updated_rows"])
+rows_in_source = int(df_silver.count())
+rows_duplicate = rows_in_source - rows_inserted - rows_updated
+
+print("\n" + "=" * 55)
+print(f"  PIPELINE RUN STATS   batch_id = {run_date if run_date else 'full'}")
+print("=" * 55)
+print(f"  Source records read (after explode + dedup) : {rows_in_source:>10,}")
+print(f"  Quarantined (bad quality)                   : {bad_count:>10,}")
+print(f"  NEW rows inserted into Silver               : {rows_inserted:>10,}")
+print(f"  EXISTING rows updated in Silver             : {rows_updated:>10,}")
+print(f"  Duplicates removed before MERGE             : {rows_duplicate:>10,}")
+print("=" * 55)
+
+if rows_inserted == 0 and rows_updated == 0:
+    print("  WARNING: Zero rows written — check Bronze partition exists for this date.")
+elif rows_inserted == 0 and rows_updated > 0:
+    print("  INFO: All records already existed — pipeline re-run, Silver is up to date.")
+else:
+    print("  OK: Silver updated successfully.")
+print("=" * 55)
+
+# ── Cell 13: SLA breach summary by priority ───────────────────────────────────
+spark.sql(f"""
+SELECT
+    priority,
+    fault_code,
+    COUNT(*)                                               AS total_complaints,
+    COUNT(CASE WHEN sla_breach_flag THEN 1 END)           AS sla_breached,
+    ROUND(AVG(age_hrs), 1)                                AS avg_age_hrs,
+    COUNT(CASE WHEN status = 'Resolved' THEN 1 END)       AS resolved_count
+FROM {SILVER_TABLE}
+GROUP BY priority, fault_code
+ORDER BY priority, total_complaints DESC
+""").display()

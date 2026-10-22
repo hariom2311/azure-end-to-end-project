@@ -212,20 +212,7 @@ elif rows_inserted == 0 and rows_updated > 0:
 else:
     print("  OK: Silver updated successfully.")
 print("=" * 55)
-if run_date:
-    read_path = f"{BRONZE_VOL}ingestion_date={run_date}/run_id={run_date}/"
-else:
-    read_path = BRONZE_VOL
 
-print(f"Reading from: {read_path}")
-
-df_pages = (
-    spark.read.format("json")
-    .option("multiline", "true")
-    .option("recursiveFileLookup", "true")
-    .load(read_path)
-    .withColumn("_src", F.col("_metadata.file_path"))
-)
 # ── Cell 13: post-load breakdown by status ────────────────────────────────────
 spark.sql(f"""
 SELECT

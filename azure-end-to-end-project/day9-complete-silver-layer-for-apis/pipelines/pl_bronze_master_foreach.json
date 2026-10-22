@@ -1,0 +1,456 @@
+{
+    "name": "pl_bronze_master_foreach",
+    "properties": {
+        "description": "Master pipeline (sequential). Runs Bronze incremental load for all active sources, then triggers all 16 Silver transformation pipelines in sequence.\n\nFlow:\n  1. act_list_sources        -> nb_list_active_sources returns JSON array of source names\n  2. act_foreach_source      -> ForEach calls pl_bronze_incremental_load_v3 per source\n  3. act_silver_payments     -> pl_silver_payments\n  4. act_silver_charge_cards -> pl_silver_charge_cards\n  5. act_silver_chargers     -> pl_silver_chargers\n  6. act_silver_cities       -> pl_silver_cities\n  7. act_silver_complaints   -> pl_silver_complaints\n  8. act_silver_customers    -> pl_silver_customers\n  9. act_silver_employees    -> pl_silver_employees\n  10. act_silver_energy_prices      -> pl_silver_energy_prices\n  11. act_silver_maintenance_events -> pl_silver_maintenance_events\n  12. act_silver_partners    -> pl_silver_partners\n  13. act_silver_pipeline_audit -> pl_silver_pipeline_audit\n  14. act_silver_sessions    -> pl_silver_sessions\n  15. act_silver_states      -> pl_silver_states\n  16. act_silver_stations    -> pl_silver_stations\n  17. act_silver_tariffs     -> pl_silver_tariffs\n  18. act_silver_vehicles    -> pl_silver_vehicles\n\nAll Silver pipelines run sequentially after Bronze ForEach completes.\nEach Silver pipeline receives today's TriggerTime date automatically (no p_run_date override needed for daily runs).",
+        "activities": [
+            {
+                "name": "act_list_sources",
+                "description": "Run nb_list_active_sources notebook — exits with json.dumps([source_names]) string",
+                "type": "DatabricksNotebook",
+                "dependsOn": [],
+                "policy": {
+                    "timeout": "0.01:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "notebookPath": "/Users/hariomsuryawanshi68258@gmail.com/nb_list_active_sources"
+                },
+                "linkedServiceName": {
+                    "referenceName": "ls_databricks",
+                    "type": "LinkedServiceReference"
+                }
+            },
+            {
+                "name": "act_foreach_source",
+                "description": "Iterate sequentially over each active source_name and run Bronze incremental load.",
+                "type": "ForEach",
+                "dependsOn": [
+                    {
+                        "activity": "act_list_sources",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "items": {
+                        "value": "@json(string(activity('act_list_sources').output.runOutput))",
+                        "type": "Expression"
+                    },
+                    "isSequential": true,
+                    "activities": [
+                        {
+                            "name": "act_run_source",
+                            "description": "Call pl_bronze_incremental_load_v3 for the current source_name",
+                            "type": "ExecutePipeline",
+                            "dependsOn": [],
+                            "policy": {
+                                "secureInput": false
+                            },
+                            "userProperties": [],
+                            "typeProperties": {
+                                "pipeline": {
+                                    "referenceName": "pl_bronze_incremental_load_v3",
+                                    "type": "PipelineReference"
+                                },
+                                "waitOnCompletion": true,
+                                "parameters": {
+                                    "p_source_name": {
+                                        "value": "@item()",
+                                        "type": "Expression"
+                                    },
+                                    "p_load_type_override": {
+                                        "value": "@pipeline().parameters.p_load_type_override",
+                                        "type": "Expression"
+                                    }
+                                }
+                            }
+                        }
+                    ]
+                }
+            },
+            {
+                "name": "act_silver_payments",
+                "type": "ExecutePipeline",
+                "dependsOn": [
+                    {
+                        "activity": "act_foreach_source",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "pipeline": {
+                        "referenceName": "pl_silver_payments",
+                        "type": "PipelineReference"
+                    },
+                    "waitOnCompletion": true
+                }
+            },
+            {
+                "name": "act_silver_charge_cards",
+                "type": "ExecutePipeline",
+                "dependsOn": [
+                    {
+                        "activity": "act_silver_payments",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "pipeline": {
+                        "referenceName": "pl_silver_charge_cards",
+                        "type": "PipelineReference"
+                    },
+                    "waitOnCompletion": true
+                }
+            },
+            {
+                "name": "act_silver_chargers",
+                "type": "ExecutePipeline",
+                "dependsOn": [
+                    {
+                        "activity": "act_silver_charge_cards",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "pipeline": {
+                        "referenceName": "pl_silver_chargers",
+                        "type": "PipelineReference"
+                    },
+                    "waitOnCompletion": true
+                }
+            },
+            {
+                "name": "act_silver_cities",
+                "type": "ExecutePipeline",
+                "dependsOn": [
+                    {
+                        "activity": "act_silver_chargers",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "pipeline": {
+                        "referenceName": "pl_silver_cities",
+                        "type": "PipelineReference"
+                    },
+                    "waitOnCompletion": true
+                }
+            },
+            {
+                "name": "act_silver_complaints",
+                "type": "ExecutePipeline",
+                "dependsOn": [
+                    {
+                        "activity": "act_silver_cities",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "pipeline": {
+                        "referenceName": "pl_silver_complaints",
+                        "type": "PipelineReference"
+                    },
+                    "waitOnCompletion": true
+                }
+            },
+            {
+                "name": "act_silver_customers",
+                "type": "ExecutePipeline",
+                "dependsOn": [
+                    {
+                        "activity": "act_silver_complaints",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "pipeline": {
+                        "referenceName": "pl_silver_customers",
+                        "type": "PipelineReference"
+                    },
+                    "waitOnCompletion": true
+                }
+            },
+            {
+                "name": "act_silver_employees",
+                "type": "ExecutePipeline",
+                "dependsOn": [
+                    {
+                        "activity": "act_silver_customers",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "pipeline": {
+                        "referenceName": "pl_silver_employees",
+                        "type": "PipelineReference"
+                    },
+                    "waitOnCompletion": true
+                }
+            },
+            {
+                "name": "act_silver_energy_prices",
+                "type": "ExecutePipeline",
+                "dependsOn": [
+                    {
+                        "activity": "act_silver_employees",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "pipeline": {
+                        "referenceName": "pl_silver_energy_prices",
+                        "type": "PipelineReference"
+                    },
+                    "waitOnCompletion": true
+                }
+            },
+            {
+                "name": "act_silver_maintenance_events",
+                "type": "ExecutePipeline",
+                "dependsOn": [
+                    {
+                        "activity": "act_silver_energy_prices",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "pipeline": {
+                        "referenceName": "pl_silver_maintenance_events",
+                        "type": "PipelineReference"
+                    },
+                    "waitOnCompletion": true
+                }
+            },
+            {
+                "name": "act_silver_partners",
+                "type": "ExecutePipeline",
+                "dependsOn": [
+                    {
+                        "activity": "act_silver_maintenance_events",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "pipeline": {
+                        "referenceName": "pl_silver_partners",
+                        "type": "PipelineReference"
+                    },
+                    "waitOnCompletion": true
+                }
+            },
+            {
+                "name": "act_silver_pipeline_audit",
+                "type": "ExecutePipeline",
+                "dependsOn": [
+                    {
+                        "activity": "act_silver_partners",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "pipeline": {
+                        "referenceName": "pl_silver_pipeline_audit",
+                        "type": "PipelineReference"
+                    },
+                    "waitOnCompletion": true
+                }
+            },
+            {
+                "name": "act_silver_sessions",
+                "type": "ExecutePipeline",
+                "dependsOn": [
+                    {
+                        "activity": "act_silver_pipeline_audit",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "pipeline": {
+                        "referenceName": "pl_silver_sessions",
+                        "type": "PipelineReference"
+                    },
+                    "waitOnCompletion": true
+                }
+            },
+            {
+                "name": "act_silver_states",
+                "type": "ExecutePipeline",
+                "dependsOn": [
+                    {
+                        "activity": "act_silver_sessions",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "pipeline": {
+                        "referenceName": "pl_silver_states",
+                        "type": "PipelineReference"
+                    },
+                    "waitOnCompletion": true
+                }
+            },
+            {
+                "name": "act_silver_stations",
+                "type": "ExecutePipeline",
+                "dependsOn": [
+                    {
+                        "activity": "act_silver_states",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "pipeline": {
+                        "referenceName": "pl_silver_stations",
+                        "type": "PipelineReference"
+                    },
+                    "waitOnCompletion": true
+                }
+            },
+            {
+                "name": "act_silver_tariffs",
+                "type": "ExecutePipeline",
+                "dependsOn": [
+                    {
+                        "activity": "act_silver_stations",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "pipeline": {
+                        "referenceName": "pl_silver_tariffs",
+                        "type": "PipelineReference"
+                    },
+                    "waitOnCompletion": true
+                }
+            },
+            {
+                "name": "act_silver_vehicles",
+                "type": "ExecutePipeline",
+                "dependsOn": [
+                    {
+                        "activity": "act_silver_tariffs",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "pipeline": {
+                        "referenceName": "pl_silver_vehicles",
+                        "type": "PipelineReference"
+                    },
+                    "waitOnCompletion": true
+                }
+            }
+        ],
+        "parameters": {
+            "p_load_type_override": {
+                "type": "string"
+            }
+        },
+        "folder": {
+            "name": "bronze"
+        },
+        "annotations": []
+    }
+}

@@ -1,0 +1,44 @@
+﻿{
+  "name": "pl_silver_sessions",
+  "properties": {
+    "description": "Silver notebook for sl_sessions. Leave p_run_date blank for daily trigger runs (uses TriggerTime). Pass YYYY-MM-DD for backfill.",
+    "parameters": {
+      "p_run_date": {
+        "type": "String",
+        "defaultValue": "",
+        "description": "YYYY-MM-DD override for backfill. Leave blank for scheduled runs."
+      }
+    },
+    "activities": [
+      {
+        "name": "act_silver_sessions",
+        "type": "DatabricksNotebook",
+        "dependsOn": [],
+        "policy": {
+          "timeout": "0.02:00:00",
+          "retry": 1,
+          "retryIntervalInSeconds": 60,
+          "secureOutput": false,
+          "secureInput": false
+        },
+        "userProperties": [],
+        "typeProperties": {
+          "notebookPath": "/Users/hariomsuryawanshi68258@gmail.com/nb_silver_sessions",
+          "baseParameters": {
+            "p_run_date": {
+              "value": "@if(empty(pipeline().parameters.p_run_date), formatDateTime(pipeline().TriggerTime, 'yyyy-MM-dd'), pipeline().parameters.p_run_date)",
+              "type": "Expression"
+            }
+          }
+        },
+        "linkedServiceName": {
+          "referenceName": "ls_databricks",
+          "type": "LinkedServiceReference"
+        }
+      }
+    ],
+    "annotations": [],
+    "lastPublishTime": "2026-10-23T00:00:00Z"
+  },
+  "type": "Microsoft.DataFactory/factories/pipelines"
+}

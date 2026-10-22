@@ -1,0 +1,45 @@
+{
+  "name": "pl_silver_payments",
+  "properties": {
+    "description": "Triggers the Silver transformation notebook for sl_payments.\n\np_run_date (optional override):\n  - Leave blank when running via trigger  -> notebook receives today's date from TriggerTime\n  - Pass YYYY-MM-DD for manual backfill  -> notebook reads that specific Bronze partition\n\nNotebook: /Users/hariomsuryawanshi68258@gmail.com/nb_silver_payments\nSink    : ev_catalog.silver.sl_payments (Delta MERGE on payment_id)",
+    "parameters": {
+      "p_run_date": {
+        "type": "String",
+        "defaultValue": "",
+        "description": "YYYY-MM-DD override for backfill. Leave blank for scheduled/trigger runs — TriggerTime is used automatically."
+      }
+    },
+    "activities": [
+      {
+        "name": "act_silver_payments",
+        "description": "Runs nb_silver_payments.\np_run_date logic:\n  - If pipeline parameter p_run_date is provided -> use it (backfill)\n  - Otherwise                                    -> use formatDateTime(pipeline().TriggerTime, 'yyyy-MM-dd') (daily run)",
+        "type": "DatabricksNotebook",
+        "dependsOn": [],
+        "policy": {
+          "timeout": "0.02:00:00",
+          "retry": 1,
+          "retryIntervalInSeconds": 60,
+          "secureOutput": false,
+          "secureInput": false
+        },
+        "userProperties": [],
+        "typeProperties": {
+          "notebookPath": "/Users/hariomsuryawanshi68258@gmail.com/nb_silver_payments",
+          "baseParameters": {
+            "p_run_date": {
+              "value": "@if(empty(pipeline().parameters.p_run_date), formatDateTime(pipeline().TriggerTime, 'yyyy-MM-dd'), pipeline().parameters.p_run_date)",
+              "type": "Expression"
+            }
+          }
+        },
+        "linkedServiceName": {
+          "referenceName": "ls_databricks",
+          "type": "LinkedServiceReference"
+        }
+      }
+    ],
+    "annotations": [],
+    "lastPublishTime": "2026-10-22T00:00:00Z"
+  },
+  "type": "Microsoft.DataFactory/factories/pipelines"
+}
