@@ -236,9 +236,9 @@ The EV hardware vendor exposes raw operational files in an external Azure Blob S
 
 | Source | Path pattern | Format | Load strategy |
 |---|---|---|---|
-| Config / reference XML | `source/config/*.xml` | XML | Full load every run |
-| Invoice PDFs | `source/invoices/YYYY/MM/DD/*.pdf` | Binary (PDF) | Full load for **yesterday's** date folder |
-| Monthly reports | `source/reports/YYYY/MM/*.json` | JSON | Full load every run |
+| Config / reference XML | `source/config/*.xml` | Binary | Always full load (small reference data, fixed sink path) |
+| Invoice PDFs | `source/invoices/YYYY/MM/DD/*.pdf` | Binary (PDF) | Full = all folders recursively; Incremental = **previous day** folder only |
+| Monthly reports | `source/reports/YYYY/MM/*.json` | Binary (JSON) | Full = all folders recursively; Incremental = **previous month** folder only |
 
 This storage account is external — you do not own it and cannot use Managed Identity. Access is via a vendor-provided read-only SAS token (`sp=rl`).
 
@@ -279,29 +279,31 @@ Test connection → green → Create → Publish all.
 
 ### 5.3 — Source Datasets
 
-**`ds_blob_config_src`** — XML, no parameters (always reads full `config/` folder)
+All three source datasets use type **Binary** — files are copied byte-for-byte without parsing. The sink is also Binary, so format doesn't matter at Bronze ingestion time.
+
+**`ds_blob_config_src`** — no parameters (always reads full `config/` folder)
 
 - Linked service: `ls_blob_source`
-- Type: XML
+- Type: **Binary**
 - Container: `source`
 - Folder: `config`
-- No parameters needed — folder never changes
+- No parameters needed — folder never changes, always full load
 
-**`ds_blob_invoices_src`** — Binary, parameterised date
-
-- Linked service: `ls_blob_source`
-- Type: Binary
-- Container: `source`
-- Parameter: `p_date` (String) — format `YYYY/MM/DD`
-- Folder path (dynamic): `@concat('invoices/', dataset().p_date)`
-
-**`ds_blob_reports_src`** — JSON, parameterised year/month
+**`ds_blob_invoices_src`** — no dataset-level parameters
 
 - Linked service: `ls_blob_source`
-- Type: JSON
+- Type: **Binary**
 - Container: `source`
-- Parameter: `p_year_month` (String) — format `YYYY/MM`
-- Folder path (dynamic): `@concat('reports/', dataset().p_year_month)`
+- No static folder — the pipeline copy activity sets `wildcardFolderPath` dynamically for incremental, or reads recursively for full load
+
+**`ds_blob_reports_src`** — no dataset-level parameters
+
+- Linked service: `ls_blob_source`
+- Type: **Binary**
+- Container: `source`
+- No static folder — the pipeline copy activity sets `wildcardFolderPath` dynamically for incremental, or reads recursively for full load
+
+> **Note:** Unlike a pattern where datasets carry `p_date` parameters, this pipeline uses ADF's `wildcardFolderPath` directly inside the copy activity's source settings to control which folder is read. This avoids dataset-level parameterisation and keeps the routing logic entirely inside the IfCondition activities.
 
 ---
 
@@ -310,7 +312,7 @@ Test connection → green → Create → Publish all.
 **`ds_bronze_blob_sink`** — Binary sink on ADLS Gen2
 
 - Linked service: `ls_adls_bronze` (your existing ADLS linked service)
-- Type: Binary
+- Type: **Binary**
 - File system: `bronze`
 - Parameter: `p_folder` (String) — full path set by each copy activity
 - Folder path (dynamic): `@dataset().p_folder`
@@ -321,80 +323,144 @@ Test connection → green → Create → Publish all.
 
 ### 5.5 — Pipeline: `pl_bronze_blob_ingestion`
 
-Three Copy activities run **in parallel** (no `dependsOn` between them):
+**Pipeline parameter:**
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `p_load_type` | String | `incremental` | Pass `full` to copy all historical files. Pass `incremental` (or leave blank) for date-scoped daily copy. |
+
+**Activity structure — three parallel activities (no `dependsOn` between them):**
 
 ```
-[act_copy_config] ──┐
-[act_copy_invoices]──┤  (all start simultaneously)
-[act_copy_reports] ──┘
+[act_copy_config]  ──┐
+[act_load_invoices]──┤  (all start simultaneously)
+[act_load_reports] ──┘
 ```
 
-**`act_copy_config`**
+---
+
+#### `act_copy_config` — always full load
+
+Config is small reference data that changes infrequently. Always overwritten at a fixed sink path regardless of `p_load_type`.
 
 | Field | Value |
 |---|---|
-| Source | `ds_blob_config_src` |
-| Source file filter | `*.xml` |
-| Sink | `ds_bronze_blob_sink` |
-| Sink `p_folder` | `@concat('blob/config/ingestion_date=', formatDateTime(utcnow(), 'yyyy-MM-dd'), '/run_id=', pipeline().RunId)` |
-| Retry | 2 retries, 60s interval |
+| Type | Copy |
+| Source dataset | `ds_blob_config_src` |
+| Source recursive | `true` |
+| Sink dataset | `ds_bronze_blob_sink` |
+| Sink `p_folder` | `blob/config/load_type=full` |
+| Retry | 2 retries, 60s interval, timeout 2h |
 
-**`act_copy_invoices`**
+---
 
-| Field | Value |
-|---|---|
-| Source | `ds_blob_invoices_src` |
-| Source `p_date` | `@formatDateTime(addDays(utcnow(), -1), 'yyyy/MM/dd')` |
-| Source file filter | `*.pdf` |
-| Sink | `ds_bronze_blob_sink` |
-| Sink `p_folder` | `@concat('blob/invoices/ingestion_date=', formatDateTime(addDays(utcnow(), -1), 'yyyy-MM-dd'), '/run_id=', pipeline().RunId)` |
-| Retry | 2 retries, 60s interval |
+#### `act_load_invoices` — IfCondition on `p_load_type`
 
-**`act_copy_reports`**
+Expression: `@equals(toLower(pipeline().parameters.p_load_type), 'full')`
+
+**True branch — `act_copy_invoices_full`**
+
+Copies all invoice PDFs from all date subfolders recursively. Sink is a fixed path overwritten on every full run.
 
 | Field | Value |
 |---|---|
-| Source | `ds_blob_reports_src` |
-| Source `p_year_month` | `@formatDateTime(utcnow(), 'yyyy/MM')` |
-| Source file filter | `*.json` |
-| Sink | `ds_bronze_blob_sink` |
-| Sink `p_folder` | `@concat('blob/reports/ingestion_date=', formatDateTime(utcnow(), 'yyyy-MM-dd'), '/run_id=', pipeline().RunId)` |
-| Retry | 2 retries, 60s interval |
+| Source dataset | `ds_blob_invoices_src` |
+| Source recursive | `true` |
+| Sink `p_folder` | `blob/invoices/load_type=full` |
+| Retry | 2 retries, 60s interval, timeout 4h |
+
+**False branch — `act_copy_invoices_incremental`**
+
+Copies only yesterday's invoice folder. Re-running on the same day overwrites the same `ingestion_date=` folder — idempotent.
+
+| Field | Value |
+|---|---|
+| Source dataset | `ds_blob_invoices_src` |
+| Source `wildcardFolderPath` | `@concat('invoices/', formatDateTime(addDays(utcnow(), -1), 'yyyy/MM/dd'))` |
+| Source recursive | `false` |
+| Sink `p_folder` | `@concat('blob/invoices/ingestion_date=', formatDateTime(addDays(utcnow(), -1), 'yyyy-MM-dd'))` |
+| Retry | 2 retries, 60s interval, timeout 2h |
 
 **Why yesterday for invoices?** Invoices are generated throughout the business day and finalised at day close. Running the pipeline at 02:00 UTC (noon AEST) means the previous calendar day is fully closed in Australian time — yesterday's invoice folder is complete. Running for today's folder at 02:00 AEST risks a partial set.
 
-**Why current month for reports?** Monthly report files (`kpi_report_YYYYMM.json`) are updated intra-month. A full overwrite each day picks up the latest version. If reports are finalised only at month-end, change to previous month: `@formatDateTime(addDays(startOfMonth(utcnow()), -1), 'yyyy/MM')`.
+---
+
+#### `act_load_reports` — IfCondition on `p_load_type`
+
+Expression: `@equals(toLower(pipeline().parameters.p_load_type), 'full')`
+
+**True branch — `act_copy_reports_full`**
+
+Copies all report JSONs from all month subfolders recursively. Sink is a fixed path overwritten on every full run.
+
+| Field | Value |
+|---|---|
+| Source dataset | `ds_blob_reports_src` |
+| Source recursive | `true` |
+| Sink `p_folder` | `blob/reports/load_type=full` |
+| Retry | 2 retries, 60s interval, timeout 2h |
+
+**False branch — `act_copy_reports_incremental`**
+
+Copies only the previous month's report folder. Re-running overwrites the same `ingestion_date=` folder — idempotent.
+
+| Field | Value |
+|---|---|
+| Source dataset | `ds_blob_reports_src` |
+| Source `wildcardFolderPath` | `@concat('reports/', formatDateTime(addDays(startOfMonth(utcnow()), -1), 'yyyy/MM'))` |
+| Source recursive | `false` |
+| Sink `p_folder` | `@concat('blob/reports/ingestion_date=', formatDateTime(addDays(startOfMonth(utcnow()), -1), 'yyyy-MM'))` |
+| Retry | 2 retries, 60s interval, timeout 2h |
+
+**Why previous month for reports?** `addDays(startOfMonth(utcnow()), -1)` returns the last day of the previous month — and `formatDateTime(..., 'yyyy/MM')` gives that month's folder. Monthly report files are finalised after month-end, so the previous month is the last complete set. The current month folder is still being written to during the month.
+
+> **Incremental sink path for reports uses `yyyy-MM` not `yyyy-MM-dd`** — e.g. `blob/reports/ingestion_date=2026-09` — because reports are monthly, not daily. This is intentional.
 
 ---
 
 ### 5.6 — Bronze Folder Structure After Pipeline Run
 
+**Incremental run** (default, `p_load_type=incremental`):
+
 ```
 bronze/
-├── blob/
-│   ├── config/
-│   │   └── ingestion_date=2026-10-19/
-│   │       └── run_id=abc12345-.../
-│   │           ├── connector_standards.xml
-│   │           ├── connector_types.xml
-│   │           ├── firmware_manifest_v7_4_2.xml
-│   │           ├── network_topology.xml
-│   │           ├── operator_registry.xml
-│   │           ├── states.xml
-│   │           └── ... (19 XML files total)
-│   ├── invoices/
-│   │   └── ingestion_date=2026-10-18/
-│   │       └── run_id=abc12345-.../
-│   │           ├── INV-AU-2026-0002266.pdf
-│   │           ├── INV-AU-2026-0002267.pdf
-│   │           └── ... (all PDFs from that day)
-│   └── reports/
-│       └── ingestion_date=2026-10-19/
-│           └── run_id=abc12345-.../
-│               ├── kpi_report_202610.json
-│               ├── sla_report_202610.json
-│               └── state_breakdown_202610.json
+└── blob/
+    ├── config/
+    │   └── load_type=full/          ← always overwritten at this fixed path
+    │       ├── connector_standards.xml
+    │       ├── firmware_manifest_v7_4_2.xml
+    │       └── ... (all XML files)
+    ├── invoices/
+    │   └── ingestion_date=2026-10-22/   ← yesterday's date
+    │       ├── INV-AU-2026-0002266.pdf
+    │       ├── INV-AU-2026-0002267.pdf
+    │       └── ...
+    └── reports/
+        └── ingestion_date=2026-09/      ← previous month (yyyy-MM only)
+            ├── kpi_report_202609.json
+            ├── sla_report_202609.json
+            └── state_breakdown_202609.json
 ```
+
+**Full run** (`p_load_type=full`):
+
+```
+bronze/
+└── blob/
+    ├── config/
+    │   └── load_type=full/
+    │       └── ... (all XML files)
+    ├── invoices/
+    │   └── load_type=full/          ← all PDFs from all date folders
+    │       ├── INV-AU-2026-0002266.pdf
+    │       └── ...
+    └── reports/
+        └── load_type=full/          ← all JSONs from all month folders
+            ├── kpi_report_202609.json
+            └── ...
+```
+
+> **No `run_id=` subfolders in this pipeline.** Unlike `pl_bronze_incremental_load_v3` (API ingestion), the blob pipeline does not add `pipeline().RunId` to the sink path. Re-running an incremental load for the same date overwrites the previous run's files at the same `ingestion_date=` path — this is intentional idempotency for blob sources where files don't change once landed.
 
 ---
 
@@ -407,6 +473,7 @@ bronze/
 | Time | 02:00 UTC |
 | Start | `2026-10-20T02:00:00Z` |
 | Pipeline | `pl_bronze_blob_ingestion` |
+| `p_load_type` | *(not set — uses default `incremental`)* |
 
 **ADF Studio → Manage → Triggers → + New:**
 - Type: Schedule
@@ -414,8 +481,11 @@ bronze/
 - Recurrence: Every 1 Day at 02:00
 - Timezone: UTC
 - Associate pipeline: `pl_bronze_blob_ingestion`
+- Leave `p_load_type` blank (defaults to `incremental`)
 
 Activate trigger → Publish all.
+
+**For a one-off full load:** trigger manually with `p_load_type = full`. This copies all historical files into the `load_type=full` paths. After the full load, daily scheduled runs pick up only the previous day/month via the incremental branches.
 
 ---
 
@@ -444,15 +514,19 @@ Store the SAS URI as an Azure Key Vault secret (`ls-blob-source-sas-uri`) and re
 - [ ] `pl_bronze_master` (Day 6) updated to reference v3
 
 **Part 5 — Blob ingestion pipeline:**
-- [ ] `ls_blob_source` linked service created (SAS auth), Test connection green
-- [ ] `ds_blob_config_src` dataset created — XML, `config/` folder
-- [ ] `ds_blob_invoices_src` dataset created — Binary, `invoices/` + `p_date` parameter
-- [ ] `ds_blob_reports_src` dataset created — JSON, `reports/` + `p_year_month` parameter
-- [ ] `ds_bronze_blob_sink` dataset created — Binary, ADLS Gen2, `p_folder` parameter
-- [ ] `pl_bronze_blob_ingestion` pipeline created — three parallel Copy activities
-- [ ] Test run: all three activities green, ADLS shows files under `blob/config/`, `blob/invoices/`, `blob/reports/`
-- [ ] Second run: new `run_id=` subfolders, first run untouched
-- [ ] `tr_blob_ingestion_daily` trigger created, activated, set to 02:00 UTC
+- [ ] `ls_blob_source` linked service created (SAS URI auth), Test connection green
+- [ ] `ds_blob_config_src` dataset created — Binary, `source` container, `config/` folder, no parameters
+- [ ] `ds_blob_invoices_src` dataset created — Binary, `source` container, no static folder (pipeline sets wildcardFolderPath)
+- [ ] `ds_blob_reports_src` dataset created — Binary, `source` container, no static folder (pipeline sets wildcardFolderPath)
+- [ ] `ds_bronze_blob_sink` dataset created — Binary, ADLS Gen2 `bronze` container, `p_folder` parameter
+- [ ] `pl_bronze_blob_ingestion` pipeline created with `p_load_type` parameter (default `incremental`)
+- [ ] `act_copy_config` — always copies to `blob/config/load_type=full`
+- [ ] `act_load_invoices` — IfCondition: full → `load_type=full`; incremental → `ingestion_date=<yesterday>`
+- [ ] `act_load_reports` — IfCondition: full → `load_type=full`; incremental → `ingestion_date=<prev-month-YYYY-MM>`
+- [ ] Test full load run (`p_load_type=full`): all three activities green, ADLS shows `load_type=full` folders
+- [ ] Test incremental run (`p_load_type=incremental`): ADLS shows `ingestion_date=` folders for invoices and reports
+- [ ] Re-run incremental: same `ingestion_date=` folders overwritten (idempotent — no duplicates)
+- [ ] `tr_blob_ingestion_daily` trigger created, activated, set to 02:00 UTC, no `p_load_type` override
 - [ ] (Bonus) SAS URI moved to Key Vault
 
 ---
@@ -466,5 +540,6 @@ Store the SAS URI as an Azure Key Vault secret (`ls-blob-source-sas-uri`) and re
 | `The specified container does not exist` | SAS URL uses wrong container name | Verify SAS URL contains the correct container path |
 | Source `0 files read` but no error | Source folder exists but is empty (e.g. no invoices for that date) | Expected — ADF Copy succeeds with 0 files. Add If Condition check if you need explicit alerts |
 | PDF files landing as corrupt/empty in Bronze | Sink dataset typed as non-Binary (e.g. Json) | Change `ds_bronze_blob_sink` type to Binary |
-| `dataset().p_date` resolves to empty string | Dataset used directly without passing the parameter from copy activity | In copy activity → Source tab → dataset parameters → pass the expression for `p_date` |
+| Incremental run copies all files instead of one day | IfCondition expression wrong — always evaluating True | Check `@equals(toLower(pipeline().parameters.p_load_type), 'full')` — ensure `p_load_type` is passed correctly |
+| Reports incremental copies current month instead of previous | `wildcardFolderPath` uses `utcnow()` instead of `addDays(startOfMonth(utcnow()), -1)` | Use `@concat('reports/', formatDateTime(addDays(startOfMonth(utcnow()), -1), 'yyyy/MM'))` |
 | XML files fail to copy with parse error | Source dataset typed as Xml but sink typed as Json or Parquet | Sink must be Binary for raw file copy — do not use format-specific sink |
