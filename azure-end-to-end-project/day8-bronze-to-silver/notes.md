@@ -296,6 +296,28 @@ Each JSON file in Bronze is one API page. The structure is:
 | Timestamp present| processed_at IS NULL                | null_processed_at   |
 | Status present   | status IS NULL                      | null_status         |
 
+### How bad rows get inserted into quarantine (Cell 4)
+
+The notebook writes bad rows to the quarantine Delta path using a plain `write.format("delta").mode("append")` — **not** a MERGE. Every bad row from every run is appended, so you can audit the full history of rejections over time.
+
+```python
+df_bad = df_checked.filter(F.col("rejection_reason").isNotNull())
+
+if bad_count > 0:
+    (df_bad
+     .withColumn("quarantine_ts", F.current_timestamp())
+     .write.format("delta")
+     .mode("append")
+     .save(QUARANTINE))   # QUARANTINE = "abfss://silver@evdatalakedev2.dfs.core.windows.net/quarantine/payments/"
+```
+
+**Key points:**
+- `mode("append")` — never overwrites previous quarantine records, always adds to the end
+- `quarantine_ts` — timestamp of when the row was rejected, added by the notebook (not from source)
+- `rejection_reason` — string describing why the row failed (e.g. `null_payment_id`, `invalid_amount`)
+- All original columns from the bad row are kept alongside these two extra columns
+- The Delta files land at the quarantine path; the `CREATE TABLE` in Part 3b then registers those files as a Catalog table so you can query them with SQL
+
 ### Quarantine path
 ```
 abfss://silver@evdatalakedev2.dfs.core.windows.net/quarantine/payments/
