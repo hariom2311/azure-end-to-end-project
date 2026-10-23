@@ -96,22 +96,88 @@ CREATE SCHEMA IF NOT EXISTS ev_catalog.quarantine
 MANAGED LOCATION 'abfss://silver@evdatalakedev2.dfs.core.windows.net/quarantine/';
 ```
 
-After running the notebook at least once (so Delta files are written), register each quarantine table:
+After running each Silver notebook at least once (so Delta files are written to the quarantine path),
+register the quarantine table so it appears in Databricks Catalog. Run the block below for all entities:
 
 ```sql
--- Payments quarantine
+-- Day 8 — Payments
 CREATE TABLE IF NOT EXISTS ev_catalog.quarantine.payments
 USING DELTA
 LOCATION 'abfss://silver@evdatalakedev2.dfs.core.windows.net/quarantine/payments/';
+
+-- Day 9 — all remaining API entities
+CREATE TABLE IF NOT EXISTS ev_catalog.quarantine.charge_cards
+USING DELTA
+LOCATION 'abfss://silver@evdatalakedev2.dfs.core.windows.net/quarantine/charge_cards/';
+
+CREATE TABLE IF NOT EXISTS ev_catalog.quarantine.chargers
+USING DELTA
+LOCATION 'abfss://silver@evdatalakedev2.dfs.core.windows.net/quarantine/chargers/';
+
+CREATE TABLE IF NOT EXISTS ev_catalog.quarantine.cities
+USING DELTA
+LOCATION 'abfss://silver@evdatalakedev2.dfs.core.windows.net/quarantine/cities/';
+
+CREATE TABLE IF NOT EXISTS ev_catalog.quarantine.complaints
+USING DELTA
+LOCATION 'abfss://silver@evdatalakedev2.dfs.core.windows.net/quarantine/complaints/';
+
+CREATE TABLE IF NOT EXISTS ev_catalog.quarantine.customers
+USING DELTA
+LOCATION 'abfss://silver@evdatalakedev2.dfs.core.windows.net/quarantine/customers/';
+
+CREATE TABLE IF NOT EXISTS ev_catalog.quarantine.employees
+USING DELTA
+LOCATION 'abfss://silver@evdatalakedev2.dfs.core.windows.net/quarantine/employees/';
+
+CREATE TABLE IF NOT EXISTS ev_catalog.quarantine.energy_prices
+USING DELTA
+LOCATION 'abfss://silver@evdatalakedev2.dfs.core.windows.net/quarantine/energy_prices/';
+
+CREATE TABLE IF NOT EXISTS ev_catalog.quarantine.maintenance_events
+USING DELTA
+LOCATION 'abfss://silver@evdatalakedev2.dfs.core.windows.net/quarantine/maintenance_events/';
+
+CREATE TABLE IF NOT EXISTS ev_catalog.quarantine.partners
+USING DELTA
+LOCATION 'abfss://silver@evdatalakedev2.dfs.core.windows.net/quarantine/partners/';
+
+CREATE TABLE IF NOT EXISTS ev_catalog.quarantine.pipeline_audit
+USING DELTA
+LOCATION 'abfss://silver@evdatalakedev2.dfs.core.windows.net/quarantine/pipeline_audit/';
+
+CREATE TABLE IF NOT EXISTS ev_catalog.quarantine.sessions
+USING DELTA
+LOCATION 'abfss://silver@evdatalakedev2.dfs.core.windows.net/quarantine/sessions/';
+
+CREATE TABLE IF NOT EXISTS ev_catalog.quarantine.states
+USING DELTA
+LOCATION 'abfss://silver@evdatalakedev2.dfs.core.windows.net/quarantine/states/';
+
+CREATE TABLE IF NOT EXISTS ev_catalog.quarantine.stations
+USING DELTA
+LOCATION 'abfss://silver@evdatalakedev2.dfs.core.windows.net/quarantine/stations/';
+
+CREATE TABLE IF NOT EXISTS ev_catalog.quarantine.tariffs
+USING DELTA
+LOCATION 'abfss://silver@evdatalakedev2.dfs.core.windows.net/quarantine/tariffs/';
+
+CREATE TABLE IF NOT EXISTS ev_catalog.quarantine.vehicles
+USING DELTA
+LOCATION 'abfss://silver@evdatalakedev2.dfs.core.windows.net/quarantine/vehicles/';
 ```
 
-Verify in Catalog: **ev_catalog > quarantine > payments** — you should see the table with
-`rejection_reason` and `quarantine_ts` columns alongside the original payment fields.
+> **When to run this:** Run each `CREATE TABLE` statement only after the corresponding Silver notebook
+> has executed at least once. If the quarantine path contains no Delta files yet, the statement will
+> fail with `Path does not exist` — that is expected and means no bad rows were rejected for that entity.
 
-To query bad rows:
+Verify in Catalog: **ev_catalog > quarantine** — each registered table appears with
+`rejection_reason` and `quarantine_ts` columns alongside the original entity fields.
+
+To query bad rows for any entity:
 ```sql
 SELECT rejection_reason, COUNT(*) AS cnt, MAX(quarantine_ts) AS latest
-FROM ev_catalog.quarantine.payments
+FROM ev_catalog.quarantine.payments     -- swap table name for other entities
 GROUP BY rejection_reason
 ORDER BY cnt DESC;
 ```
@@ -304,18 +370,19 @@ Re-running the same `p_run_date` is safe — matched rows are overwritten, no du
 ### Execution flow
 
 ```
-Cell 1  — imports, constants
+Cell 1  — imports, constants (BRONZE_VOL, SILVER_TABLE, SILVER_PATH, QUARANTINE), widget p_run_date
 Cell 2  — build read_path (incremental or full), read all pages with recursiveFileLookup
-Cell 3  — explode data[] array, select and cast all fields
-Cell 4  — quality checks, early exit if 0 records, write quarantine for bad rows
-Cell 5  — Rule A: dedup by payment_id (latest updated_at wins)
-Cell 6  — Rule G: UTC timestamps to AEST/AEDT
-Cell 7  — Rule J: GST split (recompute from amount_aud)
-Cell 8  — Rule D: billing anomaly flag
-Cell 9  — add sl_ingested_at, sl_batch_id metadata
-Cell 10 — CREATE TABLE IF NOT EXISTS
-Cell 11 — MERGE upsert on payment_id
-Cell 12 — post-load summary by status
+Cell 3  — explode data[] array, select and cast all fields; early exit if 0 records
+Cell 4  — quality checks → rejection_reason; write bad rows to quarantine Delta; keep df_good
+Cell 5  — Rule A: dedup by payment_id (Window, latest updated_at wins, row_number=1)
+Cell 6  — Rule G: UTC timestamps → _utc and _aest columns (Australia/Sydney)
+Cell 7  — Rule J: GST split — gst_amount_aud and excl_gst_aud from amount_aud
+Cell 8  — Rule D: billing anomaly flag (failed/Disputed + amount > 0)
+Cell 9  — add sl_ingested_at, sl_batch_id Silver metadata columns
+Cell 10 — CREATE TABLE IF NOT EXISTS ev_catalog.silver.sl_payments USING DELTA
+Cell 11 — MERGE upsert on payment_id (whenMatchedUpdateAll / whenNotMatchedInsertAll)
+Cell 12 — run stats: merge_result.collect()[0] → inserted / updated / quarantined counts
+Cell 13 — post-load SQL breakdown by status (display())
 ```
 
 ---
@@ -380,17 +447,115 @@ TO `9245da2f-7129-4e0c-92c4-134fe896e294`;
 GRANT CREATE TABLE ON SCHEMA ev_catalog.quarantine
 TO `9245da2f-7129-4e0c-92c4-134fe896e294`;
 
--- If sl_payments table already exists (created via direct notebook run),
--- grant MODIFY and SELECT explicitly on the table itself.
+-- If Silver tables already exist (created via direct notebook run),
+-- grant MODIFY and SELECT explicitly on each table.
 -- Without this you get:
 --   PERMISSION_DENIED: User does not have MODIFY and SELECT on Table 'ev_catalog.silver.sl_payments'
 --   LOCATION_OVERLAP within 'GenerateTemporaryPathCredential' call
+
+-- Day 8
 GRANT MODIFY, SELECT ON TABLE ev_catalog.silver.sl_payments
 TO `9245da2f-7129-4e0c-92c4-134fe896e294`;
 
--- Same for quarantine table if already registered
+-- Day 9 — all remaining Silver tables
+GRANT MODIFY, SELECT ON TABLE ev_catalog.silver.sl_charge_cards
+TO `9245da2f-7129-4e0c-92c4-134fe896e294`;
+
+GRANT MODIFY, SELECT ON TABLE ev_catalog.silver.sl_chargers
+TO `9245da2f-7129-4e0c-92c4-134fe896e294`;
+
+GRANT MODIFY, SELECT ON TABLE ev_catalog.silver.sl_cities
+TO `9245da2f-7129-4e0c-92c4-134fe896e294`;
+
+GRANT MODIFY, SELECT ON TABLE ev_catalog.silver.sl_complaints
+TO `9245da2f-7129-4e0c-92c4-134fe896e294`;
+
+GRANT MODIFY, SELECT ON TABLE ev_catalog.silver.sl_customers
+TO `9245da2f-7129-4e0c-92c4-134fe896e294`;
+
+GRANT MODIFY, SELECT ON TABLE ev_catalog.silver.sl_employees
+TO `9245da2f-7129-4e0c-92c4-134fe896e294`;
+
+GRANT MODIFY, SELECT ON TABLE ev_catalog.silver.sl_energy_prices
+TO `9245da2f-7129-4e0c-92c4-134fe896e294`;
+
+GRANT MODIFY, SELECT ON TABLE ev_catalog.silver.sl_maintenance_events
+TO `9245da2f-7129-4e0c-92c4-134fe896e294`;
+
+GRANT MODIFY, SELECT ON TABLE ev_catalog.silver.sl_partners
+TO `9245da2f-7129-4e0c-92c4-134fe896e294`;
+
+GRANT MODIFY, SELECT ON TABLE ev_catalog.silver.sl_pipeline_audit
+TO `9245da2f-7129-4e0c-92c4-134fe896e294`;
+
+GRANT MODIFY, SELECT ON TABLE ev_catalog.silver.sl_sessions
+TO `9245da2f-7129-4e0c-92c4-134fe896e294`;
+
+GRANT MODIFY, SELECT ON TABLE ev_catalog.silver.sl_states
+TO `9245da2f-7129-4e0c-92c4-134fe896e294`;
+
+GRANT MODIFY, SELECT ON TABLE ev_catalog.silver.sl_stations
+TO `9245da2f-7129-4e0c-92c4-134fe896e294`;
+
+GRANT MODIFY, SELECT ON TABLE ev_catalog.silver.sl_tariffs
+TO `9245da2f-7129-4e0c-92c4-134fe896e294`;
+
+GRANT MODIFY, SELECT ON TABLE ev_catalog.silver.sl_vehicles
+TO `9245da2f-7129-4e0c-92c4-134fe896e294`;
+
+-- Quarantine tables — grant after registering each table (see Part 3b)
+-- Day 8
 GRANT MODIFY, SELECT ON TABLE ev_catalog.quarantine.payments
 TO `9245da2f-7129-4e0c-92c4-134fe896e294`;
+
+-- Day 9
+GRANT MODIFY, SELECT ON TABLE ev_catalog.quarantine.charge_cards
+TO `9245da2f-7129-4e0c-92c4-134fe896e294`;
+
+GRANT MODIFY, SELECT ON TABLE ev_catalog.quarantine.chargers
+TO `9245da2f-7129-4e0c-92c4-134fe896e294`;
+
+GRANT MODIFY, SELECT ON TABLE ev_catalog.quarantine.cities
+TO `9245da2f-7129-4e0c-92c4-134fe896e294`;
+
+GRANT MODIFY, SELECT ON TABLE ev_catalog.quarantine.complaints
+TO `9245da2f-7129-4e0c-92c4-134fe896e294`;
+
+GRANT MODIFY, SELECT ON TABLE ev_catalog.quarantine.customers
+TO `9245da2f-7129-4e0c-92c4-134fe896e294`;
+
+GRANT MODIFY, SELECT ON TABLE ev_catalog.quarantine.employees
+TO `9245da2f-7129-4e0c-92c4-134fe896e294`;
+
+GRANT MODIFY, SELECT ON TABLE ev_catalog.quarantine.energy_prices
+TO `9245da2f-7129-4e0c-92c4-134fe896e294`;
+
+GRANT MODIFY, SELECT ON TABLE ev_catalog.quarantine.maintenance_events
+TO `9245da2f-7129-4e0c-92c4-134fe896e294`;
+
+GRANT MODIFY, SELECT ON TABLE ev_catalog.quarantine.partners
+TO `9245da2f-7129-4e0c-92c4-134fe896e294`;
+
+GRANT MODIFY, SELECT ON TABLE ev_catalog.quarantine.pipeline_audit
+TO `9245da2f-7129-4e0c-92c4-134fe896e294`;
+
+GRANT MODIFY, SELECT ON TABLE ev_catalog.quarantine.sessions
+TO `9245da2f-7129-4e0c-92c4-134fe896e294`;
+
+GRANT MODIFY, SELECT ON TABLE ev_catalog.quarantine.states
+TO `9245da2f-7129-4e0c-92c4-134fe896e294`;
+
+GRANT MODIFY, SELECT ON TABLE ev_catalog.quarantine.stations
+TO `9245da2f-7129-4e0c-92c4-134fe896e294`;
+
+GRANT MODIFY, SELECT ON TABLE ev_catalog.quarantine.tariffs
+TO `9245da2f-7129-4e0c-92c4-134fe896e294`;
+
+GRANT MODIFY, SELECT ON TABLE ev_catalog.quarantine.vehicles
+TO `9245da2f-7129-4e0c-92c4-134fe896e294`;
+
+-- Tip: run table-level GRANTs only after the tables exist.
+-- If a notebook has never run yet, skip that table's GRANT for now and run it after the first notebook execution.
 ```
 
 ### Why notebook works directly but not from ADF
