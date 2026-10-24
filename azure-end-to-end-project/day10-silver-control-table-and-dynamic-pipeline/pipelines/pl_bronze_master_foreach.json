@@ -1,7 +1,7 @@
 {
     "name": "pl_bronze_master_foreach",
     "properties": {
-        "description": "End-to-end master pipeline (Day 10).\n\nFlow:\n  1. act_list_sources        — nb_list_active_sources reads Bronze control table, exits JSON array of source_names\n  2. act_foreach_source      — ForEach (sequential) calls pl_bronze_incremental_load_v3 per source\n  3. act_silver_dynamic      — ExecutePipeline -> pl_silver_dynamic_foreach\n                               Runs all active Silver notebooks in run_order sequence via control table\n\nAdding a new Bronze source  : INSERT into ev_catalog.ctl.pipeline_control\nAdding a new Silver entity  : INSERT into ev_catalog.ctl.silver_control\nNo ADF changes needed for either.",
+        "description": "End-to-end master pipeline (Day 10).\n\nFlow:\n  1. act_list_sources        — nb_list_active_sources reads Bronze control table, exits JSON array of source_names\n  2. act_foreach_source      — ForEach (sequential) calls pl_bronze_incremental_load_v3 per source\n  3. act_silver_dynamic      — ExecutePipeline -> pl_silver_dynamic_foreach\n                               Runs all active Silver notebooks in run_order sequence via control table\n\nAdding a new Bronze source  : INSERT into ev_catalog.ctl.pipeline_control\nAdding a new Silver entity  : INSERT into ev_catalog.silver.silver_control\nNo ADF changes needed for either.",
         "activities": [
             {
                 "name": "act_list_sources",

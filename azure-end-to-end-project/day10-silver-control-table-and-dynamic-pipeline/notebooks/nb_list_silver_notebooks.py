@@ -1,5 +1,5 @@
 # Databricks notebook: nb_list_silver_notebooks
-# Reads ev_catalog.ctl.silver_control WHERE is_active = true
+# Reads ev_catalog.silver.silver_control WHERE is_active = true
 # Returns a JSON array string of {notebook_name, entity_name} objects ordered by run_order.
 # Called by pl_silver_dynamic_foreach via act_list_silver_notebooks.
 #
@@ -11,7 +11,7 @@ import json
 
 rows = spark.sql("""
     SELECT notebook_name, entity_name
-    FROM   ev_catalog.ctl.silver_control
+    FROM   ev_catalog.silver.silver_control
     WHERE  is_active = true
     ORDER  BY run_order ASC
 """).collect()

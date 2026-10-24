@@ -52,12 +52,12 @@ pl_bronze_master_foreach
                                                                                (name from control table)
 ```
 
-**Adding entity #17:** Write notebook → `INSERT` one row into `ev_catalog.ctl.silver_control`. Zero ADF changes.
+**Adding entity #17:** Write notebook → `INSERT` one row into `ev_catalog.silver.silver_control`. Zero ADF changes.
 
 ### Control table driven design
 
 ```
-ev_catalog.ctl.silver_control
+ev_catalog.silver.silver_control
 ┌────────────────────────────────────────────────────────────────────────────┐
 │ entity_name │ notebook_name              │ run_order │ is_active │ ...     │
 │ payments    │ nb_silver_payments         │ 1         │ true      │         │
@@ -77,56 +77,62 @@ The ForEach iterates that array, passing each `notebook_name` to `pl_silver_runn
 
 ### Step 1 — Create the Silver control table
 
+The control table lives in `ev_catalog.silver` (same schema as the Silver Delta tables).
+No `DEFAULT` on timestamp columns — pass values explicitly in INSERT.
+
 Run in a Databricks SQL cell or notebook:
 
 ```sql
-CREATE TABLE IF NOT EXISTS ev_catalog.ctl.silver_control (
+CREATE TABLE IF NOT EXISTS ev_catalog.silver.silver_control (
     entity_name     STRING  NOT NULL,
     notebook_name   STRING  NOT NULL,
     run_order       INT     NOT NULL,
-    is_active       BOOLEAN NOT NULL DEFAULT true,
+    is_active       BOOLEAN NOT NULL,
     description     STRING,
-    created_at      TIMESTAMP DEFAULT current_timestamp(),
-    updated_at      TIMESTAMP DEFAULT current_timestamp()
+    created_at      TIMESTAMP,
+    updated_at      TIMESTAMP
 )
 USING DELTA
 COMMENT 'Silver layer control table — drives pl_silver_dynamic_foreach';
 ```
 
-> If `ev_catalog.ctl` schema does not exist yet (it was created in Day 6 for Bronze):
-> ```sql
-> CREATE SCHEMA IF NOT EXISTS ev_catalog.ctl;
-> ```
+> **Why `ev_catalog.silver` not `ev_catalog.ctl`?**
+> The `ctl` schema sits on the bronze container. Silver control belongs with the silver layer —
+> same schema, same external location (`ext-loc-ev-silver`). This avoids cross-container permission issues.
+
+> **Why no `DEFAULT current_timestamp()`?**
+> Delta Lake on Unity Catalog does not support column `DEFAULT` expressions in `CREATE TABLE`.
+> Pass `current_timestamp()` explicitly in each INSERT (see Step 2).
 
 ### Step 2 — Insert all 16 Silver entities
 
 ```sql
-INSERT INTO ev_catalog.ctl.silver_control
-    (entity_name, notebook_name, run_order, is_active, description)
+INSERT INTO ev_catalog.silver.silver_control
+    (entity_name, notebook_name, run_order, is_active, description, created_at, updated_at)
 VALUES
-    ('payments',           'nb_silver_payments',           1,  true, 'Payments — Rule A D G J'),
-    ('charge_cards',       'nb_silver_charge_cards',       2,  true, 'Charge cards — Rule A F G (PCI card mask)'),
-    ('chargers',           'nb_silver_chargers',           3,  true, 'Chargers — Rule A C G (fault flag)'),
-    ('cities',             'nb_silver_cities',             4,  true, 'Cities reference table — Rule A G'),
-    ('complaints',         'nb_silver_complaints',         5,  true, 'Complaints — Rule A C G I (SLA breach)'),
-    ('customers',          'nb_silver_customers',          6,  true, 'Customers — Rule A F G (PCI email mask)'),
-    ('employees',          'nb_silver_employees',          7,  true, 'Employees reference table — Rule A G'),
-    ('energy_prices',      'nb_silver_energy_prices',      8,  true, 'Energy prices — Rule A G, is_current flag'),
-    ('maintenance_events', 'nb_silver_maintenance_events', 9,  true, 'Maintenance events — Rule A C G, high_mttr_flag'),
-    ('partners',           'nb_silver_partners',           10, true, 'Partners — Rule A G, contract_expired_flag'),
-    ('pipeline_audit',     'nb_silver_pipeline_audit',     11, true, 'Pipeline audit — Rule A G, success_rate_pct'),
-    ('sessions',           'nb_silver_sessions',           12, true, 'Sessions — Rule A B G I J'),
-    ('states',             'nb_silver_states',             13, true, 'States reference table — Rule A G'),
-    ('stations',           'nb_silver_stations',           14, true, 'Stations — Rule A G, state_region'),
-    ('tariffs',            'nb_silver_tariffs',            15, true, 'Tariffs — Rule A G H (is_current recompute)'),
-    ('vehicles',           'nb_silver_vehicles',           16, true, 'Vehicles — Rule A G H (SCD2 is_current)');
+    ('payments',           'nb_silver_payments',           1,  true, 'Payments — Rule A D G J',                      current_timestamp(), current_timestamp()),
+    ('charge_cards',       'nb_silver_charge_cards',       2,  true, 'Charge cards — Rule A F G (PCI card mask)',     current_timestamp(), current_timestamp()),
+    ('chargers',           'nb_silver_chargers',           3,  true, 'Chargers — Rule A C G (fault flag)',            current_timestamp(), current_timestamp()),
+    ('cities',             'nb_silver_cities',             4,  true, 'Cities reference table — Rule A G',             current_timestamp(), current_timestamp()),
+    ('complaints',         'nb_silver_complaints',         5,  true, 'Complaints — Rule A C G I (SLA breach)',        current_timestamp(), current_timestamp()),
+    ('customers',          'nb_silver_customers',          6,  true, 'Customers — Rule A F G (PCI email mask)',       current_timestamp(), current_timestamp()),
+    ('employees',          'nb_silver_employees',          7,  true, 'Employees reference table — Rule A G',          current_timestamp(), current_timestamp()),
+    ('energy_prices',      'nb_silver_energy_prices',      8,  true, 'Energy prices — Rule A G, is_current flag',    current_timestamp(), current_timestamp()),
+    ('maintenance_events', 'nb_silver_maintenance_events', 9,  true, 'Maintenance events — Rule A C G, high_mttr_flag', current_timestamp(), current_timestamp()),
+    ('partners',           'nb_silver_partners',           10, true, 'Partners — Rule A G, contract_expired_flag',   current_timestamp(), current_timestamp()),
+    ('pipeline_audit',     'nb_silver_pipeline_audit',     11, true, 'Pipeline audit — Rule A G, success_rate_pct',  current_timestamp(), current_timestamp()),
+    ('sessions',           'nb_silver_sessions',           12, true, 'Sessions — Rule A B G I J',                    current_timestamp(), current_timestamp()),
+    ('states',             'nb_silver_states',             13, true, 'States reference table — Rule A G',            current_timestamp(), current_timestamp()),
+    ('stations',           'nb_silver_stations',           14, true, 'Stations — Rule A G, state_region',            current_timestamp(), current_timestamp()),
+    ('tariffs',            'nb_silver_tariffs',            15, true, 'Tariffs — Rule A G H (is_current recompute)',  current_timestamp(), current_timestamp()),
+    ('vehicles',           'nb_silver_vehicles',           16, true, 'Vehicles — Rule A G H (SCD2 is_current)',      current_timestamp(), current_timestamp());
 ```
 
 ### Step 3 — Verify
 
 ```sql
 SELECT entity_name, notebook_name, run_order, is_active
-FROM   ev_catalog.ctl.silver_control
+FROM   ev_catalog.silver.silver_control
 ORDER  BY run_order;
 -- Should return 16 rows, all is_active = true
 ```
@@ -148,7 +154,7 @@ import json
 
 rows = spark.sql("""
     SELECT notebook_name, entity_name
-    FROM   ev_catalog.ctl.silver_control
+    FROM   ev_catalog.silver.silver_control
     WHERE  is_active = true
     ORDER  BY run_order ASC
 """).collect()
@@ -180,7 +186,7 @@ Run the notebook manually. The exit value in the "Result" panel should look like
 ]
 ```
 
-If you see an empty string or Python exception, check that `ev_catalog.ctl.silver_control` was created and populated (Part 2).
+If you see an empty string or Python exception, check that `ev_catalog.silver.silver_control` was created and populated (Part 2).
 
 ---
 
@@ -330,7 +336,7 @@ pl_bronze_master_foreach  (3 activities on canvas)
 └── act_silver_dynamic → pl_silver_dynamic_foreach
     │
     ├── act_list_silver_notebooks
-    │   └── nb_list_silver_notebooks  (reads ev_catalog.ctl.silver_control)
+    │   └── nb_list_silver_notebooks  (reads ev_catalog.silver.silver_control)
     │       exits: '[{"notebook_name":"nb_silver_payments","entity_name":"payments"}, ...]'
     │
     └── act_foreach_silver  (ForEach, sequential)
@@ -359,10 +365,10 @@ Adding entity #17 (`bookings`) with Day 10 requires **zero ADF changes**:
 
 **Step 2 — Insert one control table row:**
 ```sql
-INSERT INTO ev_catalog.ctl.silver_control
-    (entity_name, notebook_name, run_order, is_active, description)
+INSERT INTO ev_catalog.silver.silver_control
+    (entity_name, notebook_name, run_order, is_active, description, created_at, updated_at)
 VALUES
-    ('bookings', 'nb_silver_bookings', 17, true, 'Bookings — Rule A G');
+    ('bookings', 'nb_silver_bookings', 17, true, 'Bookings — Rule A G', current_timestamp(), current_timestamp());
 ```
 
 **Step 3 — Done.** Next pipeline trigger automatically picks up `nb_silver_bookings` at position 17.
@@ -375,7 +381,7 @@ Compare to Day 9 approach: notebook → pipeline JSON → import pipeline → up
 
 ### Disable one entity (e.g. pipeline_audit during incident)
 ```sql
-UPDATE ev_catalog.ctl.silver_control
+UPDATE ev_catalog.silver.silver_control
 SET    is_active = false,
        updated_at = current_timestamp()
 WHERE  entity_name = 'pipeline_audit';
@@ -384,7 +390,7 @@ Next run: `nb_list_silver_notebooks` skips this row — notebook never triggered
 
 ### Re-enable
 ```sql
-UPDATE ev_catalog.ctl.silver_control
+UPDATE ev_catalog.silver.silver_control
 SET    is_active = true,
        updated_at = current_timestamp()
 WHERE  entity_name = 'pipeline_audit';
@@ -392,7 +398,7 @@ WHERE  entity_name = 'pipeline_audit';
 
 ### Change execution order (run sessions before payments)
 ```sql
-UPDATE ev_catalog.ctl.silver_control
+UPDATE ev_catalog.silver.silver_control
 SET    run_order = 0, updated_at = current_timestamp()
 WHERE  entity_name = 'sessions';
 ```
@@ -419,11 +425,11 @@ Order is controlled by `ORDER BY run_order ASC` in the notebook — no ADF chang
 ## Part 9: Practice Exercises
 
 ### Exercise 1 — Bootstrap and verify
-1. Create `ev_catalog.ctl.silver_control` using the DDL in Part 2
+1. Create `ev_catalog.silver.silver_control` using the DDL in Part 2
 2. Insert all 16 rows
 3. Create `nb_list_silver_notebooks` in Databricks
 4. Run the notebook manually — verify the exit value is a valid JSON array with 16 objects
-5. Query `SELECT count(*) FROM ev_catalog.ctl.silver_control WHERE is_active = true` → should return 16
+5. Query `SELECT count(*) FROM ev_catalog.silver.silver_control WHERE is_active = true` → should return 16
 
 ### Exercise 2 — Build pl_silver_runner via UI
 Following Part 4.1 step by step, build `pl_silver_runner` in ADF Studio.
@@ -446,17 +452,22 @@ Watch Monitor → drill into ForEach → verify each iteration shows the correct
 4. Re-enable: `UPDATE is_active = true WHERE entity_name = 'pipeline_audit'`
 
 ### Exercise 5 — Add a fictional entity
-1. Add a row: `INSERT INTO ev_catalog.ctl.silver_control VALUES ('test_entity', 'nb_silver_payments', 99, true, 'Test')`
+1. Add a row:
+   ```sql
+   INSERT INTO ev_catalog.silver.silver_control
+       (entity_name, notebook_name, run_order, is_active, description, created_at, updated_at)
+   VALUES ('test_entity', 'nb_silver_payments', 99, true, 'Test', current_timestamp(), current_timestamp());
+   ```
    (reuse payments notebook just to test routing)
 2. Run `nb_list_silver_notebooks` — verify `nb_silver_payments` appears twice (at position 1 and 99)
 3. Check that `pl_silver_runner` correctly resolves `nb_silver_payments` for both rows
-4. Clean up: `DELETE FROM ev_catalog.ctl.silver_control WHERE entity_name = 'test_entity'`
+4. Clean up: `DELETE FROM ev_catalog.silver.silver_control WHERE entity_name = 'test_entity'`
 
 ### Exercise 6 — Backfill a single entity
 Without the individual `pl_silver_<entity>` pipelines from Day 9, how do you backfill one entity?
-1. Disable all other entities: `UPDATE ev_catalog.ctl.silver_control SET is_active = false WHERE entity_name != 'sessions'`
+1. Disable all other entities: `UPDATE ev_catalog.silver.silver_control SET is_active = false WHERE entity_name != 'sessions'`
 2. Trigger `pl_silver_dynamic_foreach` with `p_run_date = 2026-10-01`
-3. Re-enable: `UPDATE ev_catalog.ctl.silver_control SET is_active = true`
+3. Re-enable: `UPDATE ev_catalog.silver.silver_control SET is_active = true`
 
 *Or* call `pl_silver_runner` directly (it is a standalone pipeline):
 - `p_notebook = nb_silver_sessions`, `p_run_date = 2026-10-01`, `p_run_type = incremental`
@@ -479,7 +490,7 @@ Write the answer without running it. Then trigger the pipeline to verify.
 ---
 
 ### Q2. How does the control table pattern solve the maintenance problem?
-**A.** The control table (`ev_catalog.ctl.silver_control`) is the single source of truth for which Silver notebooks exist, in what order to run them, and whether they are currently active. `nb_list_silver_notebooks` reads this table at runtime and returns an ordered list. ADF's ForEach iterates that list. Adding a new entity means inserting one SQL row — no ADF pipeline changes, no publish, no deployment needed.
+**A.** The control table (`ev_catalog.silver.silver_control`) is the single source of truth for which Silver notebooks exist, in what order to run them, and whether they are currently active. `nb_list_silver_notebooks` reads this table at runtime and returns an ordered list. ADF's ForEach iterates that list. Adding a new entity means inserting one SQL row — no ADF pipeline changes, no publish, no deployment needed.
 
 ---
 
@@ -564,7 +575,7 @@ When `p_run_date` is set → uses that date (manual backfill). The notebooks rec
 | Error | Cause | Fix |
 |-------|-------|-----|
 | `json expects its parameter to be a string, provided value is of type 'Object'` | `@json()` received a pre-parsed Object from runOutput — missing `string()` wrapper | Change ForEach items to `@json(string(activity('act_list_silver_notebooks').output.runOutput))` |
-| ForEach runs 0 iterations | All rows in `silver_control` have `is_active = false`, or table is empty | Run `SELECT * FROM ev_catalog.ctl.silver_control` — check is_active column |
+| ForEach runs 0 iterations | All rows in `silver_control` have `is_active = false`, or table is empty | Run `SELECT * FROM ev_catalog.silver.silver_control` — check is_active column |
 | `notebook not found` error in Databricks activity | `@concat` expression produces wrong path (e.g. email in notebook_name column) | Verify `silver_control.notebook_name` values are just the notebook name without path (e.g. `nb_silver_payments` NOT `/Users/.../nb_silver_payments`) |
 | `item().notebook_name` resolves to null | ForEach items expression returns flat strings instead of objects | Check `nb_list_silver_notebooks` exit value — must be `[{"notebook_name": "...", "entity_name": "..."}, ...]` not `["nb_silver_payments", ...]` |
 | Silver notebook exits `NO_DATA` | Bronze partition for that date doesn't exist | Run Bronze pipeline first, or pass `p_run_date = ''` for full load |
@@ -577,9 +588,9 @@ When `p_run_date` is set → uses that date (manual backfill). The notebooks rec
 ## Part 12: Day 10 Checklist
 
 **Control table:**
-- [ ] `ev_catalog.ctl.silver_control` created
+- [ ] `ev_catalog.silver.silver_control` created
 - [ ] All 16 rows inserted
-- [ ] Verify: `SELECT count(*) FROM ev_catalog.ctl.silver_control WHERE is_active = true` → 16
+- [ ] Verify: `SELECT count(*) FROM ev_catalog.silver.silver_control WHERE is_active = true` → 16
 
 **Notebook:**
 - [ ] `nb_list_silver_notebooks.py` created in Databricks at `/Users/hariomsuryawanshi68258@gmail.com/nb_list_silver_notebooks`
