@@ -1,0 +1,99 @@
+{
+    "name": "pl_silver_dynamic_foreach",
+    "properties": {
+        "description": "Dynamic Silver master pipeline.\n\nFlow:\n  1. act_list_silver_notebooks  — Databricks notebook reads ev_catalog.ctl.silver_control\n                                   WHERE is_active = true ORDER BY run_order\n                                   exits with: json.dumps([{notebook_name, entity_name}, ...])\n  2. act_foreach_silver         — ForEach (sequential) over the JSON array\n     └── act_run_silver_runner  — ExecutePipeline -> pl_silver_runner\n                                   passes p_notebook, p_run_date, p_run_type\n\nAdding a new entity = INSERT one row into ev_catalog.ctl.silver_control.\nNo ADF change required.",
+        "activities": [
+            {
+                "name": "act_list_silver_notebooks",
+                "description": "Read ev_catalog.ctl.silver_control WHERE is_active=true ORDER BY run_order.\nReturns JSON array string: [{\"notebook_name\":\"nb_silver_payments\",\"entity_name\":\"payments\"}, ...]",
+                "type": "DatabricksNotebook",
+                "dependsOn": [],
+                "policy": {
+                    "timeout": "0.00:10:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "notebookPath": "/Users/hariomsuryawanshi68258@gmail.com/nb_list_silver_notebooks",
+                    "baseParameters": {}
+                },
+                "linkedServiceName": {
+                    "referenceName": "ls_databricks",
+                    "type": "LinkedServiceReference"
+                }
+            },
+            {
+                "name": "act_foreach_silver",
+                "description": "Iterate sequentially over each active Silver notebook entry.\njson() parses the raw runOutput string into an array of objects.\nEach @item() is {notebook_name, entity_name}.",
+                "type": "ForEach",
+                "dependsOn": [
+                    {
+                        "activity": "act_list_silver_notebooks",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "items": {
+                        "value": "@json(string(activity('act_list_silver_notebooks').output.runOutput))",
+                        "type": "Expression"
+                    },
+                    "isSequential": true,
+                    "activities": [
+                        {
+                            "name": "act_run_silver_runner",
+                            "description": "Call pl_silver_runner for the current entity.\np_notebook comes from the control table row — dynamically resolved at runtime.",
+                            "type": "ExecutePipeline",
+                            "dependsOn": [],
+                            "policy": {
+                                "secureInput": false
+                            },
+                            "userProperties": [],
+                            "typeProperties": {
+                                "pipeline": {
+                                    "referenceName": "pl_silver_runner",
+                                    "type": "PipelineReference"
+                                },
+                                "waitOnCompletion": true,
+                                "parameters": {
+                                    "p_notebook": {
+                                        "value": "@item().notebook_name",
+                                        "type": "Expression"
+                                    },
+                                    "p_run_date": {
+                                        "value": "@pipeline().parameters.p_run_date",
+                                        "type": "Expression"
+                                    },
+                                    "p_run_type": {
+                                        "value": "@pipeline().parameters.p_run_type",
+                                        "type": "Expression"
+                                    }
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        ],
+        "parameters": {
+            "p_run_date": {
+                "type": "string",
+                "defaultValue": ""
+            },
+            "p_run_type": {
+                "type": "string",
+                "defaultValue": "incremental"
+            }
+        },
+        "folder": {
+            "name": "silver"
+        },
+        "annotations": []
+    },
+    "type": "Microsoft.DataFactory/factories/pipelines"
+}

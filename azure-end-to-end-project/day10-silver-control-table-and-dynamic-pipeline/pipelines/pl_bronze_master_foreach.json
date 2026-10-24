@@ -1,0 +1,132 @@
+{
+    "name": "pl_bronze_master_foreach",
+    "properties": {
+        "description": "End-to-end master pipeline (Day 10).\n\nFlow:\n  1. act_list_sources        — nb_list_active_sources reads Bronze control table, exits JSON array of source_names\n  2. act_foreach_source      — ForEach (sequential) calls pl_bronze_incremental_load_v3 per source\n  3. act_silver_dynamic      — ExecutePipeline -> pl_silver_dynamic_foreach\n                               Runs all active Silver notebooks in run_order sequence via control table\n\nAdding a new Bronze source  : INSERT into ev_catalog.ctl.pipeline_control\nAdding a new Silver entity  : INSERT into ev_catalog.ctl.silver_control\nNo ADF changes needed for either.",
+        "activities": [
+            {
+                "name": "act_list_sources",
+                "description": "Run nb_list_active_sources — exits with json.dumps([source_names]) string",
+                "type": "DatabricksNotebook",
+                "dependsOn": [],
+                "policy": {
+                    "timeout": "0.01:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "notebookPath": "/Users/hariomsuryawanshi68258@gmail.com/nb_list_active_sources"
+                },
+                "linkedServiceName": {
+                    "referenceName": "ls_databricks",
+                    "type": "LinkedServiceReference"
+                }
+            },
+            {
+                "name": "act_foreach_source",
+                "description": "Iterate sequentially over each active Bronze source and run the incremental load pipeline.",
+                "type": "ForEach",
+                "dependsOn": [
+                    {
+                        "activity": "act_list_sources",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "items": {
+                        "value": "@json(string(activity('act_list_sources').output.runOutput))",
+                        "type": "Expression"
+                    },
+                    "isSequential": true,
+                    "activities": [
+                        {
+                            "name": "act_run_source",
+                            "description": "Call pl_bronze_incremental_load_v3 for the current source_name.",
+                            "type": "ExecutePipeline",
+                            "dependsOn": [],
+                            "policy": {
+                                "secureInput": false
+                            },
+                            "userProperties": [],
+                            "typeProperties": {
+                                "pipeline": {
+                                    "referenceName": "pl_bronze_incremental_load_v3",
+                                    "type": "PipelineReference"
+                                },
+                                "waitOnCompletion": true,
+                                "parameters": {
+                                    "p_source_name": {
+                                        "value": "@item()",
+                                        "type": "Expression"
+                                    },
+                                    "p_load_type_override": {
+                                        "value": "@pipeline().parameters.p_load_type_override",
+                                        "type": "Expression"
+                                    }
+                                }
+                            }
+                        }
+                    ]
+                }
+            },
+            {
+                "name": "act_silver_dynamic",
+                "description": "After Bronze ForEach completes, trigger the dynamic Silver pipeline.\npl_silver_dynamic_foreach reads ev_catalog.ctl.silver_control and runs each notebook in order.",
+                "type": "ExecutePipeline",
+                "dependsOn": [
+                    {
+                        "activity": "act_foreach_source",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "pipeline": {
+                        "referenceName": "pl_silver_dynamic_foreach",
+                        "type": "PipelineReference"
+                    },
+                    "waitOnCompletion": true,
+                    "parameters": {
+                        "p_run_date": {
+                            "value": "@pipeline().parameters.p_run_date",
+                            "type": "Expression"
+                        },
+                        "p_run_type": {
+                            "value": "@pipeline().parameters.p_run_type",
+                            "type": "Expression"
+                        }
+                    }
+                }
+            }
+        ],
+        "parameters": {
+            "p_load_type_override": {
+                "type": "string",
+                "defaultValue": ""
+            },
+            "p_run_date": {
+                "type": "string",
+                "defaultValue": ""
+            },
+            "p_run_type": {
+                "type": "string",
+                "defaultValue": "incremental"
+            }
+        },
+        "folder": {
+            "name": "bronze"
+        },
+        "annotations": []
+    },
+    "type": "Microsoft.DataFactory/factories/pipelines"
+}
