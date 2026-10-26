@@ -33,6 +33,25 @@ df_pages = (
     .withColumn("_src", F.col("_metadata.file_path"))
 )
 
+# ── Safe-cast "data" when Spark inferred it as STRING (empty-array partitions) ─
+# Root cause: if ALL Bronze files in a partition contain "data": [], Spark infers
+# the column as STRING. from_json re-parses it using the schema from non-empty rows.
+from pyspark.sql.types import StringType, ArrayType
+data_type = dict(df_pages.dtypes).get("data", "unknown")
+if data_type == "string":
+    # Use schema from a non-empty row; if none exists the whole load is empty data
+    sample = df_pages.filter(F.col("data").isNotNull() & (F.col("data") != "[]")).limit(1).collect()
+    if sample:
+        inferred_schema = spark.read.json(
+            spark.sparkContext.parallelize([sample[0]["data"]])
+        ).schema
+        array_schema = ArrayType(inferred_schema)
+        df_pages = df_pages.withColumn("data", F.from_json(F.col("data"), array_schema))
+    else:
+        print("WARNING: No non-empty data rows found — partition may be fully empty.")
+        dbutils.notebook.exit("NO_DATA")
+df_pages = df_pages.filter(F.col("data").isNotNull() & (F.size(F.col("data")) > 0))
+
 # ── Cell 3: explode data array → one row per audit record ─────────────────────
 df_exploded = (
     df_pages
