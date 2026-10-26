@@ -22,14 +22,16 @@ SILVER_PATH  = "abfss://silver@evdatalakedev2.dfs.core.windows.net/payments/"
 QUARANTINE   = "abfss://silver@evdatalakedev2.dfs.core.windows.net/quarantine/payments/"
 
 dbutils.widgets.text("p_run_date", "", "Run date YYYY-MM-DD (blank = full load)")
+dbutils.widgets.text("p_run_type", "", "Run type full/incremental (blank = full load)")
 run_date = dbutils.widgets.get("p_run_date").strip()
+run_type = dbutils.widgets.get("p_run_type").strip()
 
 # ── Cell 2: read bronze pages (each file = { data:[...], pagination:{...} }) ──
 # ingestion_date=YYYY-MM-DD/ may contain one or more run_id=<uuid>/ subfolders
 # (ADF sets run_id to the pipeline run UUID, not the date).
 # recursiveFileLookup=true picks up all JSON files under the date folder
 # regardless of how many run_id= subfolders exist inside it.
-if run_date:
+if run_date and run_type == 'incremental':
     read_path = f"{BRONZE_VOL}ingestion_date={run_date}/"
 else:
     read_path = BRONZE_VOL
@@ -212,20 +214,7 @@ elif rows_inserted == 0 and rows_updated > 0:
 else:
     print("  OK: Silver updated successfully.")
 print("=" * 55)
-if run_date:
-    read_path = f"{BRONZE_VOL}ingestion_date={run_date}/run_id={run_date}/"
-else:
-    read_path = BRONZE_VOL
 
-print(f"Reading from: {read_path}")
-
-df_pages = (
-    spark.read.format("json")
-    .option("multiline", "true")
-    .option("recursiveFileLookup", "true")
-    .load(read_path)
-    .withColumn("_src", F.col("_metadata.file_path"))
-)
 # ── Cell 13: post-load breakdown by status ────────────────────────────────────
 spark.sql(f"""
 SELECT

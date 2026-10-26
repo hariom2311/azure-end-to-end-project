@@ -13,10 +13,12 @@ SILVER_PATH  = "abfss://silver@evdatalakedev2.dfs.core.windows.net/states/"
 QUARANTINE   = "abfss://silver@evdatalakedev2.dfs.core.windows.net/quarantine/states/"
 
 dbutils.widgets.text("p_run_date", "", "Run date YYYY-MM-DD (blank = full load)")
+dbutils.widgets.text("p_run_type", "", "Run type full/incremental (blank = full load)")
 run_date = dbutils.widgets.get("p_run_date").strip()
+run_type = dbutils.widgets.get("p_run_type").strip()
 
 # ── Cell 2: read bronze pages ─────────────────────────────────────────────────
-if run_date:
+if run_date and run_type == 'incremental':
     read_path = f"{BRONZE_VOL}ingestion_date={run_date}/"
 else:
     read_path = BRONZE_VOL
