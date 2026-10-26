@@ -1,0 +1,61 @@
+{
+    "name": "pl_gold_runner",
+    "properties": {
+        "description": "Generic Gold runner — called by pl_gold_dynamic_foreach once per notebook.\n\nReceives parameters from the parent ForEach:\n  p_notebook   : notebook name only (e.g. 'nb_gold_dim_station')\n  p_run_date   : YYYY-MM-DD or '' for full load\n  p_run_type   : 'incremental' | 'full'\n\nBuilds the full Databricks workspace path at runtime:\n  /Users/hariomsuryawanshi68258@gmail.com/<p_notebook>\n\nThis single pipeline replaces individual pl_gold_<entity> pipelines.\nAdding a new Gold notebook = INSERT one row in ev_catalog.gold.gold_control.",
+        "activities": [
+            {
+                "name": "act_run_gold_notebook",
+                "description": "Execute the Gold notebook whose name comes from the control table row.",
+                "type": "DatabricksNotebook",
+                "dependsOn": [],
+                "policy": {
+                    "timeout": "0.02:00:00",
+                    "retry": 1,
+                    "retryIntervalInSeconds": 60,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "notebookPath": {
+                        "value": "@concat('/Users/hariomsuryawanshi68258@gmail.com/', pipeline().parameters.p_notebook)",
+                        "type": "Expression"
+                    },
+                    "baseParameters": {
+                        "p_run_date": {
+                            "value": "@if(empty(pipeline().parameters.p_run_date), formatDateTime(pipeline().TriggerTime, 'yyyy-MM-dd'), pipeline().parameters.p_run_date)",
+                            "type": "Expression"
+                        },
+                        "p_run_type": {
+                            "value": "@pipeline().parameters.p_run_type",
+                            "type": "Expression"
+                        }
+                    }
+                },
+                "linkedServiceName": {
+                    "referenceName": "ls_databricks",
+                    "type": "LinkedServiceReference"
+                }
+            }
+        ],
+        "parameters": {
+            "p_notebook": {
+                "type": "string",
+                "defaultValue": "nb_gold_dim_station"
+            },
+            "p_run_date": {
+                "type": "string",
+                "defaultValue": ""
+            },
+            "p_run_type": {
+                "type": "string",
+                "defaultValue": "incremental"
+            }
+        },
+        "folder": {
+            "name": "gold"
+        },
+        "annotations": []
+    },
+    "type": "Microsoft.DataFactory/factories/pipelines"
+}
