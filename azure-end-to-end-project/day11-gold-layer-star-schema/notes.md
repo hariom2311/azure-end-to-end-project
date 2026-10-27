@@ -170,10 +170,54 @@ Unity Catalog tables: `ev_catalog.gold.<table_name>`
 ## Part 8 — Admin Setup Steps (Run Once Before First Pipeline)
 
 ### Step 1 — Create External Location for Gold
-In Databricks Unity Catalog UI → External Locations → Create:
-- Name: `ext-loc-ev-gold`
-- URL: `abfss://gold@evdatalakedev2.dfs.core.windows.net/`
-- Storage credential: same credential used for Silver
+
+#### What is an External Location?
+Unity Catalog needs to know which ADLS paths it is allowed to use for external Delta tables.
+An External Location maps a name (e.g. `ext-loc-ev-gold`) to an ADLS path
+(`abfss://gold@evdatalakedev2.dfs.core.windows.net/`).
+Without it, any `CREATE TABLE ... LOCATION 'abfss://gold@...'` will fail with:
+```
+PERMISSION_DENIED: Principal does not have CREATE EXTERNAL TABLE
+on External Location 'ext-loc-ev-gold'
+```
+
+#### Pre-requisite — Storage Credential
+The External Location needs a Storage Credential that has access to the ADLS storage account.
+The same credential used for Silver (`ev-storage-credential` or similar) can be reused — it
+already has access to `evdatalakedev2` storage account.
+
+To check existing credentials:
+```
+Databricks UI → Catalog → External Data → Storage Credentials
+```
+
+#### UI Steps — Create External Location for Gold
+
+1. Open **Databricks workspace** → click **Catalog** icon (left sidebar)
+2. In Catalog Explorer → click **External Data** → **External Locations**
+3. Click **Create location** (top right)
+4. Fill in:
+   - **External location name**: `ext-loc-ev-gold`
+   - **URL**: `abfss://gold@evdatalakedev2.dfs.core.windows.net/`
+   - **Storage credential**: select the existing credential (same one used for Silver/Bronze)
+5. Click **Create**
+6. Click **Test connection** — should show "Connection successful"
+
+#### Verify with SQL
+```sql
+SHOW EXTERNAL LOCATIONS;
+-- Should show ext-loc-ev-gold with URL abfss://gold@evdatalakedev2.dfs.core.windows.net/
+
+DESCRIBE EXTERNAL LOCATION `ext-loc-ev-gold`;
+```
+
+#### Grant SP access to the External Location
+Run in Databricks SQL Editor **as metastore admin**:
+```sql
+GRANT CREATE EXTERNAL TABLE ON EXTERNAL LOCATION `ext-loc-ev-gold`
+TO `9245da2f-7129-4e0c-92c4-134fe896e294`;
+```
+This is already included in `grants_gold_sp.sql` Phase 1 section.
 
 ### Step 2 — Run nb_gold_setup_control_table
 This notebook:

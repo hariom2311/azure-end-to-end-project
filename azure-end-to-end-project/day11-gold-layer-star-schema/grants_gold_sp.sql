@@ -12,10 +12,24 @@
 -- =============================================================================
 
 -- ---------------------------------------------------------------------------
--- External Location — required for CREATE TABLE ... LOCATION 'abfss://gold@...'
--- Without this the notebook fails with PERMISSION_DENIED on External Location.
--- Run: SHOW EXTERNAL LOCATIONS; to confirm exact names.
+-- PRE-REQUISITE: Create the Gold External Location (run once, admin only)
+--
+-- What: Maps a name to the ADLS Gold container so Unity Catalog allows
+--       CREATE TABLE ... LOCATION 'abfss://gold@...' calls.
+--
+-- UI Steps (Databricks → Catalog → External Data → External Locations):
+--   1. Click "Create location"
+--   2. External location name : ext-loc-ev-gold
+--   3. URL                    : abfss://gold@evdatalakedev2.dfs.core.windows.net/
+--   4. Storage credential     : select existing credential (same as Silver/Bronze)
+--   5. Click Create → Test connection → should show "Connection successful"
+--
+-- Verify:
+--   SHOW EXTERNAL LOCATIONS;
+--   DESCRIBE EXTERNAL LOCATION `ext-loc-ev-gold`;
 -- ---------------------------------------------------------------------------
+
+-- Grant SP access to the Gold external location (metastore admin required)
 GRANT CREATE EXTERNAL TABLE ON EXTERNAL LOCATION `ext-loc-ev-gold`
 TO `9245da2f-7129-4e0c-92c4-134fe896e294`;
 
