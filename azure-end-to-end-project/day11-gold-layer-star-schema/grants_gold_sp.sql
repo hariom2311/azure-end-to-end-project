@@ -11,6 +11,14 @@
 -- PHASE 1 — Run BEFORE the first pipeline trigger
 -- =============================================================================
 
+-- ---------------------------------------------------------------------------
+-- External Location — required for CREATE TABLE ... LOCATION 'abfss://gold@...'
+-- Without this the notebook fails with PERMISSION_DENIED on External Location.
+-- Run: SHOW EXTERNAL LOCATIONS; to confirm exact names.
+-- ---------------------------------------------------------------------------
+GRANT CREATE EXTERNAL TABLE ON EXTERNAL LOCATION `ext-loc-ev-gold`
+TO `9245da2f-7129-4e0c-92c4-134fe896e294`;
+
 -- Gold catalog + schema access
 GRANT USE CATALOG ON CATALOG ev_catalog
 TO `9245da2f-7129-4e0c-92c4-134fe896e294`;

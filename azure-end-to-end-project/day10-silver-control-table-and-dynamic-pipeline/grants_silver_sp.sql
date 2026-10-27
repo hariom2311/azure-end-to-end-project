@@ -24,7 +24,20 @@
 -- =============================================================================
 
 -- ---------------------------------------------------------------------------
--- 0. Catalog-level access (required for any schema/table access below)
+-- 0. External Location — required for CREATE TABLE ... LOCATION 'abfss://...'
+--    Without this grant the notebook fails with:
+--    PERMISSION_DENIED: Principal does not have CREATE EXTERNAL TABLE
+--    on External Location 'ext-loc-ev-silver'
+--    Run: SHOW EXTERNAL LOCATIONS; to confirm the exact name.
+-- ---------------------------------------------------------------------------
+GRANT CREATE EXTERNAL TABLE ON EXTERNAL LOCATION `ext-loc-ev-silver`
+TO `9245da2f-7129-4e0c-92c4-134fe896e294`;
+
+GRANT CREATE EXTERNAL TABLE ON EXTERNAL LOCATION `ext-loc-ev-quarantine`
+TO `9245da2f-7129-4e0c-92c4-134fe896e294`;
+
+-- ---------------------------------------------------------------------------
+-- 1. Catalog-level access (required for any schema/table access below)
 -- ---------------------------------------------------------------------------
 GRANT USE CATALOG ON CATALOG ev_catalog
 TO `9245da2f-7129-4e0c-92c4-134fe896e294`;
