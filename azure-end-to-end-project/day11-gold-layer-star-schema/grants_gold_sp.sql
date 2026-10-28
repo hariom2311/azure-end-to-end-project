@@ -30,7 +30,7 @@
 -- ---------------------------------------------------------------------------
 
 -- Grant SP access to the Gold external location (metastore admin required)
-GRANT CREATE EXTERNAL TABLE ON EXTERNAL LOCATION `ext-loc-ev-gold`
+GRANT CREATE EXTERNAL TABLE, READ FILES, WRITE FILES ON EXTERNAL LOCATION `ext-loc-ev-gold`
 TO `9245da2f-7129-4e0c-92c4-134fe896e294`;
 
 -- Gold catalog + schema access

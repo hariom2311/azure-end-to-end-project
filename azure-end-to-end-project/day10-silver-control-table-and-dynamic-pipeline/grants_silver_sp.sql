@@ -24,16 +24,24 @@
 -- =============================================================================
 
 -- ---------------------------------------------------------------------------
--- 0. External Location — required for CREATE TABLE ... LOCATION 'abfss://...'
---    Without this grant the notebook fails with:
---    PERMISSION_DENIED: Principal does not have CREATE EXTERNAL TABLE
---    on External Location 'ext-loc-ev-silver'
---    Run: SHOW EXTERNAL LOCATIONS; to confirm the exact name.
+-- 0. External Location — three privileges needed on each location:
+--
+--    CREATE EXTERNAL TABLE : create Delta table at that ADLS path
+--    READ FILES            : read Delta log + parquet files (needed every run)
+--    WRITE FILES           : write Delta log + parquet files (needed every run)
+--
+--    Why intermittent errors?
+--    Unity Catalog issues short-lived ADLS credential tokens (~1 hour).
+--    When ForEach runs 16 notebooks sequentially the token can expire
+--    mid-pipeline. READ FILES / WRITE FILES grants ensure the token is
+--    refreshed per-operation rather than cached from the first notebook.
+--
+--    Run: SHOW EXTERNAL LOCATIONS; to confirm the exact names.
 -- ---------------------------------------------------------------------------
-GRANT CREATE EXTERNAL TABLE ON EXTERNAL LOCATION `ext-loc-ev-silver`
+GRANT CREATE EXTERNAL TABLE, READ FILES, WRITE FILES ON EXTERNAL LOCATION `ext-loc-ev-silver`
 TO `9245da2f-7129-4e0c-92c4-134fe896e294`;
 
-GRANT CREATE EXTERNAL TABLE ON EXTERNAL LOCATION `ext-loc-ev-quarantine`
+GRANT CREATE EXTERNAL TABLE, READ FILES, WRITE FILES ON EXTERNAL LOCATION `ext-loc-ev-quarantine`
 TO `9245da2f-7129-4e0c-92c4-134fe896e294`;
 
 -- ---------------------------------------------------------------------------
