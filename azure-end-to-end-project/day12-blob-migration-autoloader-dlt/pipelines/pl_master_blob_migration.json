@@ -1,0 +1,100 @@
+{
+    "name": "pl_master_blob_migration",
+    "properties": {
+        "description": "Master orchestrator for blob migration across all three medallion layers.\n\nExecutes Bronze → Silver → Gold in sequence so that each layer's files\nare confirmed written before the next layer begins.\n\nParameters:\n  p_load_type (String, default: incremental) — passed to all three child pipelines.\n    'full'        : all files from all date folders\n    'incremental' : yesterday (invoices) / previous month (reports) only",
+        "activities": [
+            {
+                "name": "act_run_bronze_blob",
+                "description": "Step 1 of 3 — copy blob files into Bronze ADLS container.",
+                "type": "ExecutePipeline",
+                "dependsOn": [],
+                "policy": {
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "pipeline": {
+                        "referenceName": "pl_bronze_blob_ingestion",
+                        "type": "PipelineReference"
+                    },
+                    "waitOnCompletion": true,
+                    "parameters": {
+                        "p_load_type": {
+                            "value": "@pipeline().parameters.p_load_type",
+                            "type": "Expression"
+                        }
+                    }
+                }
+            },
+            {
+                "name": "act_run_silver_blob",
+                "description": "Step 2 of 3 — copy blob files into Silver ADLS container. Runs after Bronze succeeds.",
+                "type": "ExecutePipeline",
+                "dependsOn": [
+                    {
+                        "activity": "act_run_bronze_blob",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "pipeline": {
+                        "referenceName": "pl_silver_blob_migration",
+                        "type": "PipelineReference"
+                    },
+                    "waitOnCompletion": true,
+                    "parameters": {
+                        "p_load_type": {
+                            "value": "@pipeline().parameters.p_load_type",
+                            "type": "Expression"
+                        }
+                    }
+                }
+            },
+            {
+                "name": "act_run_gold_blob",
+                "description": "Step 3 of 3 — copy blob files into Gold ADLS container. Runs after Silver succeeds.",
+                "type": "ExecutePipeline",
+                "dependsOn": [
+                    {
+                        "activity": "act_run_silver_blob",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "pipeline": {
+                        "referenceName": "pl_gold_blob_migration",
+                        "type": "PipelineReference"
+                    },
+                    "waitOnCompletion": true,
+                    "parameters": {
+                        "p_load_type": {
+                            "value": "@pipeline().parameters.p_load_type",
+                            "type": "Expression"
+                        }
+                    }
+                }
+            }
+        ],
+        "parameters": {
+            "p_load_type": {
+                "type": "String",
+                "defaultValue": "incremental"
+            }
+        },
+        "annotations": [],
+        "lastPublishTime": "2026-10-30T00:00:00Z"
+    },
+    "type": "Microsoft.DataFactory/factories/pipelines"
+}
