@@ -1,0 +1,20 @@
+{
+    "name": "ls_adls_silver",
+    "type": "Microsoft.DataFactory/factories/linkedservices",
+    "properties": {
+        "description": "Azure Data Lake Storage Gen2 linked service for the Silver container (evdatalakedev2).\n\nAuthentication : System-assigned Managed Identity of the ADF instance.\nUsed by        : ds_silver_blob_sink — blob file migration into the silver container.\n\nNOTE: If your ADF already has an ADLS Gen2 linked service pointing to\nevdatalakedev2 (e.g. ls_adls_ev or ls_adls_gen2), reuse that one in\nds_silver_blob_sink instead of creating a new linked service.",
+        "type": "AzureBlobFS",
+        "typeProperties": {
+            "url": "https://evdatalakedev2.dfs.core.windows.net",
+            "accountKey": {
+                "type": "AzureKeyVaultSecret",
+                "store": {
+                    "referenceName": "ls_key_vault",
+                    "type": "LinkedServiceReference"
+                },
+                "secretName": "adls-storage-account-key"
+            }
+        },
+        "annotations": []
+    }
+}

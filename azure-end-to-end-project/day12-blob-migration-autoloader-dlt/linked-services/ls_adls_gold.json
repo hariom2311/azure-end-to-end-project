@@ -1,0 +1,20 @@
+{
+    "name": "ls_adls_gold",
+    "type": "Microsoft.DataFactory/factories/linkedservices",
+    "properties": {
+        "description": "Azure Data Lake Storage Gen2 linked service for the Gold container (evdatalakedev2).\n\nAuthentication : Azure Key Vault secret for the storage account key.\nUsed by        : ds_gold_blob_sink — blob file migration into the gold container.\n\nNOTE: If your ADF already has an ADLS Gen2 linked service pointing to\nevdatalakedev2 (e.g. ls_adls_ev or ls_adls_gen2), reuse that one in\nds_gold_blob_sink instead of creating a new linked service.\nBoth silver and gold containers live on the same storage account so\none linked service can serve both — just update the dataset's fileSystem\nproperty to 'gold' or 'silver' as needed.",
+        "type": "AzureBlobFS",
+        "typeProperties": {
+            "url": "https://evdatalakedev2.dfs.core.windows.net",
+            "accountKey": {
+                "type": "AzureKeyVaultSecret",
+                "store": {
+                    "referenceName": "ls_key_vault",
+                    "type": "LinkedServiceReference"
+                },
+                "secretName": "adls-storage-account-key"
+            }
+        },
+        "annotations": []
+    }
+}
