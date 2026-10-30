@@ -1,0 +1,29 @@
+{
+    "name": "ds_gold_blob_sink",
+    "type": "Microsoft.DataFactory/factories/datasets",
+    "properties": {
+        "description": "Sink dataset for writing blob source files (config XML, invoice PDFs, report JSON) to the Gold ADLS Gen2 container.\n\nMirrors ds_bronze_blob_sink — same structure, different linked service and fileSystem.\n\nLinked service : ls_adls_gold  (points to the gold container)\nParameter      : p_folder — set by each copy activity, e.g.\n                   gold-blob/config/load_type=full\n                   gold-blob/invoices/ingestion_date=2025-10-24\n                   gold-blob/reports/ingestion_date=2025-10",
+        "linkedServiceName": {
+            "referenceName": "ls_adls_gold",
+            "type": "LinkedServiceReference"
+        },
+        "parameters": {
+            "p_folder": {
+                "type": "String",
+                "defaultValue": ""
+            }
+        },
+        "type": "Binary",
+        "typeProperties": {
+            "location": {
+                "type": "AzureBlobFSLocation",
+                "fileSystem": "gold",
+                "folderPath": {
+                    "value": "@dataset().p_folder",
+                    "type": "Expression"
+                }
+            }
+        },
+        "annotations": []
+    }
+}

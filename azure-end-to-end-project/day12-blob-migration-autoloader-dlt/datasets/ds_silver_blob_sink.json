@@ -1,0 +1,29 @@
+{
+    "name": "ds_silver_blob_sink",
+    "type": "Microsoft.DataFactory/factories/datasets",
+    "properties": {
+        "description": "Sink dataset for writing blob source files (config XML, invoice PDFs, report JSON) to the Silver ADLS Gen2 container.\n\nMirrors ds_bronze_blob_sink — same structure, different linked service and fileSystem.\n\nLinked service : ls_adls_silver  (points to the silver container)\nParameter      : p_folder — set by each copy activity, e.g.\n                   silver-blob/config/load_type=full\n                   silver-blob/invoices/ingestion_date=2025-10-24\n                   silver-blob/reports/ingestion_date=2025-10",
+        "linkedServiceName": {
+            "referenceName": "ls_adls_silver",
+            "type": "LinkedServiceReference"
+        },
+        "parameters": {
+            "p_folder": {
+                "type": "String",
+                "defaultValue": ""
+            }
+        },
+        "type": "Binary",
+        "typeProperties": {
+            "location": {
+                "type": "AzureBlobFSLocation",
+                "fileSystem": "silver",
+                "folderPath": {
+                    "value": "@dataset().p_folder",
+                    "type": "Expression"
+                }
+            }
+        },
+        "annotations": []
+    }
+}
