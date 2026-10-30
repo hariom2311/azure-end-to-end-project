@@ -1,0 +1,305 @@
+{
+    "name": "pl_gold_blob_migration",
+    "properties": {
+        "description": "Migrates blob source files from dataenggdailystorage/source into Gold ADLS Gen2 (gold container).\n\nThree categories mirrored from Bronze/Silver blob pipelines:\n  config/  — always full load, small reference XML, fixed sink path\n  invoices/ — full = all PDFs recursively | incremental = previous day only\n  reports/  — full = all JSONs recursively | incremental = previous month only\n\np_load_type = full        : all files, sink = gold-blob/<type>/load_type=full/\np_load_type = incremental : sink = gold-blob/<type>/ingestion_date=<date>/\nRe-run on same date overwrites same folder (idempotent).",
+        "activities": [
+            {
+                "name": "act_copy_config_gold",
+                "description": "Config XML — always full load into Gold blob directory.",
+                "type": "Copy",
+                "dependsOn": [],
+                "policy": {
+                    "timeout": "0.02:00:00",
+                    "retry": 2,
+                    "retryIntervalInSeconds": 60,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "source": {
+                        "type": "BinarySource",
+                        "storeSettings": {
+                            "type": "AzureBlobStorageReadSettings",
+                            "recursive": true
+                        },
+                        "formatSettings": {
+                            "type": "BinaryReadSettings"
+                        }
+                    },
+                    "sink": {
+                        "type": "BinarySink",
+                        "storeSettings": {
+                            "type": "AzureBlobFSWriteSettings"
+                        }
+                    },
+                    "enableStaging": false
+                },
+                "inputs": [
+                    {
+                        "referenceName": "ds_blob_config_src",
+                        "type": "DatasetReference"
+                    }
+                ],
+                "outputs": [
+                    {
+                        "referenceName": "ds_gold_blob_sink",
+                        "type": "DatasetReference",
+                        "parameters": {
+                            "p_folder": "gold-blob/config/load_type=full"
+                        }
+                    }
+                ]
+            },
+            {
+                "name": "act_load_invoices_gold",
+                "description": "Routes invoice copy to Gold: full = all PDFs, incremental = previous day only.",
+                "type": "IfCondition",
+                "dependsOn": [],
+                "userProperties": [],
+                "typeProperties": {
+                    "expression": {
+                        "value": "@equals(toLower(pipeline().parameters.p_load_type), 'full')",
+                        "type": "Expression"
+                    },
+                    "ifTrueActivities": [
+                        {
+                            "name": "act_copy_invoices_full_gold",
+                            "description": "Full load — all PDFs from all date folders recursively into Gold.",
+                            "type": "Copy",
+                            "dependsOn": [],
+                            "policy": {
+                                "timeout": "0.04:00:00",
+                                "retry": 2,
+                                "retryIntervalInSeconds": 60,
+                                "secureOutput": false,
+                                "secureInput": false
+                            },
+                            "userProperties": [],
+                            "typeProperties": {
+                                "source": {
+                                    "type": "BinarySource",
+                                    "storeSettings": {
+                                        "type": "AzureBlobStorageReadSettings",
+                                        "recursive": true
+                                    },
+                                    "formatSettings": {
+                                        "type": "BinaryReadSettings"
+                                    }
+                                },
+                                "sink": {
+                                    "type": "BinarySink",
+                                    "storeSettings": {
+                                        "type": "AzureBlobFSWriteSettings"
+                                    }
+                                },
+                                "enableStaging": false
+                            },
+                            "inputs": [
+                                {
+                                    "referenceName": "ds_blob_invoices_src",
+                                    "type": "DatasetReference"
+                                }
+                            ],
+                            "outputs": [
+                                {
+                                    "referenceName": "ds_gold_blob_sink",
+                                    "type": "DatasetReference",
+                                    "parameters": {
+                                        "p_folder": "gold-blob/invoices/load_type=full"
+                                    }
+                                }
+                            ]
+                        }
+                    ],
+                    "ifFalseActivities": [
+                        {
+                            "name": "act_copy_invoices_incremental_gold",
+                            "description": "Incremental — previous day PDFs only. Sink partitioned by ingestion_date, idempotent on re-run.",
+                            "type": "Copy",
+                            "dependsOn": [],
+                            "policy": {
+                                "timeout": "0.02:00:00",
+                                "retry": 2,
+                                "retryIntervalInSeconds": 60,
+                                "secureOutput": false,
+                                "secureInput": false
+                            },
+                            "userProperties": [],
+                            "typeProperties": {
+                                "source": {
+                                    "type": "BinarySource",
+                                    "storeSettings": {
+                                        "type": "AzureBlobStorageReadSettings",
+                                        "recursive": false,
+                                        "wildcardFolderPath": {
+                                            "value": "@concat('invoices/', formatDateTime(addDays(utcnow(), -1), 'yyyy/MM/dd'))",
+                                            "type": "Expression"
+                                        }
+                                    },
+                                    "formatSettings": {
+                                        "type": "BinaryReadSettings"
+                                    }
+                                },
+                                "sink": {
+                                    "type": "BinarySink",
+                                    "storeSettings": {
+                                        "type": "AzureBlobFSWriteSettings"
+                                    }
+                                },
+                                "enableStaging": false
+                            },
+                            "inputs": [
+                                {
+                                    "referenceName": "ds_blob_invoices_src",
+                                    "type": "DatasetReference"
+                                }
+                            ],
+                            "outputs": [
+                                {
+                                    "referenceName": "ds_gold_blob_sink",
+                                    "type": "DatasetReference",
+                                    "parameters": {
+                                        "p_folder": {
+                                            "value": "@concat('gold-blob/invoices/ingestion_date=', formatDateTime(addDays(utcnow(), -1), 'yyyy-MM-dd'))",
+                                            "type": "Expression"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    ]
+                }
+            },
+            {
+                "name": "act_load_reports_gold",
+                "description": "Routes report copy to Gold: full = all JSONs, incremental = previous month only.",
+                "type": "IfCondition",
+                "dependsOn": [],
+                "userProperties": [],
+                "typeProperties": {
+                    "expression": {
+                        "value": "@equals(toLower(pipeline().parameters.p_load_type), 'full')",
+                        "type": "Expression"
+                    },
+                    "ifTrueActivities": [
+                        {
+                            "name": "act_copy_reports_full_gold",
+                            "description": "Full load — all JSONs from all month folders recursively into Gold.",
+                            "type": "Copy",
+                            "dependsOn": [],
+                            "policy": {
+                                "timeout": "0.02:00:00",
+                                "retry": 2,
+                                "retryIntervalInSeconds": 60,
+                                "secureOutput": false,
+                                "secureInput": false
+                            },
+                            "userProperties": [],
+                            "typeProperties": {
+                                "source": {
+                                    "type": "BinarySource",
+                                    "storeSettings": {
+                                        "type": "AzureBlobStorageReadSettings",
+                                        "recursive": true
+                                    },
+                                    "formatSettings": {
+                                        "type": "BinaryReadSettings"
+                                    }
+                                },
+                                "sink": {
+                                    "type": "BinarySink",
+                                    "storeSettings": {
+                                        "type": "AzureBlobFSWriteSettings"
+                                    }
+                                },
+                                "enableStaging": false
+                            },
+                            "inputs": [
+                                {
+                                    "referenceName": "ds_blob_reports_src",
+                                    "type": "DatasetReference"
+                                }
+                            ],
+                            "outputs": [
+                                {
+                                    "referenceName": "ds_gold_blob_sink",
+                                    "type": "DatasetReference",
+                                    "parameters": {
+                                        "p_folder": "gold-blob/reports/load_type=full"
+                                    }
+                                }
+                            ]
+                        }
+                    ],
+                    "ifFalseActivities": [
+                        {
+                            "name": "act_copy_reports_incremental_gold",
+                            "description": "Incremental — previous month JSONs only. Sink partitioned by ingestion_date, idempotent on re-run.",
+                            "type": "Copy",
+                            "dependsOn": [],
+                            "policy": {
+                                "timeout": "0.02:00:00",
+                                "retry": 2,
+                                "retryIntervalInSeconds": 60,
+                                "secureOutput": false,
+                                "secureInput": false
+                            },
+                            "userProperties": [],
+                            "typeProperties": {
+                                "source": {
+                                    "type": "BinarySource",
+                                    "storeSettings": {
+                                        "type": "AzureBlobStorageReadSettings",
+                                        "recursive": false,
+                                        "wildcardFolderPath": {
+                                            "value": "@concat('reports/', formatDateTime(addDays(startOfMonth(utcnow()), -1), 'yyyy/MM'))",
+                                            "type": "Expression"
+                                        }
+                                    },
+                                    "formatSettings": {
+                                        "type": "BinaryReadSettings"
+                                    }
+                                },
+                                "sink": {
+                                    "type": "BinarySink",
+                                    "storeSettings": {
+                                        "type": "AzureBlobFSWriteSettings"
+                                    }
+                                },
+                                "enableStaging": false
+                            },
+                            "inputs": [
+                                {
+                                    "referenceName": "ds_blob_reports_src",
+                                    "type": "DatasetReference"
+                                }
+                            ],
+                            "outputs": [
+                                {
+                                    "referenceName": "ds_gold_blob_sink",
+                                    "type": "DatasetReference",
+                                    "parameters": {
+                                        "p_folder": {
+                                            "value": "@concat('gold-blob/reports/ingestion_date=', formatDateTime(addDays(startOfMonth(utcnow()), -1), 'yyyy-MM'))",
+                                            "type": "Expression"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    ]
+                }
+            }
+        ],
+        "parameters": {
+            "p_load_type": {
+                "type": "String",
+                "defaultValue": "incremental"
+            }
+        },
+        "annotations": [],
+        "lastPublishTime": "2026-10-30T00:00:00Z"
+    },
+    "type": "Microsoft.DataFactory/factories/pipelines"
+}
