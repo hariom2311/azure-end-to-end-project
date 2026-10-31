@@ -155,18 +155,158 @@ The Spark EventHubs connector is not pre-installed — you must install it:
 
 > **Why Maven?** The connector is a JVM library. It bridges Spark Structured Streaming to the AMQP protocol used by Event Hub.
 
-### Step 6: Create Databricks Secret Scope (if not done)
+### Step 6: Create Databricks Secret Scope (complete UI walkthrough)
 
-In Databricks, create a secret scope backed by your Key Vault:
+A secret scope links your Databricks workspace to Azure Key Vault so that notebooks can call
+`dbutils.secrets.get(scope="ev-kv-scope", key="...")` without ever seeing the raw secret value.
 
+---
+
+#### 6A — Collect the three values you need from Azure Portal first
+
+Before going to Databricks, open Azure Portal and collect these:
+
+**Value 1 — Key Vault Resource ID**
+1. Portal → search **Key vaults** → click `kv-ev-intelligence-dev`
+2. Left menu → **Properties**
+3. Copy the **Resource ID** field — looks like:
+   ```
+   /subscriptions/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx/resourceGroups/rg-ev-intelligence-dev/providers/Microsoft.KeyVault/vaults/kv-ev-intelligence-dev
+   ```
+
+**Value 2 — Key Vault DNS Name (Vault URI)**
+4. On the same Properties page, copy **Vault URI** — looks like:
+   ```
+   https://kv-ev-intelligence-dev.vault.azure.net/
+   ```
+
+**Value 3 — Your Databricks workspace URL**
+5. Portal → search **Azure Databricks** → click `dbw-ev-intelligence-dev`
+6. Click **Launch Workspace** — your browser URL will be:
+   ```
+   https://adb-1234567890123456.7.azuredatabricks.net/
+   ```
+   Copy this full URL.
+
+---
+
+#### 6B — Grant Databricks access to the Key Vault
+
+The Databricks workspace needs permission to read secrets from Key Vault.
+
+1. Portal → `kv-ev-intelligence-dev` → left menu → **Access policies**
+2. Click **+ Create**
+3. On **Permissions** tab:
+   - Under **Secret permissions**, check: **Get** ✅ and **List** ✅
+   - Click **Next**
+4. On **Principal** tab:
+   - Search for: `AzureDatabricks` (the global managed app)
+   - Select it → click **Next**
+5. Click **Next** (skip Application tab) → **Create**
+
+> **Why this is needed:** The secret scope creation call comes from Databricks's backend
+> service, not your personal account. Key Vault must trust the `AzureDatabricks` principal
+> to allow reading secrets into the workspace.
+
+---
+
+#### 6C — Create the Secret Scope in Databricks UI
+
+Databricks does not show Secret Scopes in the normal left sidebar.
+You must navigate to a special URL.
+
+1. Open your Databricks workspace in the browser
+2. In the address bar, **manually edit the URL** — replace everything after the hostname with:
+   ```
+   #secrets/createScope
+   ```
+   Full URL example:
+   ```
+   https://adb-1234567890123456.7.azuredatabricks.net/#secrets/createScope
+   ```
+3. Press **Enter** — a **Create Secret Scope** form appears
+
+4. Fill in the form:
+
+   | Field | Value |
+   |---|---|
+   | **Scope Name** | `ev-kv-scope` |
+   | **Manage Principal** | `All Users` (or `Creator` if you want restricted access) |
+   | **DNS Name** | paste the Vault URI from step 6A Value 2: `https://kv-ev-intelligence-dev.vault.azure.net/` |
+   | **Resource ID** | paste the Resource ID from step 6A Value 1 |
+
+5. Click **Create**
+
+   You should see: `Secret Scope ev-kv-scope has been created.`
+
+---
+
+#### 6D — Verify the scope works
+
+Open any Databricks notebook on your cluster and run:
+
+```python
+dbutils.secrets.listScopes()
 ```
-databricks secrets create-scope --scope ev-kv-scope \
-  --scope-backend-type AZURE_KEYVAULT \
-  --resource-id /subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.KeyVault/vaults/kv-ev-intelligence-dev \
-  --dns-name https://kv-ev-intelligence-dev.vault.azure.net/
+
+You should see `ev-kv-scope` in the output.
+
+Then verify a specific secret is readable:
+```python
+# This prints [REDACTED] — confirms secret exists and is readable
+# It NEVER prints the actual value (by design)
+dbutils.secrets.get(scope="ev-kv-scope", key="eventhub-vehicle-battery-listen-conn-str")
 ```
 
-Or use the Databricks UI: `https://<workspace>.azuredatabricks.net/?#secrets/createScope`
+Output will be `[REDACTED]` — that is correct and expected. It means the secret was fetched
+successfully. If it throws `Secret does not exist`, the Key Vault secret name has a typo.
+
+---
+
+#### 6E — All secrets needed for Day 13 notebooks
+
+These must exist in Key Vault (`kv-ev-intelligence-dev`) before running the notebooks:
+
+| Secret name in Key Vault | What it contains | Which notebook uses it |
+|---|---|---|
+| `eventhub-vehicle-battery-listen-conn-str` | Listen-only SAS connection string from `databricks-listen-policy` | Bronze |
+| `sp-client-id` | Service Principal Application (client) ID | Bronze, Silver, Gold |
+| `sp-client-secret` | Service Principal client secret / password | Bronze, Silver, Gold |
+| `sp-tenant-id` | Azure AD Tenant ID | Bronze, Silver, Gold |
+| `adls-account-name` | Storage account name: `evdatalakedev2` (just the name, not the URL) | Bronze, Silver, Gold |
+
+**Where to find each value:**
+
+`sp-client-id`, `sp-client-secret`, `sp-tenant-id`:
+- Portal → **Azure Active Directory** → **App registrations** → your SP app
+- `sp-client-id` = Application (client) ID on the Overview page
+- `sp-tenant-id` = Directory (tenant) ID on the Overview page
+- `sp-client-secret` = Certificates & secrets → your secret value (copy when created, only shown once)
+
+`adls-account-name`:
+- Portal → **Storage accounts** → your account → copy just the **Storage account name** field
+- Example: `evdatalakedev2` (not the full URL)
+
+`eventhub-vehicle-battery-listen-conn-str`:
+- Portal → Event Hub Namespace → `vehicle-battery-live` → Shared access policies
+- Click `databricks-listen-policy` → copy **Primary connection string**
+
+---
+
+#### 6F — Add each secret to Key Vault
+
+For each secret in the table above:
+
+1. Portal → `kv-ev-intelligence-dev` → left menu → **Secrets**
+2. Click **+ Generate/Import**
+3. Settings:
+   - **Upload options:** Manual
+   - **Name:** exact name from the table (e.g., `sp-client-id`)
+   - **Value:** paste the value
+   - Leave all other fields as default
+4. Click **Create**
+
+Repeat for all 5 secrets. When done, the Secrets list should show all 5 as **Enabled**.
 
 ### Step 7: Upload Notebooks to Databricks Workspace
 
