@@ -12,7 +12,8 @@ Local Python Producer
   Topic     : vehicle-battery-live
   Partitions: 4   Retention: 24h
           │
-          │  Spark EventHubs connector
+          │  Spark Kafka connector (built-in, no Maven JAR)
+          │  SASL_SSL auth via Kafka endpoint
           │  trigger: 30 seconds
           ▼
   Bronze Delta Table
@@ -32,6 +33,66 @@ Local Python Producer
   gold/mart_charging_progress_live/
   5-minute windows per vehicle+station
 ```
+
+---
+
+## Part 0: Fixing the Maven Allowlist Error
+
+When you install `com.microsoft.azure:azure-eventhubs-spark_2.12:2.3.22` on a Unity Catalog
+cluster you may see:
+
+```
+PERMISSION_DENIED: 'com.microsoft.azure:azure-eventhubs-spark_2.12:2.3.22'
+is not in the artifact allowlist
+```
+
+### Why it happens
+
+Unity Catalog clusters enforce an **artifact allowlist** — only pre-approved Maven JARs can be
+installed. This is a security control by the metastore admin.
+
+### Fix A — Add to allowlist (needs metastore admin)
+
+Run in Databricks SQL Editor as metastore admin:
+```sql
+ALTER METASTORE ADD ARTIFACT 'com.microsoft.azure:azure-eventhubs-spark_2.12:2.3.22';
+```
+Then retry the library install on the cluster.
+
+### Fix B — Use the Kafka endpoint instead (recommended, no JAR needed)
+
+Event Hub Standard tier exposes a **Kafka-compatible endpoint** on port 9093.
+Spark has a **built-in Kafka connector** — no Maven library, no allowlist issue.
+
+This is what the Bronze notebook now uses. The only change needed:
+
+1. **Upgrade Event Hub to Standard tier** (Basic does not expose the Kafka endpoint)
+   - Portal → your namespace → Settings → Pricing tier → Standard → Save
+
+2. **Add a new Key Vault secret** — `eventhub-vehicle-battery-sasl-config`
+
+   Value (paste as a single line, no line breaks):
+   ```
+   org.apache.kafka.common.security.plain.PlainLoginModule required username="$ConnectionString" password="<your-listen-connection-string>";
+   ```
+   Where `<your-listen-connection-string>` is the full connection string from
+   `databricks-listen-policy` (same one you already stored).
+
+   The username is always the literal string `$ConnectionString` — that is not a variable.
+
+3. **No Maven library install needed** — remove the old EventHubs JAR from the cluster if installed.
+
+### Comparison: EventHubs connector vs Kafka connector
+
+| | EventHubs connector | Kafka connector (current) |
+|---|---|---|
+| Maven JAR | Required | Not needed |
+| Allowlist issue | Yes on UC clusters | No |
+| Event Hub tier | Basic+ | **Standard+** |
+| Auth | SAS connection string | SASL/SSL with PLAIN mechanism |
+| Metadata columns | `enqueuedTime`, `partition`, `offset` | `timestamp`, `partition`, `offset` |
+| `body` column name | `body` | `value` |
+| Behaviour | Identical — both read same events |
 
 ---
 
