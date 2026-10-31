@@ -192,21 +192,70 @@ Before going to Databricks, open Azure Portal and collect these:
 
 #### 6B — Grant Databricks access to the Key Vault
 
-The Databricks workspace needs permission to read secrets from Key Vault.
+Key Vault can be configured in two permission modes. Check which one yours uses first:
 
-1. Portal → `kv-ev-intelligence-dev` → left menu → **Access policies**
-2. Click **+ Create**
-3. On **Permissions** tab:
-   - Under **Secret permissions**, check: **Get** ✅ and **List** ✅
-   - Click **Next**
-4. On **Principal** tab:
-   - Search for: `AzureDatabricks` (the global managed app)
-   - Select it → click **Next**
-5. Click **Next** (skip Application tab) → **Create**
+Portal → your Key Vault → left menu → **Access policies**
 
-> **Why this is needed:** The secret scope creation call comes from Databricks's backend
-> service, not your personal account. Key Vault must trust the `AzureDatabricks` principal
-> to allow reading secrets into the workspace.
+- If you see a list of policies → your vault is in **Access Policies mode** → follow 6B-i
+- If you see *"Access policies not available. The access configuration is set to role-based access control"* → your vault is in **RBAC mode** → follow 6B-ii
+
+---
+
+##### 6B-i — Access Policies mode
+
+1. Portal → Key Vault → left menu → **Access policies** → **+ Create**
+2. **Permissions tab:** Secret permissions → check **Get** ✅ and **List** ✅ → **Next**
+3. **Principal tab:** search `AzureDatabricks` → select it → **Next** → **Create**
+4. Repeat and add your own email (`hariomsuryawanshi68258@gmail.com`) with the same permissions
+
+---
+
+##### 6B-ii — RBAC mode (IAM) — most new Key Vaults use this
+
+**Step 1 — Find your Databricks workspace Object ID**
+
+1. Portal → **Azure Databricks** → click your workspace `dbw-ev-intelligence-dev`
+2. Left menu → **Identity** (under Settings)
+3. Copy the **Object ID** shown under System assigned — example: `c8fe40ce-7c95-4958-8992-21dfb0ea6c3c`
+
+**Step 2 — Assign "Key Vault Secrets User" to your Databricks identity**
+
+1. Portal → Key Vault → left menu → **Access control (IAM)**
+2. Click **+ Add** → **Add role assignment**
+3. **Role tab:** search `Key Vault Secrets User` → select it → **Next**
+4. **Members tab:**
+   - Assign access to: **User, group, or service principal**
+   - Click **+ Select members**
+   - Paste the Object ID from Step 1: `c8fe40ce-7c95-4958-8992-21dfb0ea6c3c`
+   - Select the result (your Databricks workspace) → **Select**
+5. Click **Next** → **Review + assign**
+
+> **Why "User, group, or service principal" and not "Managed identity"?**
+> The Managed identity dropdown filters by resource type. If Azure Databricks does not appear
+> in the dropdown, searching by Object ID under "User, group, or service principal" finds the
+> same identity. Both options assign the role to the same principal.
+
+**Step 3 — Also assign the same role to your personal account**
+
+1. **+ Add** → **Add role assignment** again
+2. Role: `Key Vault Secrets User` → **Next**
+3. Members: **User, group, or service principal** → **+ Select members**
+4. Search your email: `hariomsuryawanshi68258@gmail.com` → Select
+5. **Review + assign**
+
+**Step 4 — Wait 1–2 minutes for IAM to propagate, then test**
+
+```python
+dbutils.secrets.listScopes()
+# should show ev-kv-scope
+
+dbutils.secrets.get(scope="ev-kv-scope", key="sp-client-id")
+# should return [REDACTED] — if it does, permissions are working
+```
+
+> **Common error after granting:** `PERMISSION_DENIED: Caller is not authorized... Status 403`
+> This means the IAM role has not propagated yet (takes up to 2 min) OR the wrong identity
+> was granted. Double-check the Object ID matches your workspace's Identity page.
 
 ---
 
