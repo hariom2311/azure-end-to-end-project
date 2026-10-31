@@ -12,8 +12,8 @@ Local Python Producer
   Topic     : vehicle-battery-live
   Partitions: 4   Retention: 24h
           │
-          │  Spark Kafka connector (built-in, no Maven JAR)
-          │  SASL_SSL auth via Kafka endpoint
+          │  azure-eventhubs-spark connector (Maven JAR)
+          │  SAS connection string auth
           │  trigger: 30 seconds
           ▼
   Bronze Delta Table
@@ -59,39 +59,41 @@ ALTER METASTORE ADD ARTIFACT 'com.microsoft.azure:azure-eventhubs-spark_2.12:2.3
 ```
 Then retry the library install on the cluster.
 
-### Fix B — Use the Kafka endpoint instead (recommended, no JAR needed)
+### Fix B — Use the Kafka endpoint (alternative, no JAR needed)
 
 Event Hub Standard tier exposes a **Kafka-compatible endpoint** on port 9093.
-Spark has a **built-in Kafka connector** — no Maven library, no allowlist issue.
+Spark has a built-in Kafka connector — no Maven library, no allowlist issue.
+This is an option if you cannot use Single User cluster mode.
 
-This is what the Bronze notebook now uses. The only change needed:
+### Fix C (current approach) — Switch cluster to Single User mode
 
-1. **Upgrade Event Hub to Standard tier** (Basic does not expose the Kafka endpoint)
-   - Portal → your namespace → Settings → Pricing tier → Standard → Save
+Single User clusters **skip the artifact allowlist entirely**, so the EventHubs JAR installs fine.
 
-2. **Add a new Key Vault secret** — `eventhub-vehicle-battery-sasl-config`
+Steps:
+1. Databricks → Compute → your cluster → Edit
+2. **Access mode** → change from `Shared` to `Single User`
+3. Owner: your account
+4. Restart the cluster → reinstall the Maven library → re-run notebook
 
-   Value (paste as a single line, no line breaks):
-   ```
-   org.apache.kafka.common.security.plain.PlainLoginModule required username="$ConnectionString" password="<your-listen-connection-string>";
-   ```
-   Where `<your-listen-connection-string>` is the full connection string from
-   `databricks-listen-policy` (same one you already stored).
+**This is what the Bronze notebook uses.** The native `format("eventhubs")` connector  
+with Maven JAR `com.microsoft.azure:azure-eventhubs-spark_2.12:2.3.22`.
 
-   The username is always the literal string `$ConnectionString` — that is not a variable.
-
-3. **No Maven library install needed** — remove the old EventHubs JAR from the cluster if installed.
+**Cluster setup (one-time):**
+- Cluster → Libraries → Install New → Maven
+- Coordinates: `com.microsoft.azure:azure-eventhubs-spark_2.12:2.3.22`
+- Install → wait for status `Installed` → restart cluster
 
 ### Comparison: EventHubs connector vs Kafka connector
 
-| | EventHubs connector | Kafka connector (current) |
+| | EventHubs connector (current) | Kafka connector |
 |---|---|---|
-| Maven JAR | Required | Not needed |
-| Allowlist issue | Yes on UC clusters | No |
-| Event Hub tier | Basic+ | **Standard+** |
+| Maven JAR | Required (`azure-eventhubs-spark`) | Not needed |
+| Allowlist issue | Yes on UC Shared clusters | No |
+| Cluster mode needed | **Single User** | Any |
+| Event Hub tier | Basic+ | Standard+ only |
 | Auth | SAS connection string | SASL/SSL with PLAIN mechanism |
-| Metadata columns | `enqueuedTime`, `partition`, `offset` | `timestamp`, `partition`, `offset` |
-| `body` column name | `body` | `value` |
+| Metadata columns | `enqueuedTime`, `sequenceNumber`, `offset` | `timestamp`, `partition`, `offset` |
+| Body column | `body` (binary) | `value` (binary) |
 | Behaviour | Identical — both read same events |
 
 ---
