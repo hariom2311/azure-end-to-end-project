@@ -1,0 +1,155 @@
+# =============================================================================
+# CD Pipeline — EV Intelligence Databricks Asset Bundle
+# Trigger : push to main only (after CI passes)
+# Stages  : deploy staging → integration test → (manual approval) → deploy production
+# =============================================================================
+
+name: CD — Deploy to Staging & Production
+
+on:
+  push:
+    branches:
+      - main
+
+# Prevent concurrent deploys to same environment
+concurrency:
+  group: cd-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+
+  # ---------------------------------------------------------------------------
+  # JOB 1 — Deploy to Staging
+  # ---------------------------------------------------------------------------
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    environment: staging
+    env:
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+      DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Databricks CLI
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
+          databricks --version
+
+      - name: Deploy bundle — staging
+        working-directory: azure-end-to-end-project/day16-cicd-databricks/databricks
+        run: |
+          databricks bundle deploy --target staging
+          echo "Staging deploy completed — $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+      - name: Verify staging deploy
+        working-directory: azure-end-to-end-project/day16-cicd-databricks/databricks
+        run: databricks bundle validate --target staging
+
+      - name: Summary
+        run: |
+          echo "Deployed to STAGING"
+          echo "Host   : ${{ secrets.DATABRICKS_HOST }}"
+          echo "Commit : ${{ github.sha }}"
+
+  # ---------------------------------------------------------------------------
+  # JOB 2 — Run Integration Tests on Staging
+  # Triggers job_ev_streaming_pipeline on the staging workspace and waits
+  # ---------------------------------------------------------------------------
+  run-integration-tests:
+    name: Integration Tests (Staging)
+    runs-on: ubuntu-latest
+    needs: deploy-staging
+    environment: staging
+    env:
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+      DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Databricks CLI
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
+
+      - name: Run integration test job on staging
+        working-directory: azure-end-to-end-project/day16-cicd-databricks/databricks
+        run: |
+          echo "Triggering job_ev_streaming_pipeline on staging..."
+          databricks bundle run job_ev_streaming_pipeline \
+            --target staging \
+            2>&1 | tee /tmp/job_run_output.txt
+
+          JOB_EXIT=${PIPESTATUS[0]}
+          if [ $JOB_EXIT -ne 0 ]; then
+            echo "Integration test FAILED on staging"
+            cat /tmp/job_run_output.txt
+            exit 1
+          fi
+          echo "Integration test SUCCEEDED on staging"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: integration-test-output
+          path: /tmp/job_run_output.txt
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # JOB 3 — Deploy to Production (requires manual approval)
+  # The "production" GitHub Environment must have a required reviewer configured
+  # Settings → Environments → production → Required reviewers
+  # ---------------------------------------------------------------------------
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: run-integration-tests
+    environment: production
+    env:
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+      DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Databricks CLI
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
+
+      - name: Pre-deploy validation
+        working-directory: azure-end-to-end-project/day16-cicd-databricks/databricks
+        run: databricks bundle validate --target production
+
+      - name: Deploy bundle — production
+        working-directory: azure-end-to-end-project/day16-cicd-databricks/databricks
+        run: |
+          databricks bundle deploy --target production
+          echo "Production deploy completed — $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+      - name: Verify production deploy
+        working-directory: azure-end-to-end-project/day16-cicd-databricks/databricks
+        run: databricks bundle validate --target production
+
+      - name: Tag release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="release-$(date -u +%Y%m%d-%H%M%S)-${GITHUB_SHA::8}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Production deploy. Commit: $GITHUB_SHA"
+          git push origin "$TAG"
+          echo "Tagged: $TAG"
+
+      - name: Summary
+        run: |
+          echo "Deployed to PRODUCTION"
+          echo "Host   : ${{ secrets.DATABRICKS_HOST }}"
+          echo "Commit : ${{ github.sha }}"
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "PRODUCTION DEPLOY FAILED"
+          echo "Commit : ${{ github.sha }}"
+          echo "Actor  : ${{ github.actor }}"
+          echo "Run    : ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          exit 1

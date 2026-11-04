@@ -1,0 +1,153 @@
+# =============================================================================
+# CI Pipeline — EV Intelligence Databricks Asset Bundle
+# Trigger : push / PR to main and aug-batch branches
+# Jobs    : lint → unit tests → bundle validate (staging + production)
+# =============================================================================
+
+name: CI — Lint, Test & Bundle Validate
+
+on:
+  push:
+    branches:
+      - main
+      - aug-batch
+  pull_request:
+    branches:
+      - main
+      - aug-batch
+
+env:
+  PYTHON_VERSION: "3.10"
+
+jobs:
+
+  # ---------------------------------------------------------------------------
+  # JOB 1 — Lint (flake8 + ruff)
+  # ---------------------------------------------------------------------------
+  lint:
+    name: Lint (flake8 + ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-lint-${{ hashFiles('**/requirements*.txt') }}
+
+      - name: Install lint tools
+        run: pip install flake8 flake8-bugbear ruff
+
+      - name: flake8
+        working-directory: azure-end-to-end-project/day16-cicd-databricks
+        run: |
+          flake8 tests/ \
+            --max-line-length=120 \
+            --extend-ignore=E203,W503 \
+            --count --statistics
+
+      - name: ruff
+        working-directory: azure-end-to-end-project/day16-cicd-databricks
+        run: |
+          ruff check tests/ --select=E,W,F,I --line-length=120
+          ruff format tests/ --check --line-length=120
+
+  # ---------------------------------------------------------------------------
+  # JOB 2 — Unit Tests (pytest + coverage)
+  # ---------------------------------------------------------------------------
+  test:
+    name: Unit Tests (pytest ≥80% coverage)
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "11"
+
+      - name: Install test dependencies
+        run: |
+          pip install \
+            pyspark==3.5.0 \
+            delta-spark==3.0.0 \
+            pytest==7.4.4 \
+            pytest-cov==4.1.0 \
+            pytest-html==4.1.1 \
+            pytest-xdist==3.5.0
+
+      - name: Run pytest
+        working-directory: azure-end-to-end-project/day16-cicd-databricks
+        env:
+          PYTHONPATH: ${{ github.workspace }}/azure-end-to-end-project/day16-cicd-databricks
+          PYSPARK_PYTHON: python3
+          PYSPARK_DRIVER_PYTHON: python3
+        run: |
+          pytest tests/ \
+            -v \
+            --cov=. \
+            --cov-report=xml:coverage.xml \
+            --cov-report=html:htmlcov \
+            --cov-report=term-missing \
+            --cov-fail-under=80 \
+            --html=test-report.html \
+            --self-contained-html \
+            -n auto \
+            --tb=short
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-xml
+          path: azure-end-to-end-project/day16-cicd-databricks/coverage.xml
+          retention-days: 14
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-html
+          path: azure-end-to-end-project/day16-cicd-databricks/htmlcov/
+          retention-days: 14
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pytest-report
+          path: azure-end-to-end-project/day16-cicd-databricks/test-report.html
+          retention-days: 14
+
+  # ---------------------------------------------------------------------------
+  # JOB 3 — Bundle Validate (runs in parallel with test, after lint)
+  # ---------------------------------------------------------------------------
+  bundle-validate:
+    name: Bundle Validate (staging + production)
+    runs-on: ubuntu-latest
+    needs: lint
+    env:
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+      DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Databricks CLI
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
+          databricks --version
+
+      - name: Bundle validate — staging
+        working-directory: azure-end-to-end-project/day16-cicd-databricks/databricks
+        run: databricks bundle validate --target staging
+
+      - name: Bundle validate — production
+        working-directory: azure-end-to-end-project/day16-cicd-databricks/databricks
+        run: databricks bundle validate --target production

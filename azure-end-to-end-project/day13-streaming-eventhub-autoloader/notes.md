@@ -643,7 +643,45 @@ The combination means: each event from Event Hub is written to Delta exactly onc
 
 ---
 
-## Part 6: Troubleshooting Common Errors
+## Part 6: Databricks Job Setup — Scheduled vs Continuous
+
+### Which job type to use?
+
+| | Scheduled (Cron) | Continuous |
+|---|---|---|
+| **How it runs** | Starts cluster, runs notebook to completion, stops | Cluster stays alive, notebook runs forever |
+| **Use case** | Batch micro-batch streaming (trigger every N seconds) | True always-on streaming |
+| **Cost** | Lower — cluster only runs during job | Higher — cluster never stops |
+| **Our notebooks** | ✅ Correct choice | Not needed |
+
+**Use Scheduled jobs** for all three notebooks. Each notebook has an internal `while streaming_query.isActive` loop that keeps the micro-batch running. The job keeps the cluster alive while the loop runs.
+
+### Recommended job structure
+
+Create **one Databricks Job with 3 tasks** (sequential):
+
+| Task | Notebook | Trigger | Depends on |
+|---|---|---|---|
+| `task_bronze` | `kafka/nb_bronze_stream_vehicle_battery` | processingTime=30s | — |
+| `task_silver` | `kafka/nb_silver_stream_vehicle_battery` | processingTime=60s | task_bronze |
+| `task_gold` | `kafka/nb_gold_stream_charging_progress` | processingTime=120s | task_silver |
+
+### Job schedule
+
+Set the job schedule to run **continuously** (every 1 hour) or use the **Always running** option under job settings → Schedule → **Continuous** toggle. This keeps the streaming loop alive and auto-restarts on failure.
+
+**Steps to create the job:**
+1. Databricks → **Workflows** → **Create job**
+2. Name: `job_ev_streaming_pipeline`
+3. Task 1: Type = Notebook, Path = `kafka/nb_bronze_stream_vehicle_battery`, Cluster = `cl-ev-dev`
+4. Add Task 2: same cluster, Silver notebook, depends on Task 1
+5. Add Task 3: same cluster, Gold notebook, depends on Task 2
+6. Schedule: **Continuous** (or cron `0 * * * *` for hourly restart)
+7. **Run now** to test
+
+---
+
+## Part 7: Troubleshooting Common Errors
 
 | Error | Cause | Fix |
 |---|---|---|

@@ -1,0 +1,66 @@
+# =============================================================================
+# Databricks Asset Bundle — EV Intelligence Streaming Pipeline
+# Targets: staging | production
+#
+# Authentication (injected via GitHub Actions secrets / env vars):
+#   DATABRICKS_HOST   — workspace URL (e.g. https://adb-xxx.azuredatabricks.net)
+#   DATABRICKS_TOKEN  — service principal or PAT token
+#
+# The Databricks CLI reads DATABRICKS_HOST + DATABRICKS_TOKEN automatically.
+# No credentials are stored in this file.
+#
+# Deploy commands:
+#   databricks bundle validate --target staging
+#   databricks bundle deploy   --target staging
+#   databricks bundle deploy   --target production
+# =============================================================================
+
+bundle:
+  name: ev-intelligence-streaming-pipeline
+
+variables:
+  adls_account:
+    description: ADLS Gen2 storage account name
+    default: evdatalakedev2
+
+  ev_catalog:
+    description: Unity Catalog name
+    default: ev_catalog
+
+# =============================================================================
+# Targets
+# =============================================================================
+targets:
+
+  # ---------------------------------------------------------------------------
+  # Staging (default)
+  # mode: development → resource names prefixed with "[dev <username>]"
+  # so staging jobs never conflict with production ones
+  # ---------------------------------------------------------------------------
+  staging:
+    mode: development
+    default: true
+    workspace:
+      root_path: /Shared/ev-intelligence/staging
+    variables:
+      adls_account: evdatalakedev2
+      ev_catalog: ev_catalog
+
+  # ---------------------------------------------------------------------------
+  # Production
+  # mode: production → resources deployed as-is with no prefix
+  # Requires manual approval in GitHub Actions "production" environment
+  # ---------------------------------------------------------------------------
+  production:
+    mode: production
+    workspace:
+      root_path: /Shared/ev-intelligence/production
+    variables:
+      adls_account: evdatalakedev2
+      ev_catalog: ev_catalog
+
+# =============================================================================
+# Resources
+# =============================================================================
+include:
+  - resources/*.yml

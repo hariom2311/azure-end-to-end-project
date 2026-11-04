@@ -1,0 +1,325 @@
+# ============================================================
+# Databricks Asset Bundle — Job Definitions
+# Jobs:
+#   job_ev_streaming_pipeline   (referenced by cd.yml integration test step)
+#   job_ev_batch_pipeline       (Bronze → Silver → Gold batch)
+# ============================================================
+
+resources:
+  jobs:
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # JOB 1: EV Streaming Pipeline (EventHub → Bronze → Silver → Gold)
+    # This is the job triggered by the CD pipeline integration test step.
+    # Runs the three streaming notebooks sequentially on a shared job cluster.
+    # ──────────────────────────────────────────────────────────────────────────
+    job_ev_streaming_pipeline:
+      name: "[${bundle.target}] EV Streaming Pipeline"
+      description: "EventHub → Bronze → Silver (DQ + merge) → Gold (5-min windows)"
+
+      tags:
+        team: ev-intelligence
+        layer: streaming
+        target: ${bundle.target}
+
+      email_notifications:
+        on_failure:
+          - hariom.s@simform.com
+        no_alert_for_skipped_runs: true
+
+      max_concurrent_runs: 1
+
+      job_clusters:
+        - job_cluster_key: streaming_cluster
+          new_cluster:
+            spark_version: "14.3.x-scala2.12"
+            node_type_id: Standard_DS3_v2
+            num_workers: 2
+            spark_conf:
+              spark.databricks.delta.preview.enabled: "true"
+              spark.sql.streaming.schemaInference: "true"
+            spark_env_vars:
+              PYSPARK_PYTHON: /databricks/python3/bin/python3
+
+      tasks:
+        # ── Task 1: Bronze streaming ingest ──────────────────────────────────
+        - task_key: bronze_stream_vehicle_battery
+          description: "Read from EventHub → write Bronze Delta stream"
+          job_cluster_key: streaming_cluster
+          notebook_task:
+            notebook_path: ../../day13-streaming-eventhub-autoloader/notebooks/eventhub/nb_bronze_stream_vehicle_battery
+            base_parameters:
+              env: ${bundle.target}
+          timeout_seconds: 600
+          max_retries: 1
+          min_retry_interval_millis: 30000
+
+        # ── Task 2: Silver transform (DQ + MERGE) ─────────────────────────────
+        - task_key: silver_stream_vehicle_battery
+          description: "Apply 9 DQ rules → MERGE into Silver Delta"
+          depends_on:
+            - task_key: bronze_stream_vehicle_battery
+          job_cluster_key: streaming_cluster
+          notebook_task:
+            notebook_path: ../../day13-streaming-eventhub-autoloader/notebooks/eventhub/nb_silver_stream_vehicle_battery
+            base_parameters:
+              env: ${bundle.target}
+          timeout_seconds: 600
+          max_retries: 1
+          min_retry_interval_millis: 30000
+
+        # ── Task 3: Gold mart (5-min tumbling windows) ────────────────────────
+        - task_key: gold_stream_charging_progress
+          description: "Aggregate Silver → 5-min window Gold mart"
+          depends_on:
+            - task_key: silver_stream_vehicle_battery
+          job_cluster_key: streaming_cluster
+          notebook_task:
+            notebook_path: ../../day13-streaming-eventhub-autoloader/notebooks/eventhub/nb_gold_stream_charging_progress
+            base_parameters:
+              env: ${bundle.target}
+          timeout_seconds: 600
+          max_retries: 1
+          min_retry_interval_millis: 30000
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # JOB 2: EV Batch Pipeline (Bronze → Silver → Gold, control-table driven)
+    # Mirrors the ADF pl_master_e2e.json orchestration as a native DAB job.
+    # ──────────────────────────────────────────────────────────────────────────
+    job_ev_batch_pipeline:
+      name: "[${bundle.target}] EV Batch Pipeline — E2E"
+      description: "Control-table driven Bronze → Silver → Gold batch pipeline"
+
+      tags:
+        team: ev-intelligence
+        layer: batch
+        target: ${bundle.target}
+
+      email_notifications:
+        on_failure:
+          - hariom.s@simform.com
+        no_alert_for_skipped_runs: true
+
+      schedule:
+        quartz_cron_expression: "0 0 2 * * ?"   # 2 AM UTC daily
+        timezone_id: UTC
+        pause_status: PAUSED   # unpause manually after first deploy validation
+
+      max_concurrent_runs: 1
+
+      job_clusters:
+        - job_cluster_key: batch_cluster
+          new_cluster:
+            spark_version: "14.3.x-scala2.12"
+            node_type_id: Standard_DS3_v2
+            num_workers: 4
+            spark_conf:
+              spark.databricks.delta.preview.enabled: "true"
+              spark.sql.adaptive.enabled: "true"
+              spark.sql.adaptive.coalescePartitions.enabled: "true"
+
+      tasks:
+        # ── Bronze: list active sources ──────────────────────────────────────
+        - task_key: list_bronze_sources
+          description: "Read pipeline_control → emit active source list"
+          job_cluster_key: batch_cluster
+          notebook_task:
+            notebook_path: ../../day6-multi-source-orchestration/notebooks/nb_list_active_sources
+            base_parameters:
+              env: ${bundle.target}
+          timeout_seconds: 120
+
+        # ── Silver: list active notebooks ─────────────────────────────────────
+        - task_key: list_silver_notebooks
+          description: "Read silver_control → emit ordered notebook list"
+          depends_on:
+            - task_key: list_bronze_sources
+          job_cluster_key: batch_cluster
+          notebook_task:
+            notebook_path: ../../day10-silver-control-table-and-dynamic-pipeline/notebooks/nb_list_silver_notebooks
+            base_parameters:
+              env: ${bundle.target}
+          timeout_seconds: 120
+
+        # ── Silver: run each entity notebook ─────────────────────────────────
+        - task_key: silver_payments
+          depends_on:
+            - task_key: list_silver_notebooks
+          job_cluster_key: batch_cluster
+          notebook_task:
+            notebook_path: ../../day10-silver-control-table-and-dynamic-pipeline/notebooks/nb_silver_payments
+            base_parameters:
+              env: ${bundle.target}
+          timeout_seconds: 1800
+          max_retries: 2
+
+        - task_key: silver_sessions
+          depends_on:
+            - task_key: list_silver_notebooks
+          job_cluster_key: batch_cluster
+          notebook_task:
+            notebook_path: ../../day10-silver-control-table-and-dynamic-pipeline/notebooks/nb_silver_sessions
+            base_parameters:
+              env: ${bundle.target}
+          timeout_seconds: 1800
+          max_retries: 2
+
+        - task_key: silver_customers
+          depends_on:
+            - task_key: list_silver_notebooks
+          job_cluster_key: batch_cluster
+          notebook_task:
+            notebook_path: ../../day10-silver-control-table-and-dynamic-pipeline/notebooks/nb_silver_customers
+            base_parameters:
+              env: ${bundle.target}
+          timeout_seconds: 1800
+          max_retries: 2
+
+        - task_key: silver_vehicles
+          depends_on:
+            - task_key: list_silver_notebooks
+          job_cluster_key: batch_cluster
+          notebook_task:
+            notebook_path: ../../day10-silver-control-table-and-dynamic-pipeline/notebooks/nb_silver_vehicles
+            base_parameters:
+              env: ${bundle.target}
+          timeout_seconds: 1800
+          max_retries: 2
+
+        - task_key: silver_stations
+          depends_on:
+            - task_key: list_silver_notebooks
+          job_cluster_key: batch_cluster
+          notebook_task:
+            notebook_path: ../../day10-silver-control-table-and-dynamic-pipeline/notebooks/nb_silver_stations
+            base_parameters:
+              env: ${bundle.target}
+          timeout_seconds: 1800
+          max_retries: 2
+
+        - task_key: silver_chargers
+          depends_on:
+            - task_key: list_silver_notebooks
+          job_cluster_key: batch_cluster
+          notebook_task:
+            notebook_path: ../../day10-silver-control-table-and-dynamic-pipeline/notebooks/nb_silver_chargers
+            base_parameters:
+              env: ${bundle.target}
+          timeout_seconds: 1800
+          max_retries: 2
+
+        - task_key: silver_tariffs
+          depends_on:
+            - task_key: list_silver_notebooks
+          job_cluster_key: batch_cluster
+          notebook_task:
+            notebook_path: ../../day10-silver-control-table-and-dynamic-pipeline/notebooks/nb_silver_tariffs
+            base_parameters:
+              env: ${bundle.target}
+          timeout_seconds: 1800
+          max_retries: 2
+
+        # ── Gold: list notebooks ──────────────────────────────────────────────
+        - task_key: list_gold_notebooks
+          description: "Read gold_control → emit ordered notebook list"
+          depends_on:
+            - task_key: silver_payments
+            - task_key: silver_sessions
+            - task_key: silver_customers
+            - task_key: silver_vehicles
+            - task_key: silver_stations
+            - task_key: silver_chargers
+            - task_key: silver_tariffs
+          job_cluster_key: batch_cluster
+          notebook_task:
+            notebook_path: ../../day11-gold-layer-star-schema/notebooks/nb_list_gold_notebooks
+            base_parameters:
+              env: ${bundle.target}
+          timeout_seconds: 120
+
+        # ── Gold: dimensions (parallel, run_order 1-4) ────────────────────────
+        - task_key: gold_dim_station
+          depends_on:
+            - task_key: list_gold_notebooks
+          job_cluster_key: batch_cluster
+          notebook_task:
+            notebook_path: ../../day11-gold-layer-star-schema/notebooks/nb_gold_dim_station
+            base_parameters:
+              env: ${bundle.target}
+          timeout_seconds: 1800
+          max_retries: 1
+
+        - task_key: gold_dim_customer
+          depends_on:
+            - task_key: list_gold_notebooks
+          job_cluster_key: batch_cluster
+          notebook_task:
+            notebook_path: ../../day11-gold-layer-star-schema/notebooks/nb_gold_dim_customer
+            base_parameters:
+              env: ${bundle.target}
+          timeout_seconds: 1800
+          max_retries: 1
+
+        - task_key: gold_dim_charger
+          depends_on:
+            - task_key: list_gold_notebooks
+          job_cluster_key: batch_cluster
+          notebook_task:
+            notebook_path: ../../day11-gold-layer-star-schema/notebooks/nb_gold_dim_charger
+            base_parameters:
+              env: ${bundle.target}
+          timeout_seconds: 1800
+          max_retries: 1
+
+        - task_key: gold_dim_tariff
+          depends_on:
+            - task_key: list_gold_notebooks
+          job_cluster_key: batch_cluster
+          notebook_task:
+            notebook_path: ../../day11-gold-layer-star-schema/notebooks/nb_gold_dim_tariff
+            base_parameters:
+              env: ${bundle.target}
+          timeout_seconds: 1800
+          max_retries: 1
+
+        # ── Gold: facts (after all dims) ──────────────────────────────────────
+        - task_key: gold_fact_charging_session
+          depends_on:
+            - task_key: gold_dim_station
+            - task_key: gold_dim_customer
+            - task_key: gold_dim_charger
+            - task_key: gold_dim_tariff
+          job_cluster_key: batch_cluster
+          notebook_task:
+            notebook_path: ../../day11-gold-layer-star-schema/notebooks/nb_gold_fact_charging_session
+            base_parameters:
+              env: ${bundle.target}
+          timeout_seconds: 3600
+          max_retries: 1
+
+        - task_key: gold_fact_payments
+          depends_on:
+            - task_key: gold_dim_station
+            - task_key: gold_dim_customer
+            - task_key: gold_dim_charger
+            - task_key: gold_dim_tariff
+          job_cluster_key: batch_cluster
+          notebook_task:
+            notebook_path: ../../day11-gold-layer-star-schema/notebooks/nb_gold_fact_payments
+            base_parameters:
+              env: ${bundle.target}
+          timeout_seconds: 3600
+          max_retries: 1
+
+        # ── Gold: mart (after facts) ──────────────────────────────────────────
+        - task_key: gold_mart_revenue_by_geo_month
+          depends_on:
+            - task_key: gold_fact_charging_session
+            - task_key: gold_fact_payments
+          job_cluster_key: batch_cluster
+          notebook_task:
+            notebook_path: ../../day11-gold-layer-star-schema/notebooks/nb_gold_mart_revenue_by_geo_month
+            base_parameters:
+              env: ${bundle.target}
+          timeout_seconds: 1800
+          max_retries: 1
