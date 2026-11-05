@@ -265,7 +265,7 @@ Because `ls_adls_bronze` and `ls_databricks` use **Managed Identity**, ADF does 
 
 Azure DevOps → Pipelines → Environments:
 
-**`adf-staging`** — no approvals (deploys automatically)
+**`adf-dev`** — no approvals (deploys automatically after CI passes)
 
 **`adf-production`**:
 - Approvals and checks → Approvals → add yourself as approver
@@ -276,18 +276,39 @@ Azure DevOps → Pipelines → Environments:
 
 ### Step 7 — Register the CI Pipeline
 
+The CI YAML lives in the **`azureendtoendproject`** Azure DevOps repo at:
+```
+azure-pipelines/ci-pipeline.yml
+```
+
+Steps:
 1. Azure DevOps → Pipelines → New Pipeline
-2. Code location: **Azure Repos Git** (or GitHub)
-3. Existing YAML file: `/azure-end-to-end-project/day15-adf-cicd/azure-pipelines/ci-pipeline.yml`
-4. Name it: `ADF-CI` → Save (do not run yet)
+2. Select **Azure Repos Git**
+3. Select repository: **`azureendtoendproject`**
+4. Select **Existing Azure Pipelines YAML file**
+5. Branch: **`main`**
+6. Path: **`/azure-pipelines/ci-pipeline.yml`**
+7. Click Continue → rename pipeline to **`ADF-CI`** → Save (do not run yet)
 
 ---
 
 ### Step 8 — Register the CD Pipeline
 
-1. Azure DevOps → Pipelines → New Pipeline → same repo
-2. Existing YAML: `/azure-end-to-end-project/day15-adf-cicd/azure-pipelines/cd-pipeline.yml`
-3. Name it: `ADF-CD` → Save
+The CD YAML lives in the same **`azureendtoendproject`** repo at:
+```
+azure-pipelines/cd-pipeline.yml
+```
+
+Steps:
+1. Azure DevOps → Pipelines → New Pipeline
+2. Select **Azure Repos Git**
+3. Select repository: **`azureendtoendproject`**
+4. Select **Existing Azure Pipelines YAML file**
+5. Branch: **`main`**
+6. Path: **`/azure-pipelines/cd-pipeline.yml`**
+7. Click Continue → rename pipeline to **`ADF-CD`** → Save
+
+> Both pipelines point to the `main` branch for the YAML file location. The CI pipeline **triggers** on `adf_publish` branch pushes — that is the branch ADF Studio writes ARM templates to, not the branch where the YAML lives.
 
 ---
 
@@ -295,26 +316,32 @@ Azure DevOps → Pipelines → Environments:
 
 Before deploying an ARM template, all ADF triggers must be stopped. After deploy, they restart. Without this the deploy fails if a trigger fires mid-deploy.
 
-Download the official Microsoft script and place it at `adf/scripts/PrePostDeploymentScript.ps1`:
+Download the official Microsoft script:
 ```
 https://raw.githubusercontent.com/Azure/Azure-DataFactory/main/SamplesV2/ContinuousIntegrationAndDelivery/PrePostDeploymentScript.ps1
 ```
 
-This script is referenced in `cd-pipeline.yml` for both staging and production stages.
+Place it at:
+```
+azureendtoendproject/scripts/PrePostDeploymentScript.ps1
+```
+
+Commit and push it to `main` in the `azureendtoendproject` repo. The CD pipeline references it at `$(Pipeline.Workspace)/adf-arm/scripts/PrePostDeploymentScript.ps1` after it is bundled into the `adf-arm` artifact by the CI pipeline.
 
 ---
 
 ### Step 10 — Trigger the First Deployment
 
-1. Edit any ADF pipeline in Studio (e.g. add a description)
-2. Save → commits to `main` in Git
+1. Edit any ADF pipeline in Studio (e.g. add a description to `pl_bronze_master_foreach`)
+2. Save → commits to `main` in the `azureendtoendproject` repo
 3. Click **Publish** in ADF Studio
-4. ADF auto-commits ARM templates to `adf_publish` branch
-5. Azure DevOps `ADF-CI` pipeline triggers automatically
-6. If CI passes, `ADF-CD` deploys to staging automatically
-7. CD pauses before production — you receive an email/Teams approval notification
-8. Azure DevOps → Pipelines → the pending run → Review → Approve
-9. Production deploys and release is git-tagged
+4. ADF auto-generates ARM templates and commits them to the `adf_publish` branch
+5. Azure DevOps detects the push to `adf_publish` → `ADF-CI` triggers automatically
+6. CI validates `ARMTemplateForFactory.json` against `parameters/dev-parameters.json` → publishes `adf-arm` artifact
+7. `ADF-CD` triggers automatically → deploys to `adf-ev-intelligence-dev2` (Dev stage, no approval)
+8. CD pauses before Production — approval notification sent
+9. Azure DevOps → Pipelines → the pending run → Review → Approve
+10. Production deploys and release is git-tagged `adf-release-YYYYMMDD-HHmmss-<sha8>`
 
 ---
 
