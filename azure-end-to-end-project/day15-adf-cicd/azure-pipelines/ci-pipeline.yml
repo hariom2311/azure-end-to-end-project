@@ -1,8 +1,15 @@
 # =============================================================================
 # ADF CI Pipeline — EV Intelligence Project
+# Repo    : azureendtoendproject (Azure DevOps)
 # Trigger : push to adf_publish branch (ADF Studio publish)
 #           PR validation against main
-# Jobs    : validate ARM template for staging + production
+# Jobs    : validate ARM template → publish artifact
+#
+# Real resources:
+#   Factory  : adf-ev-intelligence-dev2
+#   RG       : rg-ev-intelligence-dev
+#   Location : centralindia
+#   Sub      : 81dd57e1-876a-4fcc-8778-e06f68c13228
 # =============================================================================
 
 trigger:
@@ -19,70 +26,55 @@ pool:
   vmImage: ubuntu-latest
 
 variables:
+  - name: AZURE_SUBSCRIPTION_ID
+    value: 81dd57e1-876a-4fcc-8778-e06f68c13228
+  - name: RESOURCE_GROUP
+    value: rg-ev-intelligence-dev
+  - name: AZURE_LOCATION
+    value: centralindia
   - name: ARM_TEMPLATE_PATH
-    value: $(Build.SourcesDirectory)/azure-end-to-end-project/adf/ARMTemplateForFactory.json
-  - name: STAGING_PARAMS_PATH
-    value: $(Build.SourcesDirectory)/azure-end-to-end-project/adf/parameters/staging-parameters.json
-  - name: PRODUCTION_PARAMS_PATH
-    value: $(Build.SourcesDirectory)/azure-end-to-end-project/adf/parameters/production-parameters.json
+    value: $(Build.SourcesDirectory)/ARMTemplateForFactory.json
+  - name: DEV_PARAMS_PATH
+    value: $(Build.SourcesDirectory)/parameters/dev-parameters.json
 
 stages:
 
   # ---------------------------------------------------------------------------
-  # STAGE 1 — Validate ARM templates (staging + production)
-  # Uses deploymentMode: Validation — no resources are created
+  # STAGE 1 — Validate ARM template (dry run — no changes deployed)
+  # deploymentMode: Validation means Azure checks the template is valid
+  # but does not create or modify any resources.
   # ---------------------------------------------------------------------------
   - stage: ValidateARM
-    displayName: Validate ADF ARM Templates
+    displayName: Validate ADF ARM Template
     jobs:
 
-      # ── Job 1a: Validate against staging parameters ────────────────────────
-      - job: ValidateStaging
-        displayName: ARM Validate — Staging
+      - job: ValidateDev
+        displayName: ARM Validate — Dev
         steps:
           - checkout: self
-            displayName: Checkout repository
+            fetchDepth: 1
+            displayName: Checkout adf_publish branch
 
           - task: AzureResourceManagerTemplateDeployment@3
-            displayName: ARM Validate (staging params)
+            displayName: ARM Validate (dev-parameters.json)
             inputs:
               deploymentScope: Resource Group
               azureResourceManagerConnection: sc-ev-azure
               subscriptionId: $(AZURE_SUBSCRIPTION_ID)
               action: Create Or Update Resource Group
-              resourceGroupName: rg-ev-intelligence-staging
-              location: australiaeast
+              resourceGroupName: $(RESOURCE_GROUP)
+              location: $(AZURE_LOCATION)
               templateLocation: Linked artifact
               csmFile: $(ARM_TEMPLATE_PATH)
-              csmParametersFile: $(STAGING_PARAMS_PATH)
-              deploymentMode: Validation       # dry run — no changes to Azure
-              deploymentName: adf-ci-validate-staging-$(Build.BuildId)
-
-      # ── Job 1b: Validate against production parameters ─────────────────────
-      - job: ValidateProduction
-        displayName: ARM Validate — Production
-        steps:
-          - checkout: self
-            displayName: Checkout repository
-
-          - task: AzureResourceManagerTemplateDeployment@3
-            displayName: ARM Validate (production params)
-            inputs:
-              deploymentScope: Resource Group
-              azureResourceManagerConnection: sc-ev-azure
-              subscriptionId: $(AZURE_SUBSCRIPTION_ID)
-              action: Create Or Update Resource Group
-              resourceGroupName: rg-ev-intelligence-prod
-              location: australiaeast
-              templateLocation: Linked artifact
-              csmFile: $(ARM_TEMPLATE_PATH)
-              csmParametersFile: $(PRODUCTION_PARAMS_PATH)
+              csmParametersFile: $(DEV_PARAMS_PATH)
               deploymentMode: Validation
-              deploymentName: adf-ci-validate-prod-$(Build.BuildId)
+              deploymentName: adf-ci-validate-$(Build.BuildId)
 
   # ---------------------------------------------------------------------------
-  # STAGE 2 — Publish artifact for CD pipeline to consume
-  # Runs only on adf_publish branch (not on PR validation)
+  # STAGE 2 — Publish artifact
+  # Bundles ARM template + parameter file + PrePostDeploymentScript.ps1
+  # so the CD pipeline can consume them without re-checking out the repo.
+  # Only runs on adf_publish branch pushes (skipped on PR validation runs).
   # ---------------------------------------------------------------------------
   - stage: PublishArtifact
     displayName: Publish ARM Artifact
@@ -93,17 +85,18 @@ stages:
         displayName: Publish ARM template + parameters
         steps:
           - checkout: self
-            displayName: Checkout repository
+            fetchDepth: 1
+            displayName: Checkout adf_publish branch
 
           - task: CopyFiles@2
-            displayName: Copy ARM template and parameter files
+            displayName: Copy ARM template, parameters, and scripts
             inputs:
-              SourceFolder: $(Build.SourcesDirectory)/azure-end-to-end-project/adf
+              SourceFolder: $(Build.SourcesDirectory)
               Contents: |
                 ARMTemplateForFactory.json
                 ARMTemplateParametersForFactory.json
-                parameters/**
-                scripts/**
+                parameters/dev-parameters.json
+                scripts/PrePostDeploymentScript.ps1
               TargetFolder: $(Build.ArtifactStagingDirectory)/adf-arm
 
           - task: PublishBuildArtifacts@1

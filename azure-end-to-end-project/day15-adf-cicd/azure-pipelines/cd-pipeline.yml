@@ -1,22 +1,25 @@
 # =============================================================================
 # ADF CD Pipeline — EV Intelligence Project
-# Trigger : completion of ADF-CI pipeline (pipeline resource trigger)
-# Stages  : Deploy Staging → (manual approval) → Deploy Production
+# Repo    : azureendtoendproject (Azure DevOps)
+# Trigger : completion of ADF-CI pipeline on adf_publish branch
+# Stages  : Deploy Dev (auto) → Deploy Production (manual approval)
 #
-# Prerequisites:
-#   - Service connection: sc-ev-azure
-#   - Variable groups:    vg-adf-staging, vg-adf-production
-#   - Environments:       adf-staging, adf-production (with approval gate)
-#   - Pre/post script:    adf/scripts/PrePostDeploymentScript.ps1
+# Real resources:
+#   Factory  : adf-ev-intelligence-dev2
+#   RG       : rg-ev-intelligence-dev
+#   Location : centralindia
+#   Sub      : 81dd57e1-876a-4fcc-8778-e06f68c13228
+#   Trigger  : bronze_load (ScheduleTrigger — daily at 16:00 IST)
+#   Pipelines: pl_bronze_master_foreach, pl_bronze_master_parallel,
+#              pl_silver_dynamic_foreach, pl_gold_dynamic_foreach
 # =============================================================================
 
-trigger: none   # CD is triggered by CI completion, not by branch push
+trigger: none
 
-# ── Pipeline resource — triggers CD when CI succeeds on adf_publish ──────────
 resources:
   pipelines:
     - pipeline: ADF_CI
-      source: ADF-CI              # must match the exact name of the CI pipeline in DevOps
+      source: ADF-CI
       trigger:
         branches:
           include:
@@ -25,37 +28,42 @@ resources:
 pool:
   vmImage: ubuntu-latest
 
-# ── Shared variables ──────────────────────────────────────────────────────────
 variables:
   - name: AZURE_SUBSCRIPTION_ID
     value: 81dd57e1-876a-4fcc-8778-e06f68c13228
   - name: AZURE_LOCATION
-    value: australiaeast
+    value: centralindia
   - name: SERVICE_CONNECTION
     value: sc-ev-azure
+  - name: ADF_RESOURCE_GROUP
+    value: rg-ev-intelligence-dev
+  - name: ADF_FACTORY_NAME
+    value: adf-ev-intelligence-dev2
+  - name: ADF_TRIGGER_NAME
+    value: bronze_load
 
 stages:
 
   # ===========================================================================
-  # STAGE 1 — Deploy to Staging
+  # STAGE 1 — Deploy to Dev
   # Runs automatically when CI passes. No approval required.
   # ===========================================================================
-  - stage: DeployStaging
-    displayName: Deploy to Staging
+  - stage: DeployDev
+    displayName: Deploy to Dev
     variables:
-      - group: vg-adf-staging      # loads ADF_RESOURCE_GROUP, ADF_FACTORY_NAME, ENV_NAME, etc.
+      - group: vg-adf-dev
     jobs:
-      - deployment: DeployADFStaging
-        displayName: Deploy ADF ARM — Staging
-        environment: adf-staging   # no approval gate on this environment
+      - deployment: DeployADFDev
+        displayName: Deploy ADF ARM — Dev
+        environment: adf-dev
         strategy:
           runOnce:
             deploy:
               steps:
 
-                # ── Download the ARM artifact published by CI ───────────────
+                # ── Download ARM artifact from CI ───────────────────────────
                 - task: DownloadBuildArtifacts@1
-                  displayName: Download ARM artifact from CI
+                  displayName: Download adf-arm artifact
                   inputs:
                     buildType: specific
                     project: $(System.TeamProject)
@@ -64,9 +72,9 @@ stages:
                     artifactName: adf-arm
                     downloadPath: $(Pipeline.Workspace)/adf-arm
 
-                # ── Stop ADF triggers before deploy ────────────────────────
-                # Uses the official Microsoft pre/post deploy script to stop
-                # all active triggers before the ARM template is applied.
+                # ── Stop bronze_load trigger before deploy ──────────────────
+                # Prevents the trigger from firing mid-deploy while ARM is
+                # partially applied to the factory.
                 - task: AzurePowerShell@5
                   displayName: Stop ADF triggers (pre-deploy)
                   inputs:
@@ -81,9 +89,9 @@ stages:
                       -deleteDeployment $false
                     azurePowerShellVersion: LatestVersion
 
-                # ── Deploy ARM template to staging ──────────────────────────
+                # ── Deploy ARM template ─────────────────────────────────────
                 - task: AzureResourceManagerTemplateDeployment@3
-                  displayName: ARM Deploy — Staging
+                  displayName: ARM Deploy — Dev (adf-ev-intelligence-dev2)
                   inputs:
                     deploymentScope: Resource Group
                     azureResourceManagerConnection: $(SERVICE_CONNECTION)
@@ -93,11 +101,11 @@ stages:
                     location: $(AZURE_LOCATION)
                     templateLocation: Linked artifact
                     csmFile: $(Pipeline.Workspace)/adf-arm/ARMTemplateForFactory.json
-                    csmParametersFile: $(Pipeline.Workspace)/adf-arm/parameters/staging-parameters.json
+                    csmParametersFile: $(Pipeline.Workspace)/adf-arm/parameters/dev-parameters.json
                     deploymentMode: Incremental
-                    deploymentName: adf-cd-staging-$(Build.BuildId)
+                    deploymentName: adf-cd-dev-$(Build.BuildId)
 
-                # ── Restart ADF triggers after deploy ───────────────────────
+                # ── Restart bronze_load trigger after deploy ────────────────
                 - task: AzurePowerShell@5
                   displayName: Restart ADF triggers (post-deploy)
                   inputs:
@@ -112,9 +120,9 @@ stages:
                       -deleteDeployment $false
                     azurePowerShellVersion: LatestVersion
 
-                # ── Smoke test — verify master pipeline exists ──────────────
+                # ── Smoke test — verify pl_bronze_master_foreach exists ─────
                 - task: AzurePowerShell@5
-                  displayName: Smoke test — verify pl_master_e2e
+                  displayName: Smoke test — verify pl_bronze_master_foreach
                   inputs:
                     azureSubscription: $(SERVICE_CONNECTION)
                     ScriptType: InlineScript
@@ -122,40 +130,40 @@ stages:
                       $pipeline = Get-AzDataFactoryV2Pipeline `
                         -ResourceGroupName "$(ADF_RESOURCE_GROUP)" `
                         -DataFactoryName "$(ADF_FACTORY_NAME)" `
-                        -Name "pl_master_e2e" `
+                        -Name "pl_bronze_master_foreach" `
                         -ErrorAction SilentlyContinue
 
                       if (-not $pipeline) {
-                        Write-Error "pl_master_e2e not found in $(ADF_FACTORY_NAME) — deploy may have failed"
+                        Write-Error "pl_bronze_master_foreach not found in $(ADF_FACTORY_NAME)"
                         exit 1
                       }
-                      Write-Host "Staging deploy verified: pl_master_e2e exists in $(ADF_FACTORY_NAME)"
+                      Write-Host "Dev deploy verified: pl_bronze_master_foreach exists in $(ADF_FACTORY_NAME)"
                     azurePowerShellVersion: LatestVersion
 
                 # ── Summary ─────────────────────────────────────────────────
                 - script: |
-                    echo "ADF deployed to STAGING"
+                    echo "ADF deployed to DEV"
                     echo "Factory : $(ADF_FACTORY_NAME)"
                     echo "RG      : $(ADF_RESOURCE_GROUP)"
                     echo "Build   : $(Build.BuildId)"
                     echo "Commit  : $(Build.SourceVersion)"
-                  displayName: Deployment summary — Staging
+                  displayName: Deployment summary — Dev
 
   # ===========================================================================
   # STAGE 2 — Deploy to Production
   # Requires manual approval via the adf-production environment gate.
-  # Only runs after staging deploy succeeds.
+  # Only runs after Dev deploy succeeds.
   # ===========================================================================
   - stage: DeployProduction
     displayName: Deploy to Production
-    dependsOn: DeployStaging
+    dependsOn: DeployDev
     condition: succeeded()
     variables:
-      - group: vg-adf-production   # loads ADF_RESOURCE_GROUP, ADF_FACTORY_NAME for prod
+      - group: vg-adf-dev
     jobs:
       - deployment: DeployADFProduction
         displayName: Deploy ADF ARM — Production
-        environment: adf-production  # has manual approval + branch control checks
+        environment: adf-production
         strategy:
           runOnce:
             deploy:
@@ -163,7 +171,7 @@ stages:
 
                 # ── Download artifact ───────────────────────────────────────
                 - task: DownloadBuildArtifacts@1
-                  displayName: Download ARM artifact from CI
+                  displayName: Download adf-arm artifact
                   inputs:
                     buildType: specific
                     project: $(System.TeamProject)
@@ -187,9 +195,9 @@ stages:
                       -deleteDeployment $false
                     azurePowerShellVersion: LatestVersion
 
-                # ── Deploy to production ────────────────────────────────────
+                # ── Deploy ARM template ─────────────────────────────────────
                 - task: AzureResourceManagerTemplateDeployment@3
-                  displayName: ARM Deploy — Production
+                  displayName: ARM Deploy — Production (adf-ev-intelligence-dev2)
                   inputs:
                     deploymentScope: Resource Group
                     azureResourceManagerConnection: $(SERVICE_CONNECTION)
@@ -199,7 +207,7 @@ stages:
                     location: $(AZURE_LOCATION)
                     templateLocation: Linked artifact
                     csmFile: $(Pipeline.Workspace)/adf-arm/ARMTemplateForFactory.json
-                    csmParametersFile: $(Pipeline.Workspace)/adf-arm/parameters/production-parameters.json
+                    csmParametersFile: $(Pipeline.Workspace)/adf-arm/parameters/dev-parameters.json
                     deploymentMode: Incremental
                     deploymentName: adf-cd-production-$(Build.BuildId)
 
@@ -220,7 +228,7 @@ stages:
 
                 # ── Smoke test ──────────────────────────────────────────────
                 - task: AzurePowerShell@5
-                  displayName: Smoke test — verify pl_master_e2e in production
+                  displayName: Smoke test — verify pl_bronze_master_foreach
                   inputs:
                     azureSubscription: $(SERVICE_CONNECTION)
                     ScriptType: InlineScript
@@ -228,14 +236,27 @@ stages:
                       $pipeline = Get-AzDataFactoryV2Pipeline `
                         -ResourceGroupName "$(ADF_RESOURCE_GROUP)" `
                         -DataFactoryName "$(ADF_FACTORY_NAME)" `
-                        -Name "pl_master_e2e" `
+                        -Name "pl_bronze_master_foreach" `
                         -ErrorAction SilentlyContinue
 
                       if (-not $pipeline) {
-                        Write-Error "pl_master_e2e not found in $(ADF_FACTORY_NAME) — deploy may have failed"
+                        Write-Error "pl_bronze_master_foreach not found in $(ADF_FACTORY_NAME)"
                         exit 1
                       }
-                      Write-Host "Production deploy verified: pl_master_e2e exists in $(ADF_FACTORY_NAME)"
+
+                      # Also verify Silver and Gold pipelines
+                      foreach ($pl in @("pl_silver_dynamic_foreach", "pl_gold_dynamic_foreach")) {
+                        $p = Get-AzDataFactoryV2Pipeline `
+                          -ResourceGroupName "$(ADF_RESOURCE_GROUP)" `
+                          -DataFactoryName "$(ADF_FACTORY_NAME)" `
+                          -Name $pl -ErrorAction SilentlyContinue
+                        if (-not $p) {
+                          Write-Warning "$pl not found — may not be deployed yet"
+                        } else {
+                          Write-Host "Verified: $pl exists"
+                        }
+                      }
+                      Write-Host "Production deploy verified: $(ADF_FACTORY_NAME)"
                     azurePowerShellVersion: LatestVersion
 
                 # ── Tag the release ─────────────────────────────────────────
@@ -245,10 +266,11 @@ stages:
                     azureSubscription: $(SERVICE_CONNECTION)
                     ScriptType: InlineScript
                     Inline: |
-                      $tag = "adf-release-$(Get-Date -Format 'yyyyMMdd-HHmmss')-$("$(Build.SourceVersion)".Substring(0,8))"
-                      Write-Host "Release tag: $tag"
+                      $sha8 = "$(Build.SourceVersion)".Substring(0, 8)
+                      $tag  = "adf-release-$(Get-Date -Format 'yyyyMMdd-HHmmss')-$sha8"
+                      Write-Host "Tagging release: $tag"
                       git config user.email "devops-bot@ev-intelligence.com"
-                      git config user.name "DevOps Bot"
+                      git config user.name  "DevOps Bot"
                       git tag $tag
                       git push origin $tag
                       Write-Host "Tagged: $tag"
@@ -261,5 +283,4 @@ stages:
                     echo "RG      : $(ADF_RESOURCE_GROUP)"
                     echo "Build   : $(Build.BuildId)"
                     echo "Commit  : $(Build.SourceVersion)"
-                    echo "Approved by: $(Release.RequestedFor)"
                   displayName: Deployment summary — Production
